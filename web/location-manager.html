@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Location Data Bank Manager — MakanOnRent</title>
+<meta name="description" content="Internal tool: publish main areas and sub areas into the MakanOnRent location data bank." />
+<meta name="robots" content="noindex, nofollow" />
+<meta name="theme-color" content="#0A1A14" />
+<link rel="stylesheet" href="assets/css/home.css">
+<link rel="stylesheet" href="assets/css/listing.css">
+<link rel="stylesheet" href="assets/css/location-manager.css">
+</head>
+<body>
+
+<header class="site-head page-head">
+  <div class="container head-inner">
+    <a class="brand" href="index.html" aria-label="MakanOnRent home">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.8V20h14V9.8"/><path d="M10 20v-5.5h4V20"/></svg>
+      </span>
+      <span class="brand-text"><b>MakanOnRent</b><span>Location Data Bank</span></span>
+    </a>
+    <a class="back-link" href="index.html">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      Exit
+    </a>
+  </div>
+</header>
+
+<main class="lm">
+  <div class="container lm-shell">
+
+    <div class="lm-head">
+      <h1>Location Data Bank Manager</h1>
+      <p>Paste areas as plain text. They are parsed into main areas and sub areas, stay fully editable, and become searchable across the whole site the moment you publish.</p>
+    </div>
+
+    <!-- ══ STEP 1 · PROVINCE → CITY ══ -->
+    <section class="lm-card">
+      <div class="lm-card-head">
+        <span class="lm-step-no">1</span>
+        <div><b>Choose the city</b><br><span>Every area you publish is filed under this city.</span></div>
+      </div>
+      <div class="lm-row">
+        <div class="lm-field">
+          <label for="lmProvince">Province</label>
+          <div class="control">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z"/><path d="M9 3v15M15 6v15"/></svg>
+            <select id="lmProvince"><option value="">Select province</option></select>
+            <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+          </div>
+        </div>
+        <div class="lm-field">
+          <label for="lmCity">City</label>
+          <div class="control">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-5.6-7-11a7 7 0 1 1 14 0c0 5.4-7 11-7 11z"/><circle cx="12" cy="10" r="2.6"/></svg>
+            <select id="lmCity" disabled><option value="">Select province first</option></select>
+            <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══ STEP 2 · PASTE ══ -->
+    <section class="lm-card">
+      <div class="lm-card-head">
+        <span class="lm-step-no">2</span>
+        <div><b>Paste the areas</b><br><span>Headings are optional — indented or bulleted lists work too.</span></div>
+      </div>
+      <div class="lm-field">
+        <label for="lmPaste" class="sr-only">Paste areas</label>
+        <textarea id="lmPaste" class="lm-paste" spellcheck="false" placeholder="Main Area&#10;Johar Town&#10;Sub Areas&#10;Block A&#10;Block B&#10;Block C&#10;Block D"></textarea>
+      </div>
+      <p class="lm-hint">You can paste several main areas at once — start a new “Main Area” heading for each. Duplicates and list decoration (<code>-</code>, <code>•</code>, <code>├──</code>, <code>1.</code>) are cleaned automatically.</p>
+      <div class="lm-actions">
+        <button class="btn-apply" type="button" id="lmParse">Parse &amp; Preview</button>
+        <button class="btn-ghost" type="button" id="lmClear">Clear</button>
+      </div>
+    </section>
+
+    <!-- ══ STEP 3 · PREVIEW / EDIT ══ -->
+    <section class="lm-card">
+      <div class="lm-card-head">
+        <span class="lm-step-no">3</span>
+        <div><b>Review and edit</b><br><span>Rename, reorder, insert or delete before publishing.</span></div>
+      </div>
+      <div id="lmPreview">
+        <div class="lm-empty">Nothing parsed yet — paste your areas above and press <b>Parse &amp; Preview</b>.</div>
+      </div>
+    </section>
+
+    <!-- ══ STEP 4 · PUBLISH ══ -->
+    <section class="lm-publish">
+      <div class="lm-sum">
+        <b id="lmSummary">Nothing to publish</b>
+        <span id="lmSummarySub">Parse some areas first.</span>
+      </div>
+      <button class="btn-gold" type="button" id="lmPublish" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5L20 7"/></svg>
+        Publish to Data Bank
+      </button>
+    </section>
+    <p class="lm-msg" id="lmMsg" role="status" aria-live="polite"></p>
+
+    <!-- ══ PENDING SUB-AREA SUGGESTIONS ══ -->
+    <section class="lm-card" id="lmPendingCard" hidden>
+      <div class="lm-card-head">
+        <span class="lm-step-no">!</span>
+        <div><b>Pending sub-area suggestions</b><br><span>Submitted by users. Nothing is live until you approve it.</span></div>
+      </div>
+      <div id="lmPending"></div>
+    </section>
+
+    <!-- ══ PUBLISHED BANK ══ -->
+    <section class="lm-card">
+      <div class="lm-card-head">
+        <span class="lm-step-no">✓</span>
+        <div><b>Published data bank</b><br><span id="lmBankCount">Empty</span></div>
+      </div>
+      <div id="lmBank" class="lm-bank"></div>
+    </section>
+
+  </div>
+</main>
+
+<footer class="site-foot">
+  <div class="container foot-inner">
+    <p>&copy; <span id="yr"></span> <b>MakanOnRent</b> — internal location tooling.</p>
+    <p>Published areas are searchable immediately.</p>
+  </div>
+</footer>
+
+<script src="assets/js/config.js"></script>
+<script src="assets/js/pk-locations.js"></script>
+<script src="assets/js/location-engine.js"></script>
+<script src="assets/js/location-fixture.js"></script>
+<script src="assets/js/location-bank.js"></script>
+<script src="assets/js/shared.js"></script>
+<script src="assets/js/location-manager.js"></script>
+</body>
+</html>

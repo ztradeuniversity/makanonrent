@@ -17,6 +17,16 @@
       detailsPage: 'property.html',
       submitPage: 'submit.html',
       dashboardPage: 'dashboard.html',
+      /* Cloudflare Pages Functions — same-origin, relative paths.
+         See functions/api/*.js. No secrets ever live in this file. */
+      api: {
+        presign: '/api/uploads/presign',
+        submitProperty: '/api/properties/submit',
+        locations: '/api/locations',
+        locationsPublish: '/api/locations/publish',
+        locationsSuggest: '/api/locations/suggest'
+      },
+      locationManagerPage: 'location-manager.html',
       /* Query-parameter names accepted by the listing page. */
       params: {
         budgetMax: 'budget_max',
@@ -50,6 +60,10 @@
       ownerOverrides: 'mor:ownerOverrides',
       /* localStorage — last 5 locations picked in any search field. */
       locationRecents: 'mor:locationRecents',
+      /* localStorage — the published Location Data Bank (main areas +
+         sub areas added via location-manager.html). Hydrated into the
+         search engine on every page load; see location-bank.js. */
+      locationBank: 'mor:locationBank',
       /* localStorage — admin add/rename/disable/merge action log,
          replayed onto the fixture at load until a backend exists. */
       locationOverrides: 'mor:locationOverrides',

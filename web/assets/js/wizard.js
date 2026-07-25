@@ -27,8 +27,12 @@
     wantVerification: 0
   };
 
-  /* Files live in memory only — never serialised to storage. */
+  /* Files live in memory only — never serialised to storage. Uploaded
+     to R2 only at final submit, under one draftId so every file for
+     this submission lands in the same object-storage folder. */
   var files = { images: [], videos: [], cnicFront: null, cnicBack: null };
+  var draftId = (win.crypto && win.crypto.randomUUID) ? win.crypto.randomUUID()
+    : 'd-' + Date.now() + '-' + Math.random().toString(36).slice(2);
   var step = 1;
 
   /* ── helpers ────────────────────────────────────────────── */
@@ -520,11 +524,11 @@
     return SUB.referencePrefix + '-' + code + '-' + ymd + '-' + rand;
   }
 
-  function submit() {
-    var ref = reference();
-
-    /* Queued locally until the submission API exists. Media is
-       referenced by name only — binaries are not persisted. */
+  /* Queues the submission locally exactly as before — the pre-backend
+     fallback path. Used when the API is unreachable (static preview
+     with no Functions runtime, or a real network failure) so the demo
+     never breaks and the owner's work is never silently lost. */
+  function queueLocally(ref) {
     try {
       var key = CFG.storage.submissions;
       var all = JSON.parse(localStorage.getItem(key) || '[]');
@@ -540,9 +544,10 @@
       });
       localStorage.setItem(key, JSON.stringify(all));
     } catch (e) {}
+  }
 
+  function showDone(ref) {
     clearDraft();
-
     doc.querySelector('.wz-step[data-step="' + step + '"]').hidden = true;
     $('progress').hidden = true;
     $('wzNav').hidden = true;
@@ -552,6 +557,71 @@
     done.hidden = false;
     done.classList.add('is-in');
     win.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  /* Presigns + uploads one file directly to R2 (functions/api/uploads/
+     presign.js issues the URL; the PUT never touches our own server).
+     Returns { key, publicUrl, kind } for storage in the submit payload. */
+  function uploadOne(file, kind) {
+    return win.fetch(CFG.routes.api.presign, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        draftId: draftId, filename: file.name, contentType: file.type,
+        kind: kind, sizeBytes: file.size
+      })
+    })
+      .then(function (r) { if (!r.ok) throw new Error('presign failed'); return r.json(); })
+      .then(function (res) {
+        return win.fetch(res.uploadUrl, { method: 'PUT', headers: { 'Content-Type': file.type }, body: file })
+          .then(function (put) {
+            if (!put.ok) throw new Error('upload failed');
+            return { key: res.key, publicUrl: res.publicUrl, kind: kind === 'property-video' ? 'video' : 'image' };
+          });
+      });
+  }
+
+  function submit() {
+    var localRef = reference();
+    var nextBtn = $('nextBtn');
+    nextBtn.disabled = true;
+    nextBtn.firstChild.nodeValue = 'Submitting… ';
+
+    var imageUploads = files.images.map(function (e) { return uploadOne(e.file, 'property-image'); });
+    var videoUploads = files.videos.map(function (e) { return uploadOne(e.file, 'property-video'); });
+    var cnicUploads = [];
+    if (state.wantVerification && files.cnicFront) cnicUploads.push(uploadOne(files.cnicFront, 'cnic').then(function (r) { return { side: 'front', key: r.key }; }));
+    if (state.wantVerification && files.cnicBack) cnicUploads.push(uploadOne(files.cnicBack, 'cnic').then(function (r) { return { side: 'back', key: r.key }; }));
+
+    Promise.all(imageUploads.concat(videoUploads).concat(cnicUploads))
+      .then(function (results) {
+        var media = results.slice(0, imageUploads.length + videoUploads.length);
+        var cnicResults = results.slice(imageUploads.length + videoUploads.length);
+        var verification = null;
+        if (cnicResults.length) {
+          verification = {};
+          cnicResults.forEach(function (r) {
+            if (r.side === 'front') verification.cnicFrontKey = r.key;
+            if (r.side === 'back') verification.cnicBackKey = r.key;
+          });
+        }
+
+        return win.fetch(CFG.routes.api.submitProperty, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            draftId: draftId, property: state,
+            owner: { name: state.ownerName, whatsapp: state.whatsapp, phone: state.phone, email: state.email },
+            media: media, verification: verification
+          })
+        });
+      })
+      .then(function (r) { if (!r.ok) throw new Error('submit failed'); return r.json(); })
+      .then(function (res) { showDone(res.ref || localRef); })
+      .catch(function () {
+        /* API unreachable or not yet deployed — fall back to the
+           original local-only queue so the wizard still completes. */
+        queueLocally(localRef);
+        showDone(localRef);
+      });
   }
 
   /* ── resume dialog ──────────────────────────────────────── */

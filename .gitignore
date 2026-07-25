@@ -1,0 +1,13 @@
+# Secrets — never committed. See .env.example for the required names.
+.env
+.env.*
+!.env.example
+
+# Dependencies / build artifacts
+node_modules/
+.wrangler/
+dist/
+
+# OS/editor cruft
+.DS_Store
+Thumbs.db

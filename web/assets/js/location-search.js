@@ -37,6 +37,10 @@
     var currentItems = [];
     var activeIndex = -1;
     var selected = null;
+    /* Set after a Main Area is chosen so the very next list shows that
+       area's Sub Areas — the City → Main Area → Sub Area flow, inside
+       the existing single field (no new UI). Cleared on any typing. */
+    var drillParent = null;
 
     function itemHTML(node, idx) {
       var crumb = node.breadcrumb.slice(1);
@@ -66,7 +70,22 @@
       activeIndex = -1;
     }
 
+    /* Empty field. With a city selected we list that city's Main Areas
+       (step 2 of the flow); otherwise the usual recent + popular. */
     function showIdle() {
+      var scopeId = opts.getScope ? opts.getScope() : null;
+      var scope = scopeId ? LOC.getById(scopeId) : null;
+
+      if (scope && scope.type === 'city') {
+        var mains = LOC.getMainAreas(scope.id).map(LOC.decorate);
+        if (mains.length) {
+          currentItems = mains;
+          panel.innerHTML = sectionHTML('Areas in ' + scope.name, mains, 0);
+          open();
+          return;
+        }
+      }
+
       var recent = LOC.getRecent(), popular = LOC.getPopular();
       currentItems = recent.concat(popular);
       panel.innerHTML = currentItems.length
@@ -75,9 +94,22 @@
       open();
     }
 
+    /* Sub Areas of the Main Area just picked (step 3 of the flow). */
+    function showDrill(node) {
+      var subs = LOC.getSubAreas(node.id).map(LOC.decorate);
+      if (!subs.length) { close(); return false; }
+      drillParent = node;
+      currentItems = subs;
+      activeIndex = -1;
+      panel.innerHTML = sectionHTML('Sub areas in ' + node.name, subs, 0);
+      open();
+      return true;
+    }
+
     function showResults(q) {
-      var scope = opts.getScope ? opts.getScope() : null;
-      currentItems = LOC.search(q, { scopeId: scope });
+      /* Typing inside a drilled-in Main Area stays inside it. */
+      var scope = drillParent ? drillParent.id : (opts.getScope ? opts.getScope() : null);
+      currentItems = LOC.search(q, { scopeId: scope, types: opts.types || null });
       panel.innerHTML = currentItems.length
         ? currentItems.map(itemHTML).join('')
         : emptyHTML('No location found for “' + esc(q) + '”.', true);
@@ -96,8 +128,17 @@
       input.value = node.label;
       clearBtn.hidden = false;
       LOC.addRecent(node.id);
-      close();
       if (opts.onSelect) opts.onSelect(node);
+
+      /* A Main Area is already a valid selection; if it has Sub Areas
+         we offer them as the next step instead of closing, so the
+         admin-published hierarchy is actually walkable. */
+      var raw = LOC.getById(node.id);
+      var isMain = raw && LOC.MAIN_AREA_TYPES.indexOf(raw.type) > -1;
+      if (isMain && !opts.types && showDrill(raw)) return;
+
+      drillParent = null;
+      close();
     }
 
     /* One delegated listener — survives every re-render. */
@@ -126,18 +167,18 @@
     function buildSuggestDialog() {
       var dlg = UI.buildDialog((input.id || 'loc') + '-suggest',
         '<div class="modal-ic" aria-hidden="true">' + PLUS + '</div>' +
-        '<h3>Suggest a New Location</h3>' +
-        '<p>Can’t find it in the list? Tell us and our team will add it after a quick check.</p>' +
+        '<h3>Suggest a Sub Area</h3>' +
+        '<p>Can’t find your block or street? Tell us which area it sits in and our team will add it after a quick check.</p>' +
         '<form class="modal-form loc-suggest-form" novalidate>' +
           '<div class="loc-suggest-field">' +
-            '<label>Location name</label>' +
-            '<div class="control"><input type="text" data-f="name" placeholder="e.g. Al-Noor Housing Society" autocomplete="off" required /></div>' +
+            '<label>Sub area name</label>' +
+            '<div class="control"><input type="text" data-f="name" placeholder="e.g. Block K, Street 7" autocomplete="off" required /></div>' +
           '</div>' +
           '<div class="loc-suggest-field">' +
-            '<label>Parent location</label>' +
+            '<label>Which main area is it in?</label>' +
             '<div class="loc-wrap">' +
               '<div class="control loc-field">' + PIN +
-                '<input type="text" data-f="parent" autocomplete="off" placeholder="Search city, society…" role="combobox" aria-expanded="false" aria-autocomplete="list" />' +
+                '<input type="text" data-f="parent" autocomplete="off" placeholder="Search the main area…" role="combobox" aria-expanded="false" aria-autocomplete="list" />' +
                 '<button type="button" class="loc-clear" hidden aria-label="Clear">&times;</button>' +
               '</div>' +
               '<div class="loc-panel" role="listbox" hidden></div>' +
@@ -157,17 +198,25 @@
       var noteEl = form.querySelector('[data-f="note"]');
       var msg = form.querySelector('.form-msg');
       var parentNode = null;
+      /* types restricts this picker to Main Areas — users may suggest
+         Sub Areas only, never a new Main Area (enforced again in
+         MOR_BANK.suggestSubArea, so the UI is not the only guard). */
       var parentPicker = mount(form.querySelector('[data-f="parent"]'), {
+        types: LOC.MAIN_AREA_TYPES,
         onSelect: function (node) { parentNode = node; }
       });
 
       form.addEventListener('submit', function (e) {
         e.preventDefault();
         var name = nameEl.value.trim();
-        if (!name) { msg.textContent = 'Please enter a location name.'; msg.className = 'form-msg is-error'; nameEl.focus(); return; }
-        if (!parentNode) { msg.textContent = 'Please search and pick a parent location.'; msg.className = 'form-msg is-error'; return; }
+        if (!name) { msg.textContent = 'Please enter a sub area name.'; msg.className = 'form-msg is-error'; nameEl.focus(); return; }
+        if (!parentNode) { msg.textContent = 'Please search and pick the main area it belongs to.'; msg.className = 'form-msg is-error'; return; }
 
-        LOC.submitLocation({ name: name, parentId: parentNode.id, note: noteEl.value.trim() });
+        var res = (win.MOR_BANK && win.MOR_BANK.suggestSubArea)
+          ? win.MOR_BANK.suggestSubArea({ name: name, parentId: parentNode.id, note: noteEl.value.trim() })
+          : { ok: false, error: 'Suggestions are unavailable right now.' };
+
+        if (!res.ok) { msg.textContent = res.error; msg.className = 'form-msg is-error'; return; }
         msg.textContent = 'Thanks — submitted for review.';
         msg.className = 'form-msg is-ok';
         setTimeout(dlg.close, 1200);
@@ -190,6 +239,7 @@
       clearBtn.hidden = !v;
       if (selected && v !== selected.label) {
         selected = null;
+        drillParent = null;
         if (opts.onSelect) opts.onSelect(null);
       }
       var q = v.trim();

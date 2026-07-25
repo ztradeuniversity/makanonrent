@@ -23,10 +23,19 @@
      this list positionally except for tie-break ranking in search(). */
   var TYPES = [
     'country', 'province', 'division', 'district', 'tehsil',
-    'city', 'locality', 'society', 'phase', 'block', 'road', 'street', 'landmark'
+    'city', 'locality', 'society', 'subarea', 'phase', 'block', 'road', 'street', 'landmark'
   ];
   var TYPE_RANK = {};
   TYPES.forEach(function (t, i) { TYPE_RANK[t] = i; });
+
+  /* The Location Data Bank (location-bank.js) speaks in two tiers:
+     MAIN AREA  = a direct child of a city  → type 'locality' (or the
+                  pre-existing 'society', kept for fixture compatibility)
+     SUB AREA   = a child of a main area    → type 'subarea'
+     Ranking follows the same order, so a main area always outranks its
+     own sub areas for an equal-strength match. */
+  var MAIN_AREA_TYPES = ['locality', 'society'];
+  var SUB_AREA_TYPE = 'subarea';
 
   /* ── string utilities (kept local — no dependency on any page) ── */
   function slugify(v) {
@@ -45,6 +54,7 @@
   /* ── graph storage ──────────────────────────────────────────── */
   var byId = new Map();
   var byParent = new Map();          // parentId -> [childId, ...]
+  var byType = new Map();            // type -> Set(id)  — O(1) type scans
   var tokenIndex = new Map();        // firstNChars(token) -> Set(id)
   var byCitySlugArea = new Map();    // 'citySlug|areaSlug' -> id  (legacy-compatible lookup)
   var byNameLower = new Map();       // normalized own-name -> [id,...] (first-match convenience)
@@ -146,6 +156,8 @@
       active: input.active !== false,
       status: input.status || 'approved',    // 'approved' | 'pending' | 'rejected' | 'disabled'
       note: input.note || '',
+      sortOrder: input.sortOrder != null ? input.sortOrder : 0,  // admin-controlled order within a parent
+      source: input.source || 'fixture',         // 'fixture' | 'bank' | 'suggestion'
       suggestedBy: input.suggestedBy || null,    // future user reference — null until auth exists
       submittedAt: input.submittedAt || null,    // ISO date; set only for user submissions
       flags: input.flags || [],                  // [{ type, reason, confidence, source, flaggedAt }]
@@ -158,6 +170,8 @@
       if (!byParent.has(parent.id)) byParent.set(parent.id, []);
       byParent.get(parent.id).push(id);
     }
+    if (!byType.has(node.type)) byType.set(node.type, new Set());
+    byType.get(node.type).add(id);
     indexNode(node);
     if (!(opts && opts.silent)) record('add', input);
     return node;
@@ -230,6 +244,7 @@
     if (patch.aliases !== undefined) { n.aliases = patch.aliases; reindex = true; }
     if (patch.lat !== undefined) n.lat = patch.lat;
     if (patch.lng !== undefined) n.lng = patch.lng;
+    if (patch.sortOrder !== undefined) n.sortOrder = patch.sortOrder;
 
     if (patch.parentId !== undefined && patch.parentId !== n.parentId) {
       var oldParent = n.parentId, newParent = byId.get(patch.parentId);
@@ -324,6 +339,7 @@
     deindexNode(n);
     byId.delete(id);
     byParent.delete(id);
+    if (byType.has(n.type)) byType.get(n.type).delete(id);
     if (n.parentId && byParent.has(n.parentId)) {
       var list = byParent.get(n.parentId);
       var i = list.indexOf(id);
@@ -477,13 +493,39 @@
   function listCities(opts) {
     return getChildrenOfType('city', opts);
   }
+  /* Type-indexed: touches only nodes of that type, never the whole
+     graph — this is what keeps listCities() O(cities) rather than
+     O(all nodes) once a city carries thousands of sub areas. */
   function getChildrenOfType(type, opts) {
     var showAll = opts && opts.includeInactive;
+    var ids = byType.get(type);
+    if (!ids) return [];
     var out = [];
-    byId.forEach(function (n) {
-      if (n.type === type && (showAll || isPublic(n, opts))) out.push(n);
+    ids.forEach(function (id) {
+      var n = byId.get(id);
+      if (n && (showAll || isPublic(n, opts))) out.push(n);
     });
     return out;
+  }
+
+  /* ── Data Bank tier accessors ────────────────────────────────
+     The City → Main Area → Sub Area flow every page uses. Both are
+     O(direct children), never a graph scan. */
+  function getMainAreas(cityId, opts) {
+    var o = { types: MAIN_AREA_TYPES };
+    if (opts && opts.includeInactive) o.includeInactive = true;
+    if (opts && opts.includePending) o.includePending = true;
+    return getChildren(cityId, o).sort(function (a, b) { return a.name.localeCompare(b.name); });
+  }
+
+  function getSubAreas(mainAreaId, opts) {
+    var o = { types: [SUB_AREA_TYPE] };
+    if (opts && opts.includeInactive) o.includeInactive = true;
+    if (opts && opts.includePending) o.includePending = true;
+    return getChildren(mainAreaId, o).sort(function (a, b) {
+      var d = (a.sortOrder || 0) - (b.sortOrder || 0);
+      return d !== 0 ? d : a.name.localeCompare(b.name);
+    });
   }
 
   function findBySlug(citySlug, areaSlug) {
@@ -596,6 +638,11 @@
     var areaTier = (node.type === 'locality' || node.type === 'society') ? node
       : chain.slice(1).filter(function (n) { return n.type === 'locality' || n.type === 'society'; })[0] || null;
 
+    /* A sub area keeps its parent main area as `area*` so existing
+       property filtering (which matches on areaSlug) is unaffected,
+       and additionally exposes itself as `subArea*`. */
+    var isSub = node.type === 'subarea';
+
     return {
       id: node.id,
       name: node.name,
@@ -607,7 +654,9 @@
       citySlug: city ? city.slug : '',
       cityName: city ? city.name : '',
       areaSlug: areaTier ? areaTier.slug : '',
-      areaName: areaTier ? areaTier.name : ''
+      areaName: areaTier ? areaTier.name : '',
+      subAreaSlug: isSub ? node.slug : '',
+      subAreaName: isSub ? node.name : ''
     };
   }
 
@@ -664,6 +713,11 @@
 
   root.MOR_LOC = {
     TYPES: TYPES,
+    MAIN_AREA_TYPES: MAIN_AREA_TYPES,
+    SUB_AREA_TYPE: SUB_AREA_TYPE,
+    getMainAreas: getMainAreas,
+    getSubAreas: getSubAreas,
+    normalize: normalize,
     slugify: slugify,
     seed: seed,
     addLocation: addLocation,

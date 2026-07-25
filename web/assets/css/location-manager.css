@@ -1,0 +1,162 @@
+/* ══════════════════════════════════════════════════════════════
+   MakanOnRent — Location Data Bank Manager (admin)
+   Built entirely on the existing token set in home.css. No new
+   colours, no new type scale — the luxury language is unchanged.
+   ══════════════════════════════════════════════════════════════ */
+
+.lm { padding: 26px 0 80px; }
+.lm-shell { max-width: 940px; margin: 0 auto; }
+
+.lm-head { margin-bottom: 22px; }
+.lm-head h1 {
+  font-family: var(--font-serif); font-size: clamp(23px, 3vw, 30px);
+  font-weight: 600; letter-spacing: -.6px; color: var(--ink); margin-bottom: 6px;
+}
+.lm-head p { font-size: 14.5px; color: var(--muted); max-width: 620px; }
+
+/* ── step cards ─────────────────────────────────────────────── */
+.lm-card {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--radius-lg); padding: 22px;
+  box-shadow: var(--shadow-sm); margin-bottom: 16px;
+}
+.lm-card-head { display: flex; align-items: center; gap: 11px; margin-bottom: 16px; }
+.lm-step-no {
+  width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+  background: var(--green); color: #fff; display: grid; place-items: center;
+  font-size: 13.5px; font-weight: 800;
+}
+.lm-card-head b { font-size: 16px; font-weight: 750; color: var(--ink); }
+.lm-card-head span { font-size: 13px; color: var(--muted); font-weight: 550; }
+
+.lm-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.lm-field { display: grid; gap: 7px; }
+.lm-field > label { font-size: 13px; font-weight: 750; color: var(--text); }
+.lm-card .control { height: 52px; }
+
+.lm-paste {
+  width: 100%; min-height: 220px; padding: 14px 16px; resize: vertical;
+  background: var(--paper); border: 1.5px solid var(--line); border-radius: var(--radius);
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 13.5px; line-height: 1.7; color: var(--text);
+  transition: border-color .2s, box-shadow .2s;
+}
+.lm-paste:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 4px var(--gold-soft); }
+
+.lm-hint {
+  font-size: 12.5px; color: var(--muted); font-weight: 550; line-height: 1.6;
+}
+.lm-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+
+/* ── preview tree ───────────────────────────────────────────── */
+.lm-empty {
+  padding: 34px 20px; text-align: center;
+  border: 1.5px dashed var(--line); border-radius: var(--radius);
+  font-size: 13.5px; color: var(--muted); font-weight: 550;
+}
+
+.lm-group {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  margin-bottom: 12px; overflow: hidden;
+}
+.lm-group:last-child { margin-bottom: 0; }
+
+.lm-main {
+  display: flex; align-items: center; gap: 10px;
+  padding: 13px 14px; background: var(--paper); border-bottom: 1px solid var(--line);
+}
+.lm-main .lm-tag {
+  font-size: 10px; font-weight: 800; letter-spacing: .9px; text-transform: uppercase;
+  padding: 4px 9px; border-radius: 100px; flex-shrink: 0;
+  background: rgba(18, 90, 68, .1); border: 1px solid rgba(18, 90, 68, .26); color: #0E5C44;
+}
+.lm-name {
+  flex: 1; min-width: 0; border: 0; background: transparent; padding: 4px 6px;
+  font: inherit; font-size: 15px; font-weight: 750; color: var(--ink);
+  border-radius: 8px; border: 1.5px solid transparent;
+}
+.lm-name:focus { outline: none; background: var(--surface); border-color: var(--gold); }
+.lm-count { font-size: 12px; font-weight: 700; color: var(--muted); flex-shrink: 0; }
+
+.lm-subs { padding: 8px; display: grid; gap: 6px; }
+.lm-sub { display: flex; align-items: center; gap: 8px; }
+.lm-sub .lm-branch {
+  width: 18px; flex-shrink: 0; color: var(--muted); font-size: 13px;
+  font-family: ui-monospace, Consolas, monospace; text-align: center;
+}
+.lm-sub .lm-name { font-size: 14px; font-weight: 600; color: var(--text); }
+
+.lm-ico {
+  width: 32px; height: 32px; border-radius: 9px; flex-shrink: 0; cursor: pointer;
+  border: 1.5px solid var(--line); background: var(--surface); color: var(--muted);
+  display: grid; place-items: center;
+  transition: color .2s, border-color .2s, background .2s;
+}
+.lm-ico svg { width: 15px; height: 15px; }
+.lm-ico:hover { border-color: var(--green-lift); color: var(--green); background: rgba(18, 90, 68, .07); }
+.lm-ico.is-danger:hover { border-color: #C0392B; color: #C0392B; background: rgba(192, 57, 43, .07); }
+.lm-ico:disabled { opacity: .35; cursor: not-allowed; }
+.lm-ico:disabled:hover { border-color: var(--line); color: var(--muted); background: var(--surface); }
+
+.lm-addsub {
+  display: inline-flex; align-items: center; gap: 7px; margin: 2px 0 0 26px;
+  padding: 7px 13px; border-radius: 100px; cursor: pointer;
+  border: 1.5px dashed var(--gold-line); background: var(--gold-soft);
+  color: #8A6D22; font-size: 12.5px; font-weight: 700;
+}
+.lm-addsub svg { width: 13px; height: 13px; }
+.lm-addsub:hover { background: rgba(200, 162, 74, .22); border-color: var(--gold); }
+
+/* ── publish bar ────────────────────────────────────────────── */
+.lm-publish {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 14px; flex-wrap: wrap;
+  padding: 18px; border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, var(--ink) 0%, var(--green) 100%);
+  border: 1px solid var(--gold-line);
+}
+.lm-publish .lm-sum b { display: block; font-size: 15px; font-weight: 750; color: #fff; }
+.lm-publish .lm-sum span { font-size: 13px; color: rgba(255, 255, 255, .72); }
+
+.lm-msg { font-size: 13px; font-weight: 700; min-height: 18px; margin-top: 10px; }
+.lm-msg.is-ok { color: #146A4C; }
+.lm-msg.is-error { color: #C0392B; }
+
+/* ── published bank list ────────────────────────────────────── */
+.lm-bank { display: grid; gap: 8px; }
+.lm-bank-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 14px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--paper);
+}
+.lm-bank-row b { font-size: 14px; font-weight: 750; color: var(--text); }
+.lm-bank-row span { font-size: 12.5px; color: var(--muted); font-weight: 600; }
+.lm-bank-row .lm-grow { flex: 1; min-width: 0; }
+
+/* ── pending suggestions ────────────────────────────────────── */
+.lm-pending-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 12px 14px; border: 1px solid var(--gold-line); border-radius: var(--radius);
+  background: var(--gold-soft); margin-bottom: 8px;
+}
+.lm-pending-row b { font-size: 14px; font-weight: 750; color: var(--ink); }
+.lm-pending-row .lm-crumb { font-size: 12px; color: var(--muted); font-weight: 600; }
+.lm-pending-row .lm-grow { flex: 1; min-width: 140px; }
+.lm-mini {
+  height: 34px; padding: 0 14px; border-radius: 100px; cursor: pointer;
+  border: 1.5px solid var(--line); background: var(--surface);
+  font-size: 12.5px; font-weight: 750; color: var(--text);
+  transition: border-color .2s, color .2s, background .2s;
+}
+.lm-mini.is-ok:hover { border-color: var(--green); color: var(--green); background: rgba(18, 90, 68, .08); }
+.lm-mini.is-no:hover { border-color: #C0392B; color: #C0392B; background: rgba(192, 57, 43, .07); }
+
+/* ── responsive ─────────────────────────────────────────────── */
+@media (max-width: 700px) {
+  .lm { padding: 18px 0 60px; }
+  .lm-card { padding: 17px; border-radius: 18px; }
+  .lm-row { grid-template-columns: 1fr; }
+  .lm-publish { padding: 15px; }
+  .lm-publish .btn-gold { width: 100%; justify-content: center; }
+  .lm-addsub { margin-left: 0; }
+}

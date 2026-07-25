@@ -1,0 +1,15 @@
+{
+  "name": "makanonrent",
+  "private": true,
+  "version": "1.0.0",
+  "description": "MakanOnRent — Cloudflare Pages Functions backend (Supabase + R2). The web/ folder is the static site; functions/ is server-side only.",
+  "scripts": {
+    "dev": "wrangler pages dev web --compatibility-date=2024-01-01"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4"
+  },
+  "devDependencies": {
+    "wrangler": "^3.78.0"
+  }
+}
