@@ -1,0 +1,86 @@
+/* ══════════════════════════════════════════════════════════════
+   MakanOnRent — Smart Location Search (reusable component styles)
+   Net-new element only: the dropdown panel. The `.control` it sits
+   inside inherits every existing rule untouched — no page's visual
+   language changes because of this file.
+   ══════════════════════════════════════════════════════════════ */
+
+.loc-wrap { position: relative; }
+
+.loc-field { padding-right: 8px; }
+.loc-field input { width: 100%; }
+
+.loc-clear {
+  width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0; cursor: pointer;
+  border: 0; background: var(--paper); color: var(--muted);
+  font-size: 16px; line-height: 1; display: grid; place-items: center;
+  transition: background .2s, color .2s;
+}
+.loc-clear:hover { background: var(--gold-soft); color: #8A6D22; }
+.loc-clear[hidden] { display: none; }
+
+.loc-panel {
+  position: absolute; left: 0; right: 0; top: calc(100% + 8px); z-index: 80;
+  max-height: 320px; overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow-lg); padding: 6px;
+}
+.loc-panel[hidden] { display: none; }
+
+.loc-section-label {
+  padding: 8px 10px 5px;
+  font-size: 10.5px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; color: var(--muted);
+}
+
+.loc-item {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 9px 10px; border-radius: 10px; cursor: pointer;
+  transition: background .15s;
+}
+.loc-item:hover, .loc-item.is-active { background: var(--gold-soft); }
+.loc-item .loc-pin {
+  width: 26px; height: 26px; border-radius: 8px; flex-shrink: 0; margin-top: 1px;
+  background: var(--paper); color: var(--green-lift);
+  display: grid; place-items: center;
+}
+.loc-item .loc-pin svg { width: 14px; height: 14px; }
+.loc-item.is-active .loc-pin, .loc-item:hover .loc-pin { background: rgba(255, 255, 255, .55); }
+.loc-text { min-width: 0; }
+.loc-text b { display: block; font-size: 14px; font-weight: 700; color: var(--text); line-height: 1.35; }
+.loc-crumb {
+  display: block; font-size: 11.5px; font-weight: 550; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.loc-empty { padding: 16px 10px; font-size: 13px; font-weight: 550; color: var(--muted); text-align: center; }
+
+/* "Suggest New Location" — link in the empty state + the dialog it
+   opens. Deliberately self-contained (no dependency on wizard.css)
+   since this component is shared by pages that never load it. */
+.loc-suggest {
+  display: inline-flex; align-items: center; gap: 7px; margin-top: 10px;
+  padding: 8px 14px; border-radius: 100px; cursor: pointer;
+  border: 1.5px dashed var(--gold-line); background: var(--gold-soft);
+  color: #8A6D22; font-size: 12.5px; font-weight: 700;
+  transition: background .2s, border-color .2s;
+}
+.loc-suggest svg { width: 14px; height: 14px; }
+.loc-suggest:hover { background: rgba(200, 162, 74, .22); border-color: var(--gold); }
+
+.loc-suggest-field { display: grid; gap: 7px; margin-bottom: 16px; }
+.loc-suggest-field:last-of-type { margin-bottom: 0; }
+.loc-suggest-field label { font-size: 13.5px; font-weight: 750; color: var(--text); }
+.loc-suggest-hint { font-size: 12px; font-weight: 550; color: var(--muted); }
+.loc-suggest-field .control { height: 52px; }
+
+.loc-note {
+  width: 100%; min-height: 64px; padding: 12px 14px; resize: vertical;
+  background: var(--paper); border: 1.5px solid var(--line); border-radius: var(--radius);
+  font: inherit; font-size: 14.5px; color: var(--text);
+  transition: border-color .2s, box-shadow .2s;
+}
+.loc-note:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 4px var(--gold-soft); }
+
+@media (max-width: 620px) {
+  .loc-panel { max-height: 280px; }
+}

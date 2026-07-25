@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MakanOnRent — Verified Properties for Rent in Pakistan</title>
+<meta name="description" content="Search verified houses, flats, portions, offices and shops for rent across Pakistan. Every listing field-verified, with availability confirmed." />
+<meta name="theme-color" content="#0B3D2E" />
+<link rel="stylesheet" href="assets/css/home.css">
+<link rel="stylesheet" href="assets/css/location-search.css">
+</head>
+<body>
+
+<!-- ══ HEADER ══ -->
+<header class="site-head">
+  <div class="container head-inner">
+    <a class="brand" href="/" aria-label="MakanOnRent home">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.8V20h14V9.8"/><path d="M10 20v-5.5h4V20"/></svg>
+      </span>
+      <span class="brand-text"><b>MakanOnRent</b><span>Verified Rentals</span></span>
+    </a>
+    <div class="head-right">
+      <div class="head-trust">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2 4 5.5v6c0 5 3.4 8.6 8 10.5 4.6-1.9 8-5.5 8-10.5v-6z"/><path d="m9 12 2 2 4-4"/></svg>
+        <span>Field-Verified Listings</span>
+      </div>
+      <a class="btn-gold head-cta" href="submit.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Submit Property
+      </a>
+    </div>
+  </div>
+</header>
+
+<!-- ══ HERO + SEARCH ══ -->
+<section class="hero">
+  <div class="hero-grid" aria-hidden="true"></div>
+  <svg class="hero-skyline" viewBox="0 0 1440 260" preserveAspectRatio="none" aria-hidden="true">
+    <defs>
+      <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#C8A24A" stop-opacity=".55"/>
+        <stop offset="100%" stop-color="#C8A24A" stop-opacity="0"/>
+      </linearGradient>
+    </defs>
+    <path fill="url(#sky)" d="M0 260V196h58v-40h44v40h40v-62h56v62h48v-30h62v30h40v-84h58v84h52v-46h64v46h44v-70h60v70h50v-38h58v38h46v-58h62v58h44v-48h58v48h48v-76h56v76h52v-34h62v34h44v-54h60v54h174V260z"/>
+    <g fill="#C8A24A" opacity=".5">
+      <rect x="74" y="172" width="6" height="8" rx="1"/><rect x="90" y="172" width="6" height="8" rx="1"/>
+      <rect x="330" y="118" width="6" height="8" rx="1"/><rect x="346" y="118" width="6" height="8" rx="1"/>
+      <rect x="330" y="140" width="6" height="8" rx="1"/><rect x="346" y="140" width="6" height="8" rx="1"/>
+      <rect x="806" y="152" width="6" height="8" rx="1"/><rect x="822" y="152" width="6" height="8" rx="1"/>
+      <rect x="1084" y="112" width="6" height="8" rx="1"/><rect x="1100" y="112" width="6" height="8" rx="1"/>
+      <rect x="1084" y="134" width="6" height="8" rx="1"/><rect x="1100" y="134" width="6" height="8" rx="1"/>
+    </g>
+  </svg>
+
+  <div class="container hero-inner">
+    <span class="hero-eyebrow rise rise-1">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5L20 7"/></svg>
+      Every Listing Verified On Site
+    </span>
+
+    <h1 class="rise rise-2">Search for Rent in <em>Pakistan</em></h1>
+    <p class="hero-sub rise rise-2">Real properties. Real owners. Availability confirmed before you call.</p>
+
+    <!-- ── SEARCH PANEL ── -->
+    <form class="search-panel rise rise-3" id="searchForm" novalidate>
+      <div class="search-row">
+
+        <div class="field">
+          <label for="fCity">City</label>
+          <div class="control">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-5.6-7-11a7 7 0 1 1 14 0c0 5.4-7 11-7 11z"/><circle cx="12" cy="10" r="2.6"/></svg>
+            <select id="fCity" name="city" required>
+              <option value="">Select city</option>
+            </select>
+            <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="fArea">Location</label>
+          <div class="loc-wrap">
+            <div class="control loc-field">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
+              <input type="text" id="fArea" name="area" autocomplete="off"
+                     placeholder="City, society, phase, block…"
+                     role="combobox" aria-expanded="false" aria-autocomplete="list" aria-label="Location" />
+              <button type="button" class="loc-clear" hidden aria-label="Clear location">&times;</button>
+            </div>
+            <div class="loc-panel" role="listbox" hidden></div>
+          </div>
+        </div>
+
+        <div class="field field-budget">
+          <label for="fBudget">Budget</label>
+          <div class="control">
+            <span class="prefix">PKR</span>
+            <input id="fBudget" name="budget" type="text" inputmode="numeric"
+                   autocomplete="off" placeholder="10,000 to Any" />
+          </div>
+        </div>
+
+        <button class="btn-search" type="submit">
+          Find Properties
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </button>
+      </div>
+
+      <!-- ── ADVANCED ── -->
+      <button class="adv-toggle" type="button" id="advToggle" aria-expanded="false" aria-controls="advPanel">
+        More Search Details
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+
+      <div class="adv-panel" id="advPanel">
+        <div class="adv-inner">
+          <div class="adv-body">
+
+            <div class="adv-block">
+              <span class="adv-label" id="lblCategory">Property Category</span>
+              <div class="seg" role="group" aria-labelledby="lblCategory">
+                <button type="button" data-cat="homes" aria-pressed="true">Homes</button>
+                <button type="button" data-cat="commercial" aria-pressed="false">Commercial</button>
+              </div>
+              <div class="chips" id="typeChips" role="group" aria-label="Property type"></div>
+            </div>
+
+            <div class="adv-block">
+              <span class="adv-label" id="lblArea">Area</span>
+              <div class="area-row">
+                <div class="control">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 17V9M12 17v-5M17 17V6"/></svg>
+                  <input id="fSize" name="size" type="text" inputmode="numeric"
+                         autocomplete="off" placeholder="Enter area size" aria-labelledby="lblArea" />
+                </div>
+                <div class="seg seg-sm" role="group" aria-label="Area unit">
+                  <button type="button" data-unit="marla" aria-pressed="true">Marla</button>
+                  <button type="button" data-unit="sqft" aria-pressed="false">Sq Ft</button>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </form>
+  </div>
+</section>
+
+<!-- ══ QUICK CATEGORY CARDS ══ -->
+<section class="quick">
+  <div class="container quick-grid">
+
+    <article class="qcard rise rise-3">
+      <div class="qcard-head">
+        <span class="qcard-ic" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.8V20h14V9.8"/><path d="M10 20v-5.5h4V20"/></svg>
+        </span>
+        <div>
+          <h2>Home</h2>
+          <p>Houses, flats and portions for families</p>
+        </div>
+      </div>
+      <div class="chips" id="quickHome"></div>
+    </article>
+
+    <article class="qcard rise rise-4">
+      <div class="qcard-head">
+        <span class="qcard-ic" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V6.5L12 3l8 3.5V21"/><path d="M9 21v-6h6v6"/><path d="M8 9h2M14 9h2M8 12.5h2M14 12.5h2"/></svg>
+        </span>
+        <div>
+          <h2>Commercial</h2>
+          <p>Offices, shops and business spaces</p>
+        </div>
+      </div>
+      <div class="chips" id="quickCommercial"></div>
+    </article>
+
+  </div>
+</section>
+
+<!-- ══ FOOTER ══ -->
+<footer class="site-foot">
+  <div class="container foot-inner">
+    <p>&copy; <span id="yr"></span> <b>MakanOnRent</b> — Pakistan's verified rental platform.</p>
+    <p>Listings verified on site. Availability confirmed.</p>
+  </div>
+</footer>
+
+<script src="assets/js/config.js"></script>
+<script src="assets/js/pk-locations.js"></script>
+<script src="assets/js/location-engine.js"></script>
+<script src="assets/js/location-fixture.js"></script>
+<script src="assets/js/shared.js"></script>
+<script src="assets/js/location-search.js"></script>
+<script src="assets/js/home.js"></script>
+</body>
+</html>

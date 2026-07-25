@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>My Properties — MakanOnRent</title>
+<meta name="description" content="Manage your properties on MakanOnRent: review status, live listings, and availability." />
+<meta name="theme-color" content="#0A1A14" />
+<link rel="stylesheet" href="assets/css/home.css">
+<link rel="stylesheet" href="assets/css/listing.css">
+<link rel="stylesheet" href="assets/css/dashboard.css">
+</head>
+<body>
+
+<header class="site-head page-head">
+  <div class="container head-inner">
+    <a class="brand" href="index.html" aria-label="MakanOnRent home">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.8V20h14V9.8"/><path d="M10 20v-5.5h4V20"/></svg>
+      </span>
+      <span class="brand-text"><b>MakanOnRent</b><span>Verified Rentals</span></span>
+    </a>
+    <div class="head-right">
+      <a class="btn-gold head-cta" href="submit.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Submit Property
+      </a>
+    </div>
+  </div>
+</header>
+
+<main class="dash">
+  <div class="container dash-shell">
+
+    <div class="dash-intro">
+      <h1>My Properties</h1>
+      <p>Track your listings, review status and availability in one place.</p>
+    </div>
+
+    <nav class="dash-nav" id="dashNav" role="tablist" aria-label="Property sections">
+      <button class="dash-tab" role="tab" data-view="all" aria-selected="true">My Properties <span class="n" data-count="all">0</span></button>
+      <button class="dash-tab" role="tab" data-view="pending_review" aria-selected="false">Pending Review <span class="n" data-count="pending_review">0</span></button>
+      <button class="dash-tab" role="tab" data-view="live" aria-selected="false">Live <span class="n" data-count="live">0</span></button>
+      <button class="dash-tab" role="tab" data-view="rejected" aria-selected="false">Rejected <span class="n" data-count="rejected">0</span></button>
+      <button class="dash-tab" role="tab" data-view="archived" aria-selected="false">Archived <span class="n" data-count="archived">0</span></button>
+      <a class="dash-tab is-add" href="submit.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Add Property
+      </a>
+    </nav>
+
+    <div class="dash-search" id="searchWrap">
+      <div class="control">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
+        <input id="dashSearch" type="search" autocomplete="off"
+               placeholder="Search reference, title or area" aria-label="Search my properties" />
+        <button class="search-clear" type="button" id="searchClear" aria-label="Clear search" hidden>&times;</button>
+      </div>
+    </div>
+
+    <div class="ocards" id="ocards" aria-live="polite"></div>
+
+  </div>
+</main>
+
+<footer class="site-foot">
+  <div class="container foot-inner">
+    <p>&copy; <span id="yr"></span> <b>MakanOnRent</b> — Pakistan's verified rental platform.</p>
+    <p>Listings verified on site. Availability confirmed.</p>
+  </div>
+</footer>
+
+<script src="assets/js/config.js"></script>
+<script src="assets/js/pk-locations.js"></script>
+<script src="assets/js/location-engine.js"></script>
+<script src="assets/js/location-fixture.js"></script>
+<script src="assets/js/shared.js"></script>
+<script src="assets/js/owner-data.js"></script>
+<script src="assets/js/dashboard.js"></script>
+</body>
+</html>
