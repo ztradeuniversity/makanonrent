@@ -13,7 +13,13 @@
    migration and without locking anyone out. That is what needsRehash()
    is for. */
 
-var DEFAULT_ITERATIONS = 210000;   // OWASP 2023 floor for PBKDF2-SHA256
+/* 100,000 is the Cloudflare Workers WebCrypto PBKDF2 hard cap — confirmed
+   live: 210,000 throws "iteration counts above 100000 are not supported."
+   This is the maximum the runtime actually allows, not a preference.
+   Stored per-row in `algo` (see migrations/0004_admin_rbac.sql), so if
+   Cloudflare raises the cap later, needsRehash() upgrades transparently
+   with no migration and no lockout. */
+var DEFAULT_ITERATIONS = 100000;
 var SALT_BYTES = 16;
 var KEY_BITS = 256;
 
