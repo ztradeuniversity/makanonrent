@@ -439,3 +439,27 @@ img, svg { display: block; max-width: 100%; }
   .seg button { padding: 9px 16px; font-size: 13px; }
   .chip { padding: 8px 14px; font-size: 13px; }
 }
+
+/* ── Premium custom dropdown (Home Search only, premium-select.js) ── */
+.pms { position: relative; flex: 1; min-width: 0; height: 100%; }
+.pms-trigger {
+  width: 100%; height: 100%; border: 0; background: transparent;
+  font: inherit; font-size: 15px; font-weight: 600; color: var(--text);
+  text-align: left; cursor: pointer; padding: 0;
+}
+.pms-trigger.is-placeholder { color: #A3ADA7; font-weight: 500; }
+.pms-trigger:disabled { color: #A3ADA7; cursor: not-allowed; }
+.pms-list {
+  position: absolute; top: calc(100% + 8px); left: -14px; right: -14px;
+  max-height: 260px; overflow-y: auto; z-index: 30;
+  background: var(--surface); border: 1.5px solid var(--gold-line);
+  border-radius: var(--radius); box-shadow: var(--shadow-lg);
+  padding: 6px;
+}
+.pms-opt {
+  padding: 9px 12px; border-radius: 8px; font-size: 14px; font-weight: 600;
+  color: var(--text); cursor: pointer;
+}
+.pms-opt:hover { background: var(--gold-soft); color: #8A6D22; }
+.pms-opt.is-selected { background: rgba(18, 90, 68, .1); color: var(--green); font-weight: 750; }
+.pms-opt.is-disabled { color: #A3ADA7; cursor: not-allowed; }
