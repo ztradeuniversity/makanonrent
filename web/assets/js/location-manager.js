@@ -1,7 +1,10 @@
 /* MakanOnRent — Location Data Bank Manager (page controller).
-   Drives location-manager.html: province → city, paste → parse →
-   editable preview → publish. All parsing/persistence lives in
-   location-bank.js; this file is UI only. */
+   Drives location-manager.html: manage cities (master data) → choose
+   city → paste → parse → editable preview → publish. All
+   parsing/persistence lives in location-bank.js; this file is UI
+   only. Cities are the ONLY thing seeded by SQL (migrations/
+   0003_city_seed.sql) — Main Locations and Sub Locations always come
+   from this page. */
 (function (win, doc) {
   'use strict';
 
@@ -18,29 +21,125 @@
     plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>'
   };
 
-  /* ── STEP 1 · province → city ───────────────────────────── */
-  var provSel = $('lmProvince'), citySel = $('lmCity');
+  function esc(v) { return UI.esc(v); }
 
-  LOC.getChildren('pk', { types: ['province'] })
-    .sort(function (a, b) { return a.name.localeCompare(b.name); })
-    .forEach(function (p) { provSel.appendChild(new Option(p.name, p.id)); });
+  /* ── City Management (master data: Add / Rename / Delete / Search / Sort) ── */
+  var citySel = $('lmCity');
+  var citySortDir = 'asc';
 
-  provSel.addEventListener('change', function () {
+  function citiesFiltered() {
+    var q = $('lmCitySearch').value.trim().toLowerCase();
+    /* includeInactive: a disabled city must stay visible here so the
+       admin can re-enable it — only Step 1's picker (populateCitySelect)
+       hides disabled cities from the rest of the product. */
+    var list = LOC.listCities({ includeInactive: true });
+    if (q) list = list.filter(function (c) { return c.name.toLowerCase().indexOf(q) > -1; });
+    list = list.slice().sort(function (a, b) { return a.name.localeCompare(b.name); });
+    if (citySortDir === 'desc') list.reverse();
+    return list;
+  }
+
+  function renderCityMgmt() {
+    var list = citiesFiltered();
+    $('lmCityMgmtList').innerHTML = list.length
+      ? list.map(function (c) {
+          var mains = LOC.getMainAreas(c.id, { includeInactive: true }).length;
+          var disabled = !c.active;
+          return '<div class="lm-bank-row' + (disabled ? ' is-disabled' : '') + '">' +
+            '<input class="lm-name" data-rename-city="' + esc(c.id) + '" value="' + esc(c.name) + '" aria-label="Rename city" />' +
+            '<span>' + mains + ' main area' + (mains === 1 ? '' : 's') + (disabled ? ' · Disabled' : '') + '</span>' +
+            '<button class="lm-mini' + (disabled ? ' is-ok' : ' is-no') + '" type="button" data-toggle-city="' + esc(c.id) + '" data-next="' + (disabled ? 'enable' : 'disable') + '">' +
+              (disabled ? 'Enable' : 'Disable') +
+            '</button>' +
+            '<button class="lm-ico is-danger" type="button" data-del-city="' + esc(c.id) + '" aria-label="Delete city">' + IC.del + '</button>' +
+          '</div>';
+        }).join('')
+      : '<div class="lm-empty">No cities match.</div>';
+  }
+
+  function cityMsg(text, cls) {
+    var el = $('lmCityMsg');
+    el.textContent = text || '';
+    el.className = 'lm-msg' + (cls ? ' ' + cls : '');
+  }
+
+  /* Rebuilds Step 1's select from the current city master list.
+     Always alphabetical — the Sort A–Z/Z–A buttons affect the
+     management list only, so the picker stays predictable. */
+  function populateCitySelect() {
+    var keep = citySel.value;
     citySel.innerHTML = '';
-    if (!provSel.value) {
-      citySel.appendChild(new Option('Select province first', ''));
-      citySel.disabled = true;
-      refreshSummary();
-      return;
-    }
     citySel.appendChild(new Option('Select city', ''));
-    LOC.getChildren(provSel.value, { types: ['city'] })
+    LOC.listCities()
       .sort(function (a, b) { return a.name.localeCompare(b.name); })
       .forEach(function (c) { citySel.appendChild(new Option(c.name, c.id)); });
-    citySel.disabled = false;
-    refreshSummary();
+    if (keep && LOC.getById(keep)) citySel.value = keep;
+  }
+
+  $('lmCityAdd').addEventListener('click', function () {
+    var name = $('lmCityNew').value.trim();
+    if (!name) { cityMsg('Enter a city name first.', 'is-error'); return; }
+    LOC.addLocation({ name: name, type: 'city', parentId: null });
+    BANK.syncCityAdd(name);
+    $('lmCityNew').value = '';
+    cityMsg('“' + name + '” added — available in Step 1 immediately.', 'is-ok');
+    populateCitySelect();
+    renderCityMgmt();
   });
 
+  $('lmCitySearch').addEventListener('input', renderCityMgmt);
+  $('lmCitySortAZ').addEventListener('click', function () { citySortDir = 'asc'; renderCityMgmt(); });
+  $('lmCitySortZA').addEventListener('click', function () { citySortDir = 'desc'; renderCityMgmt(); });
+
+  $('lmCityMgmtList').addEventListener('change', function (e) {
+    var el = e.target.closest('[data-rename-city]');
+    if (!el) return;
+    var id = el.getAttribute('data-rename-city');
+    var name = el.value.trim();
+    if (!name) { renderCityMgmt(); return; }
+    LOC.updateLocation(id, { name: name });
+    BANK.syncCityRename(id, name);
+    cityMsg('Renamed.', 'is-ok');
+    populateCitySelect();
+    renderCityMgmt();
+  });
+
+  $('lmCityMgmtList').addEventListener('click', function (e) {
+    var toggle = e.target.closest('[data-toggle-city]');
+    if (toggle) {
+      var tid = toggle.getAttribute('data-toggle-city');
+      var next = toggle.getAttribute('data-next');
+      if (next === 'disable') { LOC.disableLocation(tid); BANK.syncCityDisable(tid); cityMsg('City disabled — hidden from Step 1 and the rest of the site, but its data is kept.', 'is-ok'); }
+      else { LOC.enableLocation(tid); BANK.syncCityEnable(tid); cityMsg('City enabled — available in Step 1 again.', 'is-ok'); }
+      populateCitySelect();
+      renderCityMgmt();
+      return;
+    }
+
+    var b = e.target.closest('[data-del-city]');
+    if (!b) return;
+    var id = b.getAttribute('data-del-city');
+
+    /* Delete only if no dependencies — a city with any Main/Sub
+       Locations under it is refused, not cascaded. Disable is the
+       correct action for a city that still has data underneath it. */
+    var ok = LOC.removeLocation(id);
+    if (!ok) {
+      var mainCount = LOC.getMainAreas(id, { includeInactive: true }).length;
+      cityMsg('Can’t delete — this city has ' + mainCount + ' main area(s) with their sub areas. Disable it instead, or delete its Main/Sub Locations first.', 'is-error');
+      return;
+    }
+    BANK.syncCityDelete(id);
+    cityMsg('City deleted.', 'is-ok');
+    if (citySel.value === id) citySel.value = '';
+    populateCitySelect();
+    renderCityMgmt();
+    refreshSummary();
+    renderBank();
+  });
+
+  /* ── STEP 1 · city ──────────────────────────────────────── */
+  populateCitySelect();
   citySel.addEventListener('change', function () { refreshSummary(); renderBank(); renderPending(); });
 
   /* ── STEP 2 · parse ─────────────────────────────────────── */
@@ -60,8 +159,6 @@
   });
 
   /* ── STEP 3 · editable preview ──────────────────────────── */
-  function esc(v) { return UI.esc(v); }
-
   function renderPreview() {
     var host = $('lmPreview');
     if (!groups.length) {
@@ -237,4 +334,14 @@
   refreshSummary();
   renderBank();
   renderPending();
+
+  /* location-bank.js already kicked off pullCitiesFromApi() at its own
+     boot (fire-and-forget); it resolves after this script's synchronous
+     boot has already rendered Step 1 and the Manage Cities list off the
+     small local fixture, so re-render once it lands to pick up the full
+     district/tehsil city bank. */
+  BANK.pullCitiesFromApi().then(function () {
+    populateCitySelect();
+    renderCityMgmt();
+  });
 })(window, document);

@@ -1,11 +1,18 @@
 /* ══════════════════════════════════════════════════════════════
    MakanOnRent — Location Fixture (seed data for MOR_LOC)
    ------------------------------------------------------------------
-   TEMPORARY data source. Builds the Pakistan → Province → City →
-   Area hierarchy from the SAME city/area list already used across
-   the product (assets/js/pk-locations.js) — no list is duplicated,
-   this file only gives that existing data depth (societies, phases,
-   blocks, roads, landmarks) and hangs it under provinces.
+   ARCHITECTURE: City -> Main Location -> Sub Location ONLY. No
+   Country, no Province. Every city is a ROOT node (parentId: null,
+   id === its slug, e.g. 'lahore') — this must byte-match the flat
+   node_id scheme migrations/0003_city_seed.sql seeds into Supabase,
+   or every publish from location-manager.html would FK-fail against
+   a parent that doesn't exist server-side.
+
+   TEMPORARY data source. Builds the City -> Area hierarchy from the
+   SAME city/area list already used across the product
+   (assets/js/pk-locations.js) — no list is duplicated, this file
+   only gives that existing data depth (societies, phases, blocks,
+   roads, landmarks).
 
    DATA PROVENANCE — every place name below is hand-authored, common
    public knowledge of Pakistani cities and their well-known areas
@@ -28,34 +35,6 @@
   var LOC = root.MOR_LOC;
   var RAW = root.MOR_LOCATIONS; // pk-locations.js — the single city/area source
 
-  var PROVINCE_OF = {
-    lahore: 'punjab', faisalabad: 'punjab', multan: 'punjab', gujranwala: 'punjab',
-    sialkot: 'punjab', sheikhupura: 'punjab', sargodha: 'punjab', sahiwal: 'punjab',
-    bahawalpur: 'punjab', 'rahim-yar-khan': 'punjab', gujrat: 'punjab', rawalpindi: 'punjab',
-    karachi: 'sindh', hyderabad: 'sindh', sukkur: 'sindh',
-    islamabad: 'ict',
-    peshawar: 'kpk', abbottabad: 'kpk',
-    quetta: 'balochistan',
-    'mirpur-ajk': 'ajk'
-  };
-
-  var PROVINCES = [
-    { slug: 'punjab', name: 'Punjab' },
-    { slug: 'sindh', name: 'Sindh' },
-    { slug: 'kpk', name: 'Khyber Pakhtunkhwa' },
-    { slug: 'balochistan', name: 'Balochistan' },
-    { slug: 'ict', name: 'Islamabad Capital Territory' },
-    { slug: 'ajk', name: 'Azad Jammu & Kashmir' }
-  ];
-
-  var country = LOC.addLocation({ id: 'pk', name: 'Pakistan', type: 'country', slug: 'pk' }, { silent: true });
-
-  var provinceNode = {};
-  PROVINCES.forEach(function (p) {
-    provinceNode[p.slug] = LOC.addLocation(
-      { parentId: country.id, name: p.name, type: 'province', slug: p.slug }, { silent: true });
-  });
-
   /* ── aliases: alternate names/abbreviations people actually type,
      resolved through search() without creating a second location for
      the same real place. Keyed by area display name (kept short —
@@ -69,12 +48,13 @@
     'Gulistan-e-Johar': ['Gulistan Johar']
   };
 
-  /* ── cities + areas: reuse pk-locations.js verbatim, add depth ── */
+  /* ── cities + areas: reuse pk-locations.js verbatim, add depth.
+     Cities are root nodes — id === slug (parentId: null), matching
+     0003_city_seed.sql exactly. ── */
   var cityNode = {};
   RAW.cities.forEach(function (c) {
-    var province = provinceNode[PROVINCE_OF[c.slug]] || provinceNode.punjab;
     var city = LOC.addLocation(
-      { parentId: province.id, name: c.name, type: 'city', slug: c.slug }, { silent: true });
+      { parentId: null, name: c.name, type: 'city', slug: c.slug }, { silent: true });
     cityNode[c.slug] = city;
 
     c.areas.forEach(function (areaName) {
@@ -122,9 +102,9 @@
 
   /* ── Jhang: named in the brief but not yet in pk-locations.js —
      added here, at the fixture layer, so the base city/area list
-     stays the single unduplicated source and this stays additive. */
-  var punjab = provinceNode.punjab;
-  var jhang = LOC.addLocation({ parentId: punjab.id, name: 'Jhang', type: 'city' }, { silent: true });
+     stays the single unduplicated source and this stays additive.
+     Root city node, same as every other city. */
+  var jhang = LOC.addLocation({ parentId: null, name: 'Jhang', type: 'city' }, { silent: true });
   cityNode.jhang = jhang;
   var jhangSat = child(jhang, 'Satellite Town', 'locality');
   var jhangCivil = child(jhang, 'Civil Lines', 'locality');

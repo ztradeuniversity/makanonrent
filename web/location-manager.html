@@ -36,28 +36,49 @@
       <p>Paste areas as plain text. They are parsed into main areas and sub areas, stay fully editable, and become searchable across the whole site the moment you publish.</p>
     </div>
 
-    <!-- ══ STEP 1 · PROVINCE → CITY ══ -->
+    <!-- ══ CITY MANAGEMENT (master data) ══ -->
+    <section class="lm-card">
+      <div class="lm-card-head">
+        <span class="lm-step-no">C</span>
+        <div><b>Manage cities</b><br><span>The city master list used everywhere — Homepage, Search, Filters and Submit Property.</span></div>
+      </div>
+      <div class="lm-row">
+        <div class="lm-field">
+          <label for="lmCityNew">Add a new city</label>
+          <div class="control">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-5.6-7-11a7 7 0 1 1 14 0c0 5.4-7 11-7 11z"/><circle cx="12" cy="10" r="2.6"/></svg>
+            <input type="text" id="lmCityNew" placeholder="e.g. Sialkot" autocomplete="off" />
+          </div>
+        </div>
+        <div class="lm-field">
+          <label for="lmCitySearch">Search cities</label>
+          <div class="control">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
+            <input type="text" id="lmCitySearch" placeholder="Type to filter…" autocomplete="off" />
+          </div>
+        </div>
+      </div>
+      <div class="lm-actions">
+        <button class="btn-apply" type="button" id="lmCityAdd">Add City</button>
+        <button class="btn-ghost" type="button" id="lmCitySortAZ">Sort A–Z</button>
+        <button class="btn-ghost" type="button" id="lmCitySortZA">Sort Z–A</button>
+      </div>
+      <p class="lm-msg" id="lmCityMsg" role="status" aria-live="polite"></p>
+      <div id="lmCityMgmtList" class="lm-bank" style="margin-top:12px;"></div>
+    </section>
+
+    <!-- ══ STEP 1 · CITY ══ -->
     <section class="lm-card">
       <div class="lm-card-head">
         <span class="lm-step-no">1</span>
         <div><b>Choose the city</b><br><span>Every area you publish is filed under this city.</span></div>
       </div>
-      <div class="lm-row">
-        <div class="lm-field">
-          <label for="lmProvince">Province</label>
-          <div class="control">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z"/><path d="M9 3v15M15 6v15"/></svg>
-            <select id="lmProvince"><option value="">Select province</option></select>
-            <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
-          </div>
-        </div>
-        <div class="lm-field">
-          <label for="lmCity">City</label>
-          <div class="control">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-5.6-7-11a7 7 0 1 1 14 0c0 5.4-7 11-7 11z"/><circle cx="12" cy="10" r="2.6"/></svg>
-            <select id="lmCity" disabled><option value="">Select province first</option></select>
-            <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
-          </div>
+      <div class="lm-field">
+        <label for="lmCity">City</label>
+        <div class="control">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-5.6-7-11a7 7 0 1 1 14 0c0 5.4-7 11-7 11z"/><circle cx="12" cy="10" r="2.6"/></svg>
+          <select id="lmCity"><option value="">Select city</option></select>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
         </div>
       </div>
     </section>

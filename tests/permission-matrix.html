@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Permission Matrix Tests — MakanOnRent Admin</title>
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; color: #16211C; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: #6B7A73; margin-bottom: 20px; }
+  #summary { padding: 14px 18px; border-radius: 12px; font-weight: 700; margin-bottom: 18px; }
+  .ok   { background: #E7F3EE; border: 1px solid #0E5C44; color: #0E5C44; }
+  .bad  { background: #FBEAE8; border: 1px solid #C0392B; color: #C0392B; }
+  .grp  { margin: 18px 0 6px; font-weight: 800; font-size: 12px; letter-spacing: .6px; text-transform: uppercase; color: #6B7A73; }
+  li { list-style: none; padding: 4px 0; border-bottom: 1px solid #EEE; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .p { color: #0E5C44; } .f { color: #C0392B; font-weight: 700; }
+</style>
+<!-- Redirects the bare specifier so the REAL modules load unmodified. -->
+<script type="importmap">
+{ "imports": { "@supabase/supabase-js": "./stub-supabase.js" } }
+</script>
+</head>
+<body>
+
+<h1>Admin Permission Matrix — executable tests</h1>
+<p class="sub">
+  Doc 18 Article 6.2: “The permission matrix (Doc 03) is executable … drift between
+  matrix and code is a test failure.” These assertions import
+  <code>functions/utils/rbac.js</code> and <code>functions/utils/approval-chain.js</code>
+  directly, so editing either file re-runs against the real source.
+</p>
+
+<div id="summary">Running…</div>
+<div id="out"></div>
+
+<script type="module">
+import { can, canManageRole, isWithinScope, PERMISSIONS, ROLES } from '../functions/utils/rbac.js';
+import { CHAINS, currentStage, nextStage } from '../functions/utils/approval-chain.js';
+import { hashPassword, verifyPassword, validatePasswordStrength, needsRehash } from '../functions/utils/password.js';
+import { STATES, STATUS_PROJECTION, TRANSITIONS, canTransition,
+         roleMayTransition, availableTransitions } from '../functions/utils/lifecycle.js';
+import { normaliseItem, EVIDENCE_KINDS } from '../functions/utils/evidence.js';
+import { EVENTS, covers } from '../functions/utils/notify.js';
+
+var results = [];
+function group(name) { results.push({ group: name }); }
+function check(desc, got, want) {
+  results.push({ desc: desc, pass: JSON.stringify(got) === JSON.stringify(want), got: got });
+}
+function throws(desc, fn) {
+  var threw = false;
+  try { fn(); } catch (e) { threw = true; }
+  results.push({ desc: desc, pass: threw, got: threw ? 'threw' : 'did not throw' });
+}
+
+/* ── 1. Role × capability, including every deny ───────────────────── */
+group('Role × capability (deny cases)');
+check('Manager cannot create managers',        can('manager', 'users.create.manager'), false);
+check('Manager cannot list users',             can('manager', 'users.list'), false);
+check('Manager cannot assign areas',           can('manager', 'areas.assign'), false);
+check('Manager cannot assign tasks',           can('manager', 'tasks.assign'), false);
+check('Manager cannot list others tasks',      can('manager', 'tasks.list.any'), false);
+check('Manager cannot read monitoring',        can('manager', 'monitor.read'), false);
+check('Manager cannot read audit',             can('manager', 'audit.read'), false);
+check('Manager cannot archive properties',     can('manager', 'properties.archive'), false);
+check('Manager cannot restore properties',     can('manager', 'properties.restore'), false);
+check('Manager cannot write settings',         can('manager', 'settings.write'), false);
+check('Manager cannot read settings',          can('manager', 'settings.read'), false);
+check('Asst CEO cannot create Asst CEOs',      can('assistant_ceo', 'users.create.assistant_ceo'), false);
+check('Asst CEO cannot read audit',            can('assistant_ceo', 'audit.read'), false);
+check('Asst CEO cannot write settings',        can('assistant_ceo', 'settings.write'), false);
+check('Asst CEO cannot archive properties',    can('assistant_ceo', 'properties.archive'), false);
+check('Unknown capability denies (CEO too)',   can('ceo', 'nonexistent.capability'), false);
+check('Unknown role denies',                   can('intern', 'users.list'), false);
+
+group('Role × capability (allow cases)');
+check('CEO creates Assistant CEOs',            can('ceo', 'users.create.assistant_ceo'), true);
+check('CEO reads audit',                       can('ceo', 'audit.read'), true);
+check('CEO writes settings',                   can('ceo', 'settings.write'), true);
+check('CEO archives properties',               can('ceo', 'properties.archive'), true);
+check('Asst CEO creates Managers',             can('assistant_ceo', 'users.create.manager'), true);
+check('Asst CEO assigns areas',                can('assistant_ceo', 'areas.assign'), true);
+check('Asst CEO reads monitoring',             can('assistant_ceo', 'monitor.read'), true);
+check('Manager verifies properties',           can('manager', 'properties.verify'), true);
+check('Manager approves properties',           can('manager', 'properties.approve'), true);
+check('Manager adds properties',               can('manager', 'properties.add'), true);
+check('Manager comments',                      can('manager', 'comments.create'), true);
+check('Manager sees own tasks',                can('manager', 'tasks.list.own'), true);
+
+/* Exhaustive sweep: no capability may be held by a role not listed. */
+group('Exhaustive matrix sweep');
+var sweepFailures = [];
+Object.keys(PERMISSIONS).forEach(function (cap) {
+  ROLES.forEach(function (role) {
+    var expected = PERMISSIONS[cap].indexOf(role) > -1;
+    if (can(role, cap) !== expected) sweepFailures.push(role + ' × ' + cap);
+  });
+});
+check('every role × capability pair matches the table', sweepFailures, []);
+check('matrix covers all three roles', ROLES, ['ceo', 'assistant_ceo', 'manager']);
+
+/* ── 2. Authority direction ───────────────────────────────────────── */
+group('Authority flows downward only');
+check('Asst CEO cannot control CEO',           canManageRole('assistant_ceo', 'ceo'), false);
+check('Asst CEO cannot control peer',          canManageRole('assistant_ceo', 'assistant_ceo'), false);
+check('Manager controls nobody',               canManageRole('manager', 'manager'), false);
+check('Manager cannot control Asst CEO',       canManageRole('manager', 'assistant_ceo'), false);
+check('Nobody manages the CEO',                canManageRole('ceo', 'ceo'), false);
+check('CEO manages Asst CEO',                  canManageRole('ceo', 'assistant_ceo'), true);
+check('CEO manages Manager',                   canManageRole('ceo', 'manager'), true);
+check('Asst CEO manages Manager',              canManageRole('assistant_ceo', 'manager'), true);
+
+/* ── 3. Area scoping ──────────────────────────────────────────────── */
+group('Area scope resolution');
+check('CEO (null scope) sees everything',      isWithinScope(null, 'any/where'), true);
+check('empty scope sees nothing',              isWithinScope([], 'lahore'), false);
+check('exact city matches',                    isWithinScope(['lahore'], 'lahore'), true);
+check('descendant main area matches',          isWithinScope(['lahore'], 'lahore/johar-town'), true);
+check('descendant sub area matches',           isWithinScope(['lahore'], 'lahore/johar-town/block-a'), true);
+check('PREFIX TRAP lahore ≠ lahore-cantt',     isWithinScope(['lahore'], 'lahore-cantt'), false);
+check('different city denied',                 isWithinScope(['lahore'], 'karachi'), false);
+check('cannot escape upward to parent',        isWithinScope(['lahore/johar-town'], 'lahore'), false);
+check('sibling area denied',                   isWithinScope(['lahore/johar-town'], 'lahore/model-town'), false);
+check('null node denied',                      isWithinScope(['lahore'], null), false);
+check('empty node denied',                     isWithinScope(['lahore'], ''), false);
+check('multi-area assignment works',           isWithinScope(['lahore', 'karachi'], 'karachi/dha'), true);
+
+/* ── 4. Approval chain ────────────────────────────────────────────── */
+group('Approval chain');
+check('NULL state waits on first stage',       currentStage(CHAINS.manager_aceo_ceo, null), 'manager');
+check('returned reopens at first stage',       currentStage(CHAINS.manager_aceo, 'returned'), 'manager');
+check('approved is terminal',                  currentStage(CHAINS.manager_aceo, 'approved'), null);
+check('rejected is terminal',                  currentStage(CHAINS.manager_aceo, 'rejected'), null);
+check('3-tier: manager → asst ceo',            nextStage(CHAINS.manager_aceo_ceo, 'manager', false), 'assistant_ceo');
+check('3-tier: asst ceo → ceo',                nextStage(CHAINS.manager_aceo_ceo, 'assistant_ceo', false), 'ceo');
+check('3-tier: ceo → publish',                 nextStage(CHAINS.manager_aceo_ceo, 'ceo', false), null);
+check('manager_only publishes at manager',     nextStage(CHAINS.manager_only, 'manager', false), null);
+check('autoPublish collapses 3-tier',          nextStage(CHAINS.manager_aceo_ceo, 'manager', true), null);
+throws('unknown stage fails CLOSED (no publish)', function () {
+  nextStage(CHAINS.manager_aceo, 'finance', false);
+});
+
+/* ── 5. Password hashing ──────────────────────────────────────────── */
+group('Password hashing');
+var pw = await hashPassword('correct-horse-battery');
+check('hash roundtrip verifies',               await verifyPassword('correct-horse-battery', {
+  password_hash: pw.hash, password_salt: pw.salt, password_algo: pw.algo }), true);
+check('wrong password rejected',               await verifyPassword('wrong-password-here', {
+  password_hash: pw.hash, password_salt: pw.salt, password_algo: pw.algo }), false);
+var pw2 = await hashPassword('correct-horse-battery');
+check('same password → different salt',        pw.salt !== pw2.salt, true);
+check('same password → different hash',        pw.hash !== pw2.hash, true);
+check('algo label records iterations',         pw.algo, 'pbkdf2-sha256-210000');
+check('unsupported algo rejected, not crashed', await verifyPassword('x', {
+  password_hash: pw.hash, password_salt: pw.salt, password_algo: 'md5' }), false);
+check('weaker iterations need rehash',         needsRehash({ password_algo: 'pbkdf2-sha256-1000' }), true);
+check('current iterations need no rehash',     needsRehash({ password_algo: 'pbkdf2-sha256-210000' }), false);
+check('short password rejected',               typeof validatePasswordStrength('short'), 'string');
+check('10+ char password accepted',            validatePasswordStrength('abcdefghij'), null);
+
+/* ── 6. Property lifecycle state machine (ADR 0002) ───────────────── */
+group('Lifecycle — projection onto the frozen status enum');
+check('all 8 operational states exist', STATES.length, 8);
+check('only published is publicly live', STATES.filter(function (s) {
+  return STATUS_PROJECTION[s] === 'verified_live'; }), ['published']);
+check('every state projects to a frozen value', STATES.filter(function (s) {
+  return !STATUS_PROJECTION[s]; }), []);
+check('projection targets are all legal frozen enum values', STATES.filter(function (s) {
+  return ['draft','intake','pending_verification','verified_live','unconfirmed',
+          'paused','rented','withdrawn','rejected'].indexOf(STATUS_PROJECTION[s]) === -1; }), []);
+check('deleted does NOT project to a public status', STATUS_PROJECTION.deleted, 'withdrawn');
+
+group('Lifecycle — legal transitions');
+check('submitted → pending_review',            canTransition('submitted', 'pending_review'), true);
+check('verified → published',                  canTransition('verified', 'published'), true);
+check('published → unavailable',               canTransition('published', 'unavailable'), true);
+check('unavailable → published',               canTransition('unavailable', 'published'), true);
+check('deleted → archived (restore)',          canTransition('deleted', 'archived'), true);
+check('submitted CANNOT skip to published',    canTransition('submitted', 'published'), false);
+check('submitted CANNOT skip to verified',     canTransition('submitted', 'verified'), false);
+check('deleted CANNOT go straight to published', canTransition('deleted', 'published'), false);
+check('archived CANNOT go straight to published', canTransition('archived', 'published'), false);
+check('rejected CANNOT go straight to published', canTransition('rejected', 'published'), false);
+check('unknown from-state denies',             canTransition('nonsense', 'published'), false);
+check('every state has a defined transition set', STATES.filter(function (s) {
+  return !TRANSITIONS[s]; }), []);
+
+group('Lifecycle — role authority per transition');
+check('Manager CANNOT reject',                 roleMayTransition('manager', 'pending_review', 'rejected'), false);
+check('Manager CANNOT archive',                roleMayTransition('manager', 'published', 'archived'), false);
+check('Manager CANNOT delete',                 roleMayTransition('manager', 'published', 'deleted'), false);
+check('Manager CAN verify',                    roleMayTransition('manager', 'pending_review', 'verified'), true);
+check('Manager CAN publish a verified listing',roleMayTransition('manager', 'verified', 'published'), true);
+check('Manager CAN mark unavailable',          roleMayTransition('manager', 'published', 'unavailable'), true);
+check('Asst CEO CAN reject',                   roleMayTransition('assistant_ceo', 'verified', 'rejected'), true);
+check('Asst CEO CANNOT archive',               roleMayTransition('assistant_ceo', 'published', 'archived'), false);
+check('Asst CEO CANNOT delete',                roleMayTransition('assistant_ceo', 'published', 'deleted'), false);
+check('CEO CAN archive',                       roleMayTransition('ceo', 'published', 'archived'), true);
+check('CEO CAN delete',                        roleMayTransition('ceo', 'published', 'deleted'), true);
+check('CEO CAN restore from deleted',          roleMayTransition('ceo', 'deleted', 'archived'), true);
+check('unlisted transition denies (fail closed)', roleMayTransition('ceo', 'published', 'submitted'), false);
+check('unknown role denies',                   roleMayTransition('intern', 'verified', 'published'), false);
+check('Manager sees no destructive moves', availableTransitions('manager', 'published')
+  .filter(function (s) { return ['archived','deleted','rejected'].indexOf(s) > -1; }), []);
+
+/* ── 7. Evidence Service ──────────────────────────────────────────── */
+group('Evidence Service');
+check('documents are an accepted kind',        EVIDENCE_KINDS.indexOf('document') > -1, true);
+check('rejects unknown kind',                  typeof normaliseItem({ kind: 'audio', key: 'k' }, 'v', 0).error, 'string');
+check('rejects missing R2 key',                typeof normaliseItem({ kind: 'image' }, 'v', 0).error, 'string');
+check('rejects malformed sha256',              typeof normaliseItem({ kind: 'image', key: 'k', sha256: 'nope' }, 'v', 0).error, 'string');
+check('accepts a valid 64-hex sha256',         normaliseItem(
+  { kind: 'image', key: 'k', sha256: 'a'.repeat(64) }, 'v', 0).row.sha256, 'a'.repeat(64));
+check('lowercases the hash for dedup',         normaliseItem(
+  { kind: 'image', key: 'k', sha256: 'A'.repeat(64) }, 'v', 0).row.sha256, 'a'.repeat(64));
+check('drops out-of-range GPS latitude',       normaliseItem(
+  { kind: 'image', key: 'k', gpsLat: 999, gpsLng: 74 }, 'v', 0).row.gps_lat, null);
+check('drops out-of-range GPS longitude',      normaliseItem(
+  { kind: 'image', key: 'k', gpsLat: 31.5, gpsLng: 999 }, 'v', 0).row.gps_lng, null);
+check('keeps valid Lahore coordinates',        normaliseItem(
+  { kind: 'image', key: 'k', gpsLat: 31.52, gpsLng: 74.35 }, 'v', 0).row.gps_lat, 31.52);
+check('missing capture time stays null (never backfilled)', normaliseItem(
+  { kind: 'image', key: 'k' }, 'v', 0).row.captured_at, null);
+
+/* ── 8. Notification catalogue ────────────────────────────────────── */
+group('Notification Bus catalogue');
+check('manager events exist', ['property.submitted','task.assigned','review.returned','area.changed']
+  .filter(function (e) { return !EVENTS[e]; }), []);
+check('assistant CEO events exist', ['task.completed','approval.pending']
+  .filter(function (e) { return !EVENTS[e]; }), []);
+check('CEO events exist', ['approval.by_assistant','report.critical','manager.performance']
+  .filter(function (e) { return !EVENTS[e]; }), []);
+check('every event declares an audience', Object.keys(EVENTS)
+  .filter(function (e) { return !EVENTS[e].audience || !EVENTS[e].audience.length; }), []);
+check('every event declares a severity', Object.keys(EVENTS)
+  .filter(function (e) { return ['info','warning','critical'].indexOf(EVENTS[e].severity) === -1; }), []);
+check('property.deleted is critical',          EVENTS['property.deleted'].severity, 'critical');
+
+/* The notification bus keeps its own copy of the area-prefix rule (it
+   cannot import rbac.js). If the two ever drift, notifications leak
+   across area boundaries — so every case is asserted against BOTH. */
+group('notify.covers agrees with rbac.isWithinScope');
+var coverCases = [
+  ['lahore', 'lahore'],
+  ['lahore', 'lahore/johar-town'],
+  ['lahore', 'lahore/johar-town/block-a'],
+  ['lahore', 'lahore-cantt'],
+  ['lahore', 'karachi'],
+  ['lahore/johar-town', 'lahore'],
+  ['lahore/johar-town', 'lahore/model-town'],
+  ['lahore/johar-town', 'lahore/johar-town/block-a'],
+  ['karachi', 'karachi/dha/phase-6']
+];
+var drift = coverCases.filter(function (c) {
+  return covers(c[0], c[1]) !== isWithinScope([c[0]], c[1]);
+}).map(function (c) { return c.join(' ⊃ '); });
+check('no drift between the two implementations', drift, []);
+check('covers() rejects a null assignment',    covers(null, 'lahore'), false);
+check('covers() rejects a null target',        covers('lahore', null), false);
+check('covers() honours the prefix trap',      covers('lahore', 'lahore-cantt'), false);
+
+/* ── render ───────────────────────────────────────────────────────── */
+var failed = results.filter(function (r) { return r.desc && !r.pass; });
+var total = results.filter(function (r) { return r.desc; }).length;
+
+document.getElementById('summary').className = failed.length ? 'bad' : 'ok';
+document.getElementById('summary').textContent = failed.length
+  ? failed.length + ' of ' + total + ' assertions FAILED'
+  : 'All ' + total + ' assertions passed';
+
+document.getElementById('out').innerHTML = results.map(function (r) {
+  if (r.group) return '<div class="grp">' + r.group + '</div>';
+  return '<li class="' + (r.pass ? 'p' : 'f') + '">' +
+    (r.pass ? '✓ ' : '✗ ') + r.desc +
+    (r.pass ? '' : '  → got ' + JSON.stringify(r.got)) + '</li>';
+}).join('');
+</script>
+</body>
+</html>

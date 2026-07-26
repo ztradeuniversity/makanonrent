@@ -20,9 +20,23 @@
 import { json, preflight } from '../../utils/cors.js';
 import { validateSubmitRequest } from '../../utils/validate.js';
 import { getServiceClient } from '../../utils/supabase.js';
+import { resolveSession } from '../../utils/session.js';
 
 export async function onRequestOptions(context) {
   return preflight(context.env);
+}
+
+/* Resolves the area node for a submission so admin-added properties land
+   inside a manager's assigned scope. Returns null when the slugs do not
+   correspond to a real location row — area_node_id is a foreign key, so
+   guessing a path that does not exist would fail the whole insert.
+   Public submissions are unaffected either way. */
+async function resolveAreaNodeId(db, citySlug, areaSlug) {
+  if (!citySlug) return null;
+  var candidate = areaSlug ? citySlug + '/' + areaSlug : citySlug;
+  var res = await db.from('locations').select('node_id').eq('node_id', candidate).maybeSingle();
+  if (res.error || !res.data) return null;
+  return res.data.node_id;
 }
 
 function normalizePkPhone(raw) {
@@ -68,6 +82,17 @@ export async function onRequestPost(context) {
   }
 
   try {
+    /* OPTIONAL admin attribution. The public Submit Wizard sends no
+       session cookie and this stays null, so the wizard's behaviour is
+       byte-for-byte unchanged. When a signed-in Manager / Assistant CEO /
+       CEO adds a property, stamping added_by_admin_id is what later lets
+       the database refuse to let that same person verify or approve it
+       (enforce_verification_sod / enforce_approval_sod, ADR 0001 §4).
+       Without this stamp the separation-of-duty control would silently
+       never trigger. */
+    var adminSession = await resolveSession(env, context.request).catch(function () { return null; });
+    var addedByAdminId = adminSession ? adminSession.user.id : null;
+
     var phone = normalizePkPhone(owner.whatsapp);
 
     /* contact: reuse by phone (Doc 04 §2.3 — one contact per person). */
@@ -106,7 +131,9 @@ export async function onRequestPost(context) {
       area_slug: p.area || null, area_name: p.areaName,
       landmark: p.landmark || null,
       road_width_ft: p.roadWidth ? Number(p.roadWidth) : null,
-      first_discovered_via: 'owner'
+      first_discovered_via: 'owner',
+      added_by_admin_id: addedByAdminId,
+      area_node_id: await resolveAreaNodeId(db, p.city, p.area)
     }).select('id').single();
     if (propRes.error) throw propRes.error;
     created.propertyId = propRes.data.id;

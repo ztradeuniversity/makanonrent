@@ -132,6 +132,7 @@
 .lm-bank-row b { font-size: 14px; font-weight: 750; color: var(--text); }
 .lm-bank-row span { font-size: 12.5px; color: var(--muted); font-weight: 600; }
 .lm-bank-row .lm-grow { flex: 1; min-width: 0; }
+.lm-bank-row.is-disabled { opacity: .55; }
 
 /* ── pending suggestions ────────────────────────────────────── */
 .lm-pending-row {

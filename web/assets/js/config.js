@@ -24,9 +24,32 @@
         submitProperty: '/api/properties/submit',
         locations: '/api/locations',
         locationsPublish: '/api/locations/publish',
-        locationsSuggest: '/api/locations/suggest'
+        locationsSuggest: '/api/locations/suggest',
+        locationsCities: '/api/locations/cities',
+        /* Admin console (docs/adr/0001-admin-management-rbac.md).
+           Every one of these is authenticated server-side by an HttpOnly
+           session cookie — there is no token for this file to hold. */
+        adminLogin: '/api/admin/login',
+        adminLogout: '/api/admin/logout',
+        adminMe: '/api/admin/me',
+        adminUsers: '/api/admin/users',
+        adminAssignments: '/api/admin/assignments',
+        adminTasks: '/api/admin/tasks',
+        adminVerifications: '/api/admin/verifications',
+        adminApprovals: '/api/admin/approvals',
+        adminProperties: '/api/admin/properties',
+        adminComments: '/api/admin/comments',
+        adminSettings: '/api/admin/settings',
+        adminMonitor: '/api/admin/monitor',
+        /* Property Operations (docs/adr/0002-property-operations.md). */
+        adminLifecycle: '/api/admin/lifecycle',
+        adminNotifications: '/api/admin/notifications',
+        adminPerformance: '/api/admin/performance',
+        adminReports: '/api/admin/reports'
       },
       locationManagerPage: 'location-manager.html',
+      adminLoginPage: 'admin-login.html',
+      adminPage: 'admin.html',
       /* Query-parameter names accepted by the listing page. */
       params: {
         budgetMax: 'budget_max',

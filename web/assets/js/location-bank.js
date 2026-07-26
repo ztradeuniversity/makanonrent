@@ -293,6 +293,70 @@
       .catch(function () { return { pulled: 0 }; });
   }
 
+  /* ── City master-data sync (Location Manager's City Management) ──
+     Best-effort, same pattern as syncToApi/pullFromApi: the local
+     engine already applied the change (so the UI never waits on the
+     network), this just makes it durable/cross-device. A failure here
+     never surfaces as an error to the admin — the city still exists
+     for the rest of this session and gets synced on the next
+     successful publish/add/rename/delete. */
+  function cityApiCall(payload) {
+    if (!root.fetch || !CFG.routes.api || !CFG.routes.api.locationsCities) {
+      return Promise.resolve({ synced: false });
+    }
+    return root.fetch(CFG.routes.api.locationsCities, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function (r) { return r.ok ? r.json() : { synced: false }; })
+      .catch(function () { return { synced: false }; });
+  }
+  /* Pulls the FULL durable city list (migrations/0003_city_seed.sql +
+     every city added since through this panel) into the engine. Without
+     this, Step 1's picker would only ever show the handful of cities
+     hardcoded in pk-locations.js/location-fixture.js — the district and
+     tehsil cities the SQL seed adds would never reach the browser.
+     Existing cities are refreshed in place (name, active state); new
+     ones are added as root nodes with the server's exact node_id/slug,
+     so a later Main Location publish resolves the same parent id the
+     server already has. Safe to call on any page; failure is silent,
+     same contract as pullFromApi. */
+  function pullCitiesFromApi() {
+    if (!root.fetch || !CFG.routes.api || !CFG.routes.api.locationsCities) {
+      return Promise.resolve({ pulled: 0 });
+    }
+    return root.fetch(CFG.routes.api.locationsCities)
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (res) {
+        if (!res || !Array.isArray(res.cities)) return { pulled: 0 };
+        res.cities.forEach(function (c) {
+          if (!c.nodeId || !c.name) return;
+          var node = LOC.getById(c.nodeId);
+          if (!node) {
+            node = LOC.addLocation({
+              id: c.nodeId, parentId: null, name: c.name, type: 'city',
+              slug: c.slug || LOC.slugify(c.name), active: c.active !== false,
+              status: c.active === false ? 'disabled' : 'approved', source: 'bank'
+            }, { silent: true });
+          } else {
+            if (node.name !== c.name) LOC.updateLocation(c.nodeId, { name: c.name }, { silent: true });
+            if (c.active === false && node.active) LOC.disableLocation(c.nodeId, { silent: true });
+            else if (c.active !== false && !node.active) LOC.enableLocation(c.nodeId, { silent: true });
+          }
+        });
+        return { pulled: res.cities.length };
+      })
+      .catch(function () { return { pulled: 0 }; });
+  }
+
+  function syncCityAdd(name) { return cityApiCall({ action: 'add', name: name }); }
+  function syncCityRename(nodeId, name) { return cityApiCall({ action: 'rename', nodeId: nodeId, name: name }); }
+  /* Delete only ever runs with no dependencies (the UI already refused
+     otherwise), so cascade is never sent. */
+  function syncCityDelete(nodeId) { return cityApiCall({ action: 'delete', nodeId: nodeId }); }
+  function syncCityDisable(nodeId) { return cityApiCall({ action: 'disable', nodeId: nodeId }); }
+  function syncCityEnable(nodeId) { return cityApiCall({ action: 'enable', nodeId: nodeId }); }
+
   /* ── sub-area suggestions (users may suggest sub areas ONLY) ──
      Enforced here as well as in the UI: the parent must resolve to a
      Main Area, and the created node is always SUB_AREA_TYPE with
@@ -363,10 +427,21 @@
     seoIndex: seoIndex,
     suggestSubArea: suggestSubArea,
     syncToApi: syncToApi,
-    pullFromApi: pullFromApi
+    pullFromApi: pullFromApi,
+    syncCityAdd: syncCityAdd,
+    syncCityRename: syncCityRename,
+    syncCityDelete: syncCityDelete,
+    syncCityDisable: syncCityDisable,
+    syncCityEnable: syncCityEnable,
+    pullCitiesFromApi: pullCitiesFromApi
   };
 
   /* Boot: hydrate the engine from the Bank on every page, so a newly
-     published area is searchable immediately and everywhere. */
+     published area is searchable immediately and everywhere. Pulling
+     the full city list is best-effort and asynchronous — a page that
+     renders a city picker at load time (location-manager.js) re-renders
+     once this resolves so the district/tehsil cities aren't missing
+     until a manual refresh. */
   hydrate();
+  pullCitiesFromApi();
 })(window);

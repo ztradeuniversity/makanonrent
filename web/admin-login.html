@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Admin Sign In — MakanOnRent</title>
+<meta name="robots" content="noindex, nofollow" />
+<meta name="theme-color" content="#0A1A14" />
+<link rel="stylesheet" href="assets/css/home.css">
+<link rel="stylesheet" href="assets/css/admin.css">
+</head>
+<body>
+
+<main class="ad-login-wrap">
+  <div class="ad-login">
+    <h1>MakanOnRent Admin</h1>
+    <p class="sub">Sign in with the credentials issued to you. Accounts are created by the CEO or an Assistant CEO — there is no self-registration.</p>
+
+    <form id="adLoginForm" novalidate>
+      <div class="ad-field">
+        <label for="adUsername">Username</label>
+        <input class="ad-input" type="text" id="adUsername" autocomplete="username" autocapitalize="none" spellcheck="false" required />
+      </div>
+      <div class="ad-field">
+        <label for="adPassword">Password</label>
+        <input class="ad-input" type="password" id="adPassword" autocomplete="current-password" required />
+      </div>
+      <button class="ad-btn is-primary" type="submit" id="adLoginBtn">Sign in</button>
+      <p class="ad-msg" id="adLoginMsg" role="status" aria-live="polite"></p>
+    </form>
+
+    <!-- Shown only when the server reports must_change_password. -->
+    <form id="adChangeForm" hidden novalidate>
+      <div class="ad-note">Your password was issued by an administrator. Choose a new one to continue.</div>
+      <div class="ad-field">
+        <label for="adCurrentPw">Current password</label>
+        <input class="ad-input" type="password" id="adCurrentPw" autocomplete="current-password" required />
+      </div>
+      <div class="ad-field">
+        <label for="adNewPw">New password</label>
+        <input class="ad-input" type="password" id="adNewPw" autocomplete="new-password" required />
+      </div>
+      <div class="ad-field">
+        <label for="adNewPw2">Confirm new password</label>
+        <input class="ad-input" type="password" id="adNewPw2" autocomplete="new-password" required />
+      </div>
+      <button class="ad-btn is-primary" type="submit" id="adChangeBtn">Set password &amp; continue</button>
+      <p class="ad-msg" id="adChangeMsg" role="status" aria-live="polite"></p>
+    </form>
+  </div>
+</main>
+
+<script src="assets/js/config.js"></script>
+<script src="assets/js/admin-core.js"></script>
+<script src="assets/js/admin-login.js"></script>
+</body>
+</html>
