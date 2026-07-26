@@ -29,5 +29,3 @@ compatibility_flags = ["nodejs_compat"]
 # (Workers-only), so this block does not invoke functions/api/admin/
 # email-worker.js by itself. A companion Worker (or any external cron
 # service) must call that endpoint on this interval instead.
-[triggers]
-crons = ["*/15 * * * *"]
