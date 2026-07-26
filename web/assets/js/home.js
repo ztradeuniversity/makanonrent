@@ -150,13 +150,13 @@
   }
 
   /* ── Budget: PKR range steps, shared shape across the site ── */
-  var budgetRange = $('fBudgetRange');
+  var budgetMin = $('fBudgetMin'), budgetMax = $('fBudgetMax');
   function readBudgetRange() {
-    var parts = budgetRange.value.replace(/\s+/g, '').split(/-|to/i);
-    state.budgetMin = parts.length === 2 && /^\d+$/.test(parts[0]) && /^\d+$/.test(parts[1]) ? parts[0] : '';
-    state.budgetMax = parts.length === 2 && /^\d+$/.test(parts[0]) && /^\d+$/.test(parts[1]) ? parts[1] : '';
+    state.budgetMin = /^\d+$/.test(budgetMin.value.trim()) ? budgetMin.value.trim() : '';
+    state.budgetMax = /^\d+$/.test(budgetMax.value.trim()) ? budgetMax.value.trim() : '';
   }
-  budgetRange.addEventListener('input', readBudgetRange);
+  budgetMin.addEventListener('input', readBudgetRange);
+  budgetMax.addEventListener('input', readBudgetRange);
 
   /* ── AdvancedSearch ─────────────────────────────────────── */
   var advPanel = $('advPanel');
