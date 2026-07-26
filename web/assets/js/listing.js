@@ -16,6 +16,7 @@
   var criteria = {
     city:      q.get('city') || '',
     area:      q.get('area') || '',
+    subarea:   q.get('subarea') || '',
     budgetMax: q.get(P.budgetMax) || '',
     category:  q.get(P.category) || '',
     type:      q.get(P.type) || '',
@@ -28,43 +29,67 @@
   win.MOR_CRITERIA = criteria;   /* consumed by the notify modal */
 
   /* ── filter bar: single Smart Location Engine (docs/13, Phase 6) ── */
-  var citySel = $('fCity'), areaInput = $('fArea'), budgetEl = $('fBudget'),
+  var citySel = $('fCity'), mainSel = $('fMainLoc'), subSel = $('fSubLoc'), budgetEl = $('fBudget'),
       typeSel = $('fType'), sortSel = $('fSort');
-  var cityIdBySlug = {};
+  var cityIdBySlug = {}, mainIdBySlug = {};
   var locCityName = '', locAreaName = '';
+
+  function resetSel(sel, placeholder) {
+    sel.innerHTML = '';
+    sel.appendChild(new Option(placeholder, ''));
+    sel.disabled = true;
+  }
+
+  function populateMain(preserve) {
+    resetSel(mainSel, 'Select main location');
+    mainIdBySlug = {};
+    var cityId = cityIdBySlug[citySel.value];
+    if (!cityId) { resetSel(mainSel, 'Select a city first'); return; }
+    LOC.getMainAreas(cityId).forEach(function (m) {
+      mainSel.appendChild(new Option(m.name, m.slug));
+      mainIdBySlug[m.slug] = m.id;
+    });
+    mainSel.disabled = false;
+    if (preserve && mainIdBySlug[preserve]) mainSel.value = preserve;
+  }
+
+  function populateSub(preserve) {
+    resetSel(subSel, 'Select sub location');
+    var mainId = mainIdBySlug[mainSel.value];
+    if (!mainId) { resetSel(subSel, 'Select a main location first'); return; }
+    LOC.getSubAreas(mainId).forEach(function (s) { subSel.appendChild(new Option(s.name, s.slug)); });
+    if (subSel.options.length > 1) { subSel.disabled = false; if (preserve) subSel.value = preserve; }
+    else resetSel(subSel, 'No sub locations available');
+  }
 
   LOC.listCities().forEach(function (c) {
     citySel.appendChild(new Option(c.name, c.slug));
     cityIdBySlug[c.slug] = c.id;
   });
 
-  var locSearch = win.MOR_LOC_SEARCH.mount(areaInput, {
-    getScope: function () { return citySel.value ? cityIdBySlug[citySel.value] : null; },
-    onSelect: function (node) {
-      if (!node) { criteria.area = ''; locAreaName = ''; return; }
-      criteria.city = node.citySlug || citySel.value;
-      citySel.value = criteria.city;
-      criteria.area = node.areaSlug || '';
-      locAreaName = node.areaName || (node.type === 'city' ? '' : node.name);
-      locCityName = node.cityName || locCityName;
-    }
-  });
-
   citySel.value = criteria.city;
   locCityName = citySel.value ? citySel.options[citySel.selectedIndex].text : '';
-  (function restoreArea() {
-    var node = criteria.area ? LOC.findBySlug(criteria.city, criteria.area) : null;
-    locSearch.setValue(node);
-    locAreaName = node ? (node.areaName || node.name) : '';
-  })();
+  populateMain(criteria.area);
+  locAreaName = mainSel.value ? mainSel.options[mainSel.selectedIndex].text : '';
+  populateSub(criteria.subarea);
+
+  mainSel.addEventListener('change', function () {
+    criteria.area = mainSel.value;
+    locAreaName = mainSel.value ? mainSel.options[mainSel.selectedIndex].text : '';
+    criteria.subarea = '';
+    populateSub();
+  });
+  subSel.addEventListener('change', function () { criteria.subarea = subSel.value; });
+
   typeSel.value = criteria.type;
   sortSel.value = criteria.sort;
   budgetEl.value = criteria.budgetMax ? Number(criteria.budgetMax).toLocaleString('en-PK') : '';
 
   citySel.addEventListener('change', function () {
-    criteria.area = ''; locAreaName = '';
+    criteria.area = ''; locAreaName = ''; criteria.subarea = '';
     locCityName = citySel.value ? citySel.options[citySel.selectedIndex].text : '';
-    locSearch.clear();
+    populateMain();
+    populateSub();
   });
   budgetEl.addEventListener('input', function () {
     var raw = budgetEl.value.replace(/\D/g, '');
@@ -91,6 +116,7 @@
     function add(k, v) { if (v) p.set(k, v); }
     add('city', criteria.city);
     add('area', criteria.area);
+    add('subarea', criteria.subarea);
     add(P.budgetMax, criteria.budgetMax);
     add(P.category, criteria.category);
     add(P.type, criteria.type);
