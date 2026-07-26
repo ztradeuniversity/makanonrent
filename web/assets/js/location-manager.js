@@ -55,20 +55,58 @@
     return list;
   }
 
+  /* Tree expand state — collapsed by default (per-node-id, so state
+     survives a re-render/search/sort). */
+  var expandedCity = {};
+  var expandedMain = {};
+
   function renderCityMgmt() {
     var list = citiesFiltered();
     $('lmCityMgmtList').innerHTML = list.length
       ? list.map(function (c) {
-          var mains = LOC.getMainAreas(c.id, { includeInactive: true }).length;
+          var mainsList = LOC.getMainAreas(c.id, { includeInactive: true });
           var disabled = !c.active;
-          return '<div class="lm-bank-row' + (disabled ? ' is-disabled' : '') + '">' +
-            '<input class="lm-name" data-rename-city="' + esc(c.id) + '" value="' + esc(c.name) + '" aria-label="Rename city" />' +
-            '<span>' + mains + ' main area' + (mains === 1 ? '' : 's') + (disabled ? ' · Disabled' : '') + '</span>' +
-            '<button class="lm-mini' + (disabled ? ' is-ok' : ' is-no') + '" type="button" data-toggle-city="' + esc(c.id) + '" data-next="' + (disabled ? 'enable' : 'disable') + '">' +
-              (disabled ? 'Enable' : 'Disable') +
-            '</button>' +
-            '<button class="lm-ico is-danger" type="button" data-del-city="' + esc(c.id) + '" aria-label="Delete city">' + IC.del + '</button>' +
-          '</div>';
+          var open = !!expandedCity[c.id];
+          var html = '<div class="lm-tree-city' + (disabled ? ' is-disabled' : '') + '">' +
+            '<div class="lm-bank-row">' +
+              '<button class="lm-ico lm-toggle" type="button" data-toggle-tree="city" data-id="' + esc(c.id) + '" aria-label="Expand or collapse">' +
+                (open ? IC.up : IC.down) + '</button>' +
+              '<input class="lm-name" data-rename-city="' + esc(c.id) + '" value="' + esc(c.name) + '" aria-label="Rename city" />' +
+              '<span>' + mainsList.length + ' main area' + (mainsList.length === 1 ? '' : 's') + (disabled ? ' · Disabled' : '') + '</span>' +
+              '<button class="lm-mini' + (disabled ? ' is-ok' : ' is-no') + '" type="button" data-toggle-city="' + esc(c.id) + '" data-next="' + (disabled ? 'enable' : 'disable') + '">' +
+                (disabled ? 'Enable' : 'Disable') +
+              '</button>' +
+              '<button class="lm-ico is-danger" type="button" data-del-city="' + esc(c.id) + '" aria-label="Delete city">' + IC.del + '</button>' +
+            '</div>';
+
+          if (open) {
+            html += '<div class="lm-tree-children">' + (mainsList.length
+              ? mainsList.map(function (m) {
+                  var subsList = LOC.getSubAreas(m.id, { includeInactive: true });
+                  var mOpen = !!expandedMain[m.id];
+                  var mHtml = '<div class="lm-tree-main">' +
+                    '<div class="lm-bank-row lm-bank-row-sm">' +
+                      '<button class="lm-ico lm-toggle" type="button" data-toggle-tree="main" data-id="' + esc(m.id) + '" aria-label="Expand or collapse">' +
+                        (mOpen ? IC.up : IC.down) + '</button>' +
+                      '<span class="lm-grow">' + esc(m.name) + '</span>' +
+                      '<span>' + subsList.length + ' sub area' + (subsList.length === 1 ? '' : 's') + '</span>' +
+                      '<button class="lm-ico is-danger" type="button" data-del-node="' + esc(m.id) + '" data-label="' + esc(m.name) + '" aria-label="Delete main location">' + IC.del + '</button>' +
+                    '</div>';
+                  if (mOpen) {
+                    mHtml += '<div class="lm-tree-children">' + (subsList.length
+                      ? subsList.map(function (s) {
+                          return '<div class="lm-bank-row lm-bank-row-sm">' +
+                            '<span class="lm-grow" style="margin-left:30px">' + esc(s.name) + '</span>' +
+                            '<button class="lm-ico is-danger" type="button" data-del-node="' + esc(s.id) + '" data-label="' + esc(s.name) + '" aria-label="Delete sub location">' + IC.del + '</button>' +
+                          '</div>';
+                        }).join('')
+                      : '<div class="lm-empty" style="margin-left:30px">No sub locations.</div>') + '</div>';
+                  }
+                  return mHtml + '</div>';
+                }).join('')
+              : '<div class="lm-empty">No main locations yet.</div>') + '</div>';
+          }
+          return html + '</div>';
         }).join('')
       : '<div class="lm-empty">No cities match.</div>';
   }
@@ -121,6 +159,15 @@
   });
 
   $('lmCityMgmtList').addEventListener('click', function (e) {
+    var tt = e.target.closest('[data-toggle-tree]');
+    if (tt) {
+      var kind = tt.getAttribute('data-toggle-tree'), tid2 = tt.getAttribute('data-id');
+      var store = kind === 'city' ? expandedCity : expandedMain;
+      store[tid2] = !store[tid2];
+      renderCityMgmt();
+      return;
+    }
+
     var toggle = e.target.closest('[data-toggle-city]');
     if (toggle) {
       var tid = toggle.getAttribute('data-toggle-city');
@@ -132,20 +179,36 @@
       return;
     }
 
+    var delNode = e.target.closest('[data-del-node]');
+    if (delNode) {
+      var nid = delNode.getAttribute('data-del-node');
+      var label = delNode.getAttribute('data-label');
+      if (!win.confirm('Delete "' + label + '" and everything under it? This cannot be undone.')) return;
+      LOC.removeLocation(nid, { cascade: true });
+      BANK.syncNodeDelete(nid);
+      cityMsg('Deleted.', 'is-ok');
+      renderCityMgmt();
+      refreshSummary();
+      renderBank();
+      return;
+    }
+
     var b = e.target.closest('[data-del-city]');
     if (!b) return;
     var id = b.getAttribute('data-del-city');
+    var mainCount = LOC.getMainAreas(id, { includeInactive: true }).length;
 
-    /* Delete only if no dependencies — a city with any Main/Sub
-       Locations under it is refused, not cascaded. Disable is the
-       correct action for a city that still has data underneath it. */
-    var ok = LOC.removeLocation(id);
-    if (!ok) {
-      var mainCount = LOC.getMainAreas(id, { includeInactive: true }).length;
-      cityMsg('Can’t delete — this city has ' + mainCount + ' main area(s) with their sub areas. Disable it instead, or delete its Main/Sub Locations first.', 'is-error');
-      return;
-    }
-    BANK.syncCityDelete(id);
+    /* Single confirmation covers the cascade — a city with dependencies
+       is no longer silently refused; the admin is told exactly what
+       will be removed and confirms once. */
+    var warn = mainCount > 0
+      ? 'Delete this city AND its ' + mainCount + ' main area(s) with all their sub areas? This cannot be undone.'
+      : 'Delete this city? This cannot be undone.';
+    if (!win.confirm(warn)) return;
+
+    var ok = LOC.removeLocation(id, { cascade: true });
+    if (!ok) { cityMsg('Could not delete that city.', 'is-error'); return; }
+    BANK.syncCityDelete(id, true);
     cityMsg('City deleted.', 'is-ok');
     if (citySel.value === id) citySel.value = '';
     populateCitySelect();

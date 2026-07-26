@@ -152,24 +152,51 @@ export async function onRequestPost(context) {
       if (count.error) throw count.error;
       var childCount = count.count || 0;
 
-      /* Delete only if no dependencies — a city with any Main/Sub
-         Location rows is always refused. Disable is the correct action
-         for a city that still has data under it; there is no cascade
-         path here by design. */
-      if (childCount > 0) {
+      /* Explicit cascade (single confirmation on the client). node_id is
+         a path ('city/main/sub'), so every descendant matches one LIKE
+         query — no recursion needed. Without cascade, a city with
+         dependencies is refused as before; Disable remains the
+         non-destructive alternative. */
+      if (childCount > 0 && !body.cascade) {
         return json(env, {
-          error: 'This city has ' + childCount + ' Main/Sub Location row(s). Disable it instead, or delete those rows first.',
+          error: 'This city has ' + childCount + ' Main/Sub Location row(s). Disable it instead, or confirm cascade delete.',
           childCount: childCount
         }, 409);
       }
 
+      if (childCount > 0) {
+        var delKids = await db.from('locations').delete().like('node_id', body.nodeId + '/%');
+        if (delKids.error) throw delKids.error;
+      }
+
       var del = await db.from('locations').delete().eq('node_id', body.nodeId).eq('type', 'city');
       if (del.error) throw del.error;
-      await audit('delete_city', 'location', body.nodeId, null);
+      await audit('delete_city', 'location', body.nodeId, { cascadedChildren: childCount });
+      return json(env, { ok: true, deletedChildren: childCount });
+    }
+
+    if (action === 'delete-node') {
+      /* Deletes a Main or Sub Location (never a city — use 'delete' for
+         that) and, for a Main Location, every Sub Location beneath it.
+         Always cascades — a Main Location without its subs is never a
+         valid outcome the client offers. */
+      if (!isNonEmptyString(body.nodeId, 200)) return json(env, { error: 'nodeId is required.' }, 422);
+
+      var node = await db.from('locations').select('node_id, type').eq('node_id', body.nodeId).maybeSingle();
+      if (node.error) throw node.error;
+      if (!node.data) return json(env, { error: 'No such location.' }, 404);
+      if (node.data.type === 'city') return json(env, { error: "Use action 'delete' for a city." }, 422);
+
+      var delSub = await db.from('locations').delete().like('node_id', body.nodeId + '/%');
+      if (delSub.error) throw delSub.error;
+      var delSelf = await db.from('locations').delete().eq('node_id', body.nodeId);
+      if (delSelf.error) throw delSelf.error;
+
+      await audit('delete_location_node', 'location', body.nodeId, { type: node.data.type });
       return json(env, { ok: true });
     }
 
-    return json(env, { error: "action must be one of: 'add', 'rename', 'disable', 'enable', 'delete'." }, 422);
+    return json(env, { error: "action must be one of: 'add', 'rename', 'disable', 'enable', 'delete', 'delete-node'." }, 422);
   } catch (e) {
     return json(env, { error: (e && e.message) || 'City management request failed.' }, 500);
   }

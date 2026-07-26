@@ -351,11 +351,15 @@
 
   function syncCityAdd(name) { return cityApiCall({ action: 'add', name: name }); }
   function syncCityRename(nodeId, name) { return cityApiCall({ action: 'rename', nodeId: nodeId, name: name }); }
-  /* Delete only ever runs with no dependencies (the UI already refused
-     otherwise), so cascade is never sent. */
-  function syncCityDelete(nodeId) { return cityApiCall({ action: 'delete', nodeId: nodeId }); }
+  /* cascade=true after the client's single confirmation dialog — deletes
+     every Main/Sub Location under the city too (server: one LIKE query
+     on the node_id path, no recursion). */
+  function syncCityDelete(nodeId, cascade) { return cityApiCall({ action: 'delete', nodeId: nodeId, cascade: !!cascade }); }
   function syncCityDisable(nodeId) { return cityApiCall({ action: 'disable', nodeId: nodeId }); }
   function syncCityEnable(nodeId) { return cityApiCall({ action: 'enable', nodeId: nodeId }); }
+  /* Deletes a Main or Sub Location node (never a city). Always cascades
+     server-side — a Main Location without its Subs is never offered. */
+  function syncNodeDelete(nodeId) { return cityApiCall({ action: 'delete-node', nodeId: nodeId }); }
 
   /* ── sub-area suggestions (users may suggest sub areas ONLY) ──
      Enforced here as well as in the UI: the parent must resolve to a
@@ -433,6 +437,7 @@
     syncCityDelete: syncCityDelete,
     syncCityDisable: syncCityDisable,
     syncCityEnable: syncCityEnable,
+    syncNodeDelete: syncNodeDelete,
     pullCitiesFromApi: pullCitiesFromApi
   };
 
