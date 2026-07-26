@@ -86,7 +86,11 @@ export async function onRequestPost(context) {
       : await verifyPassword(body.password, {
           password_hash: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
           password_salt: 'AAAAAAAAAAAAAAAAAAAAAA==',
-          password_algo: 'pbkdf2-sha256-210000'
+          /* Must match password.js's actual DEFAULT_ITERATIONS (100000,
+             the Cloudflare Workers PBKDF2 cap) — this literal was missed
+             when that constant was fixed, so every unknown-username
+             login was throwing 500 instead of the intended 401. */
+          password_algo: 'pbkdf2-sha256-100000'
         });
 
     /* One message for every failure mode — wrong user, wrong password,
