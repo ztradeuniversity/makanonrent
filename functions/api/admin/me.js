@@ -74,8 +74,50 @@ export async function onRequestPost(context) {
     return json(env, { error: 'Request body must be valid JSON.' }, 400);
   }
 
+  if (body.action === 'change-username') {
+    if (!isNonEmptyString(body.newUsername, 60) || !/^[a-zA-Z0-9._-]+$/.test(body.newUsername)) {
+      return json(env, { error: 'newUsername must use only letters, numbers, dot, underscore, hyphen.' }, 422);
+    }
+    var newUsername = String(body.newUsername).trim().toLowerCase();
+    try {
+      var udb = getServiceClient(env);
+      var uUpd = await udb.from('admin_users').update({ username: newUsername }).eq('id', auth.user.id);
+      if (uUpd.error) throw uUpd.error;
+      await logAudit(env, {
+        actorId: auth.user.id, actorRole: auth.user.role, action: 'username_changed',
+        entityType: 'admin_user', entityId: auth.user.id, detail: { newUsername: newUsername }, request: context.request
+      });
+      return json(env, { ok: true, username: newUsername });
+    } catch (e) {
+      if (String(e && e.message || '').indexOf('uq_admin_users_username') > -1) {
+        return json(env, { error: 'That username is already taken.' }, 409);
+      }
+      return json(env, { error: (e && e.message) || 'Username change failed.' }, 500);
+    }
+  }
+
+  if (body.action === 'change-email') {
+    if (!isNonEmptyString(body.newEmail, 200) || body.newEmail.indexOf('@') === -1) {
+      return json(env, { error: 'A valid newEmail is required.' }, 422);
+    }
+    try {
+      var edb = getServiceClient(env);
+      var eUpd = await edb.from('admin_users')
+        .update({ email: String(body.newEmail).trim().toLowerCase(), email_verified_at: null })
+        .eq('id', auth.user.id);
+      if (eUpd.error) throw eUpd.error;
+      await logAudit(env, { actorId: auth.user.id, actorRole: auth.user.role, action: 'email_changed', entityType: 'admin_user', entityId: auth.user.id, request: context.request });
+      return json(env, { ok: true, mustVerify: true });
+    } catch (e) {
+      if (String(e && e.message || '').indexOf('uq_admin_users_email') > -1) {
+        return json(env, { error: 'That email is already in use.' }, 409);
+      }
+      return json(env, { error: (e && e.message) || 'Email change failed.' }, 500);
+    }
+  }
+
   if (body.action !== 'change-password') {
-    return json(env, { error: "action must be 'change-password'." }, 422);
+    return json(env, { error: "action must be 'change-password', 'change-username', or 'change-email'." }, 422);
   }
   if (!isNonEmptyString(body.currentPassword, 200)) {
     return json(env, { error: 'currentPassword is required.' }, 422);

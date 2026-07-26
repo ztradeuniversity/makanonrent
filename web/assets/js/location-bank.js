@@ -438,10 +438,15 @@
 
   /* Boot: hydrate the engine from the Bank on every page, so a newly
      published area is searchable immediately and everywhere. Pulling
-     the full city list is best-effort and asynchronous — a page that
-     renders a city picker at load time (location-manager.js) re-renders
-     once this resolves so the district/tehsil cities aren't missing
-     until a manual refresh. */
+     the full city list AND the published Main/Sub Location bank is
+     best-effort and asynchronous — a page that renders a city/area
+     picker at load time re-renders once this resolves so a location
+     published from another device/browser isn't missing until a
+     manual refresh. pullFromApi() was previously defined but never
+     invoked, so Location Manager publishes never reached Property
+     Submission, Manage Submission or Frontend Search on a second
+     device — this is the fix. */
   hydrate();
   pullCitiesFromApi();
+  pullFromApi();
 })(window);
