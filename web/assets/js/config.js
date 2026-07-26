@@ -53,6 +53,7 @@
       adminPage: 'admin.html',
       /* Query-parameter names accepted by the listing page. */
       params: {
+        budgetMin: 'budget_min',
         budgetMax: 'budget_max',
         category:  'category',
         type:      'type',

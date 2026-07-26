@@ -15,7 +15,7 @@
 
   /* Search criteria — single source of truth for the whole page. */
   var state = {
-    city: '', cityName: '', area: '', areaName: '', budget: '',
+    city: '', cityName: '', area: '', areaName: '', budgetMin: '', budgetMax: '',
     category: 'homes', type: '', size: '', unit: 'marla',
     beds: '', preference: ''
   };
@@ -149,8 +149,15 @@
     win.MOR_BANK.pullFromApi().then(refreshLocations).catch(function () {});
   }
 
-  /* ── Budget ─────────────────────────────────────────────── */
-  bindNumeric($('fBudget'), function (raw) { state.budget = raw; });
+  /* ── Budget: PKR range steps, shared shape across the site ── */
+  var BUDGET_STEPS = [10000, 15000, 20000, 25000, 30000, 40000, 50000, 75000, 100000, 150000, 200000, 300000, 500000];
+  function fillBudget(sel) {
+    BUDGET_STEPS.forEach(function (v) { sel.appendChild(new Option('PKR ' + v.toLocaleString('en-PK'), v)); });
+  }
+  var budgetMinSel = $('fBudgetMin'), budgetMaxSel = $('fBudgetMax');
+  fillBudget(budgetMinSel); fillBudget(budgetMaxSel);
+  budgetMinSel.addEventListener('change', function () { state.budgetMin = budgetMinSel.value; });
+  budgetMaxSel.addEventListener('change', function () { state.budgetMax = budgetMaxSel.value; });
 
   /* ── AdvancedSearch ─────────────────────────────────────── */
   var advPanel = $('advPanel');
@@ -263,7 +270,8 @@
       if (state.area) path += '/' + state.area;
     }
 
-    add(P.budgetMax, state.budget);
+    add(P.budgetMin, state.budgetMin);
+    add(P.budgetMax, state.budgetMax);
     add(P.category,  state.category);
     add(P.type,      state.type);
     add(P.beds,      state.beds);

@@ -123,6 +123,7 @@
       if (c.category && r.category !== c.category) return false;
       if (c.type && r.type !== c.type) return false;
       if (c.beds && r.beds < Number(c.beds)) return false;
+      if (c.budgetMin && r.rent < Number(c.budgetMin)) return false;
       if (c.budgetMax && r.rent > Number(c.budgetMax)) return false;
       if (c.areaSize) {
         var want = c.areaUnit === 'sqft' ? Number(c.areaSize) : Number(c.areaSize) * 225;

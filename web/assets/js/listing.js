@@ -17,6 +17,7 @@
     city:      q.get('city') || '',
     area:      q.get('area') || '',
     subarea:   q.get('subarea') || '',
+    budgetMin: q.get(P.budgetMin) || '',
     budgetMax: q.get(P.budgetMax) || '',
     category:  q.get(P.category) || '',
     type:      q.get(P.type) || '',
@@ -29,8 +30,14 @@
   win.MOR_CRITERIA = criteria;   /* consumed by the notify modal */
 
   /* ── filter bar: single Smart Location Engine (docs/13, Phase 6) ── */
-  var citySel = $('fCity'), mainSel = $('fMainLoc'), subSel = $('fSubLoc'), budgetEl = $('fBudget'),
+  var citySel = $('fCity'), mainSel = $('fMainLoc'), subSel = $('fSubLoc'),
+      budgetMinSel = $('fBudgetMin'), budgetMaxSel = $('fBudgetMax'),
       typeSel = $('fType'), sortSel = $('fSort');
+  var BUDGET_STEPS = [10000, 15000, 20000, 25000, 30000, 40000, 50000, 75000, 100000, 150000, 200000, 300000, 500000];
+  BUDGET_STEPS.forEach(function (v) {
+    budgetMinSel.appendChild(new Option('PKR ' + v.toLocaleString('en-PK'), v));
+    budgetMaxSel.appendChild(new Option('PKR ' + v.toLocaleString('en-PK'), v));
+  });
   var cityIdBySlug = {}, mainIdBySlug = {};
   var locCityName = '', locAreaName = '';
 
@@ -83,7 +90,8 @@
 
   typeSel.value = criteria.type;
   sortSel.value = criteria.sort;
-  budgetEl.value = criteria.budgetMax ? Number(criteria.budgetMax).toLocaleString('en-PK') : '';
+  budgetMinSel.value = criteria.budgetMin;
+  budgetMaxSel.value = criteria.budgetMax;
 
   citySel.addEventListener('change', function () {
     criteria.area = ''; locAreaName = ''; criteria.subarea = '';
@@ -91,16 +99,13 @@
     populateMain();
     populateSub();
   });
-  budgetEl.addEventListener('input', function () {
-    var raw = budgetEl.value.replace(/\D/g, '');
-    budgetEl.value = raw ? Number(raw).toLocaleString('en-PK') : '';
-  });
 
   $('filterForm').addEventListener('submit', function (e) {
     e.preventDefault();
     criteria.city      = citySel.value;
     criteria.type      = typeSel.value;
-    criteria.budgetMax = budgetEl.value.replace(/\D/g, '');
+    criteria.budgetMin = budgetMinSel.value;
+    criteria.budgetMax = budgetMaxSel.value;
     syncUrl();
     load();
   });
@@ -117,6 +122,7 @@
     add('city', criteria.city);
     add('area', criteria.area);
     add('subarea', criteria.subarea);
+    add(P.budgetMin, criteria.budgetMin);
     add(P.budgetMax, criteria.budgetMax);
     add(P.category, criteria.category);
     add(P.type, criteria.type);

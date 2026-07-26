@@ -56,11 +56,21 @@
   }
 
   /* Tree expand state — collapsed by default (per-node-id, so state
-     survives a re-render/search/sort). */
+     survives a re-render/search/sort). Never set true by add/edit/delete
+     handlers — only the toggle click handlers below flip these. */
   var expandedCity = {};
   var expandedMain = {};
+  var locationsOpen = false;
+
+  $('lmLocationsToggle').addEventListener('click', function () {
+    locationsOpen = !locationsOpen;
+    this.textContent = (locationsOpen ? '▼' : '▶') + ' Locations';
+    $('lmCityMgmtList').hidden = !locationsOpen;
+    if (locationsOpen) renderCityMgmt();
+  });
 
   function renderCityMgmt() {
+    if (!locationsOpen) return;
     var list = citiesFiltered();
     $('lmCityMgmtList').innerHTML = list.length
       ? list.map(function (c) {

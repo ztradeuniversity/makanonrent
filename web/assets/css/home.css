@@ -159,7 +159,7 @@ img, svg { display: block; max-width: 100%; }
 }
 
 .search-row {
-  display: grid; grid-template-columns: .95fr 1.1fr 1.1fr .85fr auto; gap: 12px;
+  display: grid; grid-template-columns: .9fr 1fr 1fr .75fr .75fr auto; gap: 10px;
   align-items: end;
 }
 @media (max-width: 900px) {
