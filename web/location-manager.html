@@ -154,11 +154,8 @@
 
     <!-- ══ PUBLISHED BANK ══ -->
     <section class="lm-card">
-      <div class="lm-card-head">
-        <span class="lm-step-no">✓</span>
-        <div><b>Published data bank</b><br><span id="lmBankCount">Empty</span></div>
-      </div>
-      <div id="lmBank" class="lm-bank"></div>
+      <div class="lm-card-head" role="button" tabindex="0" aria-expanded="false" aria-controls="lmBank" onclick="var bank=document.getElementById('lmBank');bank.hidden=!bank.hidden;this.setAttribute('aria-expanded',String(!bank.hidden));this.firstChild.nodeValue=bank.hidden?'▶ Published Data':'▼ Published Data';" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}">▶ Published Data</div>
+      <div id="lmBank" class="lm-bank" hidden></div>
     </section>
 
   </div>

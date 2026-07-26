@@ -150,14 +150,13 @@
   }
 
   /* ── Budget: PKR range steps, shared shape across the site ── */
-  var BUDGET_STEPS = [10000, 15000, 20000, 25000, 30000, 40000, 50000, 75000, 100000, 150000, 200000, 300000, 500000];
-  function fillBudget(sel) {
-    BUDGET_STEPS.forEach(function (v) { sel.appendChild(new Option('PKR ' + v.toLocaleString('en-PK'), v)); });
+  var budgetRange = $('fBudgetRange');
+  function readBudgetRange() {
+    var parts = budgetRange.value.replace(/\s+/g, '').split(/-|to/i);
+    state.budgetMin = parts.length === 2 && /^\d+$/.test(parts[0]) && /^\d+$/.test(parts[1]) ? parts[0] : '';
+    state.budgetMax = parts.length === 2 && /^\d+$/.test(parts[0]) && /^\d+$/.test(parts[1]) ? parts[1] : '';
   }
-  var budgetMinSel = $('fBudgetMin'), budgetMaxSel = $('fBudgetMax');
-  fillBudget(budgetMinSel); fillBudget(budgetMaxSel);
-  budgetMinSel.addEventListener('change', function () { state.budgetMin = budgetMinSel.value; });
-  budgetMaxSel.addEventListener('change', function () { state.budgetMax = budgetMaxSel.value; });
+  budgetRange.addEventListener('input', readBudgetRange);
 
   /* ── AdvancedSearch ─────────────────────────────────────── */
   var advPanel = $('advPanel');
@@ -283,6 +282,7 @@
   }
 
   function submit() {
+    readBudgetRange();
     var url = buildUrl();
     /* Results page reads the criteria to render the low-result
        notify banner without re-parsing the query string. */
