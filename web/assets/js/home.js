@@ -67,39 +67,87 @@
      City select still exists for quick browsing; the Location field
      is a full-hierarchy autocomplete. Either one can drive the other —
      there is only one source of truth (MOR_LOC) behind both. */
+  /* City → Main Location → Sub Location cascade — same pattern and same
+     engine (MOR_LOC) as Submit Property and Location Manager, so anything
+     published in Location Manager appears here immediately. */
   var citySel = $('fCity');
-  var areaInput = $('fArea');
+  var mainSel = $('fMainLoc');
+  var subSel = $('fSubLoc');
   var cityIdBySlug = {};
+  var mainIdBySlug = {};
 
-  (function initLocations() {
-    var frag = doc.createDocumentFragment();
+  function resetSel(sel, placeholder) {
+    sel.innerHTML = '';
+    sel.appendChild(new Option(placeholder, ''));
+    sel.disabled = true;
+  }
+
+  function populateMain() {
+    resetSel(mainSel, 'Select main location');
+    mainIdBySlug = {};
+    var cityId = cityIdBySlug[state.city];
+    if (!cityId) { resetSel(mainSel, 'Select a city first'); return; }
+    LOC.getMainAreas(cityId).forEach(function (m) {
+      mainSel.appendChild(new Option(m.name, m.slug));
+      mainIdBySlug[m.slug] = m.id;
+    });
+    mainSel.disabled = false;
+  }
+
+  function populateSub() {
+    resetSel(subSel, 'Select sub location');
+    var mainId = mainIdBySlug[state.area];
+    if (!mainId) { resetSel(subSel, 'Select a main location first'); return; }
+    LOC.getSubAreas(mainId).forEach(function (s) {
+      subSel.appendChild(new Option(s.name, s.slug));
+    });
+    if (subSel.options.length > 1) subSel.disabled = false;
+    else resetSel(subSel, 'No sub locations available');
+  }
+
+  function refreshLocations() {
+    var keepCity = state.city;
+    citySel.innerHTML = '';
+    citySel.appendChild(new Option('Select city', ''));
+    cityIdBySlug = {};
     LOC.listCities().forEach(function (c) {
-      var o = doc.createElement('option');
-      o.value = c.slug; o.textContent = c.name;
-      frag.appendChild(o);
+      citySel.appendChild(new Option(c.name, c.slug));
       cityIdBySlug[c.slug] = c.id;
     });
-    citySel.appendChild(frag);
+    if (keepCity && cityIdBySlug[keepCity]) citySel.value = keepCity;
+    populateMain();
+    populateSub();
+  }
 
-    citySel.addEventListener('change', function () {
-      state.city = citySel.value;
-      state.cityName = citySel.value ? citySel.options[citySel.selectedIndex].text : '';
-      state.area = ''; state.areaName = '';
-      locSearch.clear();
-    });
-  })();
+  refreshLocations();
 
-  var locSearch = win.MOR_LOC_SEARCH.mount(areaInput, {
-    getScope: function () { return state.city ? cityIdBySlug[state.city] : null; },
-    onSelect: function (node) {
-      if (!node) { state.area = ''; state.areaName = ''; return; }
-      state.city = node.citySlug || state.city;
-      state.cityName = node.cityName || state.cityName;
-      state.area = node.areaSlug || '';
-      state.areaName = node.areaName || (node.type === 'city' ? '' : node.name);
-      citySel.value = state.city;
-    }
+  citySel.addEventListener('change', function () {
+    state.city = citySel.value;
+    state.cityName = citySel.value ? citySel.options[citySel.selectedIndex].text : '';
+    state.area = ''; state.areaName = '';
+    state.subarea = ''; state.subareaName = '';
+    populateMain();
+    populateSub();
   });
+
+  mainSel.addEventListener('change', function () {
+    state.area = mainSel.value;
+    state.areaName = mainSel.value ? mainSel.options[mainSel.selectedIndex].text : '';
+    state.subarea = ''; state.subareaName = '';
+    populateSub();
+  });
+
+  subSel.addEventListener('change', function () {
+    state.subarea = subSel.value;
+    state.subareaName = subSel.value ? subSel.options[subSel.selectedIndex].text : '';
+  });
+
+  /* location-bank.js pulls the published bank asynchronously at boot;
+     re-render once it lands so newly published areas appear without a
+     manual refresh. */
+  if (win.MOR_BANK && win.MOR_BANK.pullFromApi) {
+    win.MOR_BANK.pullFromApi().then(refreshLocations).catch(function () {});
+  }
 
   /* ── Budget ─────────────────────────────────────────────── */
   bindNumeric($('fBudget'), function (raw) { state.budget = raw; });

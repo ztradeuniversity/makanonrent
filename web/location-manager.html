@@ -124,6 +124,24 @@
     </section>
     <p class="lm-msg" id="lmMsg" role="status" aria-live="polite"></p>
 
+    <!-- ══ DANGER ZONE · CEO ONLY (hidden for every other role) ══ -->
+    <section class="lm-card" id="lmResetCard" hidden>
+      <div class="lm-card-head">
+        <span class="lm-step-no" style="background:#C0392B">!</span>
+        <div><b>Reset all locations</b><br><span>Deletes every City, Main Location and Sub Location. Properties and listings are not touched.</span></div>
+      </div>
+      <div class="lm-field">
+        <label for="lmResetConfirm">Type <b>RESET ALL LOCATIONS</b> to confirm</label>
+        <div class="control">
+          <input type="text" id="lmResetConfirm" placeholder="RESET ALL LOCATIONS" autocomplete="off" />
+        </div>
+      </div>
+      <div class="lm-actions">
+        <button class="lm-mini is-no" type="button" id="lmResetBtn">Reset Locations</button>
+      </div>
+      <p class="lm-msg" id="lmResetMsg" role="status" aria-live="polite"></p>
+    </section>
+
     <!-- ══ PENDING SUB-AREA SUGGESTIONS ══ -->
     <section class="lm-card" id="lmPendingCard" hidden>
       <div class="lm-card-head">

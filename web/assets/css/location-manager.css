@@ -161,3 +161,7 @@
   .lm-publish .btn-gold { width: 100%; justify-content: center; }
   .lm-addsub { margin-left: 0; }
 }
+
+/* ── P1 · expand / collapse ─────────────────────────────────── */
+.lm-toggle { margin-right: 2px; }
+.lm-group.is-collapsed .lm-subs { display: none; }

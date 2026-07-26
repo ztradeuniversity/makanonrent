@@ -5,6 +5,17 @@
    the product, and the same .btn-* / .control primitives.
    ══════════════════════════════════════════════════════════════ */
 
+/* P3 — header/logo overlap. home.css sets .site-head{position:absolute},
+   and admin pages don't load listing.css (which supplies .page-head's
+   sticky positioning), so the brand sat on top of the page title.
+   Restated here so admin pages don't depend on listing.css. */
+.page-head {
+  position: sticky; top: 0; z-index: 50;
+  background: var(--ink);
+  border-bottom: 1px solid rgba(255, 255, 255, .08);
+}
+.page-head .head-inner { padding: 14px 0; }
+
 .ad { padding: 26px 0 80px; }
 .ad-shell { max-width: 1180px; margin: 0 auto; }
 
@@ -190,3 +201,20 @@
   .ad-card { padding: 17px; border-radius: 18px; }
   .ad-login { padding: 24px; }
 }
+
+/* ── P2 · premium select styling ────────────────────────────── */
+.ad-select, .control select {
+  appearance: none; -webkit-appearance: none;
+  border: 1.5px solid var(--line); border-radius: var(--radius);
+  background: var(--surface); cursor: pointer;
+  transition: border-color .2s var(--ease), box-shadow .2s var(--ease), background .2s var(--ease);
+}
+.ad-select:hover, .control select:hover { border-color: var(--green-lift); }
+.ad-select:focus, .control select:focus {
+  outline: none; border-color: var(--gold); box-shadow: 0 0 0 4px var(--gold-soft);
+}
+.ad-select:disabled, .control select:disabled {
+  background: var(--paper); color: var(--muted); cursor: not-allowed; border-color: var(--line);
+}
+/* Selected (non-placeholder) state reads stronger than the placeholder. */
+.ad-select:valid, .control select:valid { color: var(--ink); font-weight: 650; }

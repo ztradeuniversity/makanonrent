@@ -45,7 +45,8 @@
         adminLifecycle: '/api/admin/lifecycle',
         adminNotifications: '/api/admin/notifications',
         adminPerformance: '/api/admin/performance',
-        adminReports: '/api/admin/reports'
+        adminReports: '/api/admin/reports',
+        adminResetLocations: '/api/admin/reset-locations'
       },
       locationManagerPage: 'location-manager.html',
       adminLoginPage: 'admin-login.html',

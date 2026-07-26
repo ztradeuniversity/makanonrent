@@ -27,6 +27,8 @@
 
   /* Working set: [{ main, subs: [] }] — the editable preview model. */
   var groups = [];
+  /* Per-group collapse state, index-aligned with `groups`. */
+  var collapsed = [];
 
   var IC = {
     up:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>',
@@ -191,8 +193,10 @@
         '</div>';
       }).join('');
 
-      return '<div class="lm-group">' +
+      return '<div class="lm-group' + (collapsed[gi] ? ' is-collapsed' : '') + '">' +
         '<div class="lm-main">' +
+          '<button class="lm-ico lm-toggle" type="button" data-act="toggle" data-g="' + gi + '" aria-label="Expand or collapse">' +
+            (collapsed[gi] ? IC.down : IC.up) + '</button>' +
           '<span class="lm-tag">Main Area</span>' +
           '<input class="lm-name" data-g="' + gi + '" data-main="1" value="' + esc(g.main) + '" aria-label="Main area name" />' +
           '<span class="lm-count">' + g.subs.length + ' sub</span>' +
@@ -214,7 +218,8 @@
     var si = Number(b.getAttribute('data-s'));
     var act = b.getAttribute('data-act');
 
-    if (act === 'main-del') groups.splice(gi, 1);
+    if (act === 'toggle') collapsed[gi] = !collapsed[gi];
+    else if (act === 'main-del') { groups.splice(gi, 1); collapsed.splice(gi, 1); }
     else if (act === 'sub-del') groups[gi].subs.splice(si, 1);
     else if (act === 'sub-add') groups[gi].subs.push('New sub area');
     else if (act === 'sub-up') swap(groups[gi].subs, si, si - 1);
@@ -340,6 +345,33 @@
     else if (no) { LOC.rejectLocation(no.getAttribute('data-reject')); msg('Suggestion rejected.', 'is-ok'); }
     else return;
     renderPending();
+  });
+
+  /* ── CEO-only reset (server re-checks the role; this only hides it) ── */
+  if (ME.user && ME.user.role === 'ceo') $('lmResetCard').hidden = false;
+
+  $('lmResetBtn').addEventListener('click', async function () {
+    var el = $('lmResetMsg');
+    var token = $('lmResetConfirm').value.trim();
+    if (token !== 'RESET ALL LOCATIONS') {
+      el.textContent = 'Type the confirmation phrase exactly to proceed.';
+      el.className = 'lm-msg is-error';
+      return;
+    }
+    this.disabled = true;
+    try {
+      var res = await win.MOR_ADMIN.post(CFG.routes.api.adminResetLocations, { confirm: token });
+      var d = res.deleted || {};
+      el.textContent = 'Reset complete — removed ' + (d.city || 0) + ' cities, ' +
+        (d.locality || 0) + ' main and ' + (d.subarea || 0) + ' sub locations.';
+      el.className = 'lm-msg is-ok';
+      $('lmResetConfirm').value = '';
+      populateCitySelect(); renderCityMgmt(); renderBank(); refreshSummary();
+    } catch (e) {
+      el.textContent = e.message;
+      el.className = 'lm-msg is-error';
+    }
+    this.disabled = false;
   });
 
   /* ── boot ───────────────────────────────────────────────── */
