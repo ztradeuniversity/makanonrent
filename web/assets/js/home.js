@@ -152,8 +152,10 @@
   /* ── Budget: PKR range steps, shared shape across the site ── */
   var budgetMin = $('fBudgetMin'), budgetMax = $('fBudgetMax');
   function readBudgetRange() {
-    state.budgetMin = /^\d+$/.test(budgetMin.value.trim()) ? budgetMin.value.trim() : '';
-    state.budgetMax = /^\d+$/.test(budgetMax.value.trim()) ? budgetMax.value.trim() : '';
+    budgetMin.value = budgetMin.value.replace(/\D/g, '');
+    budgetMax.value = budgetMax.value.replace(/\D/g, '');
+    state.budgetMin = budgetMin.value;
+    state.budgetMax = budgetMax.value;
   }
   budgetMin.addEventListener('input', readBudgetRange);
   budgetMax.addEventListener('input', readBudgetRange);
