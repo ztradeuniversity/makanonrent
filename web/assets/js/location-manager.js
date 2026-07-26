@@ -5,11 +5,25 @@
    only. Cities are the ONLY thing seeded by SQL (migrations/
    0003_city_seed.sql) — Main Locations and Sub Locations always come
    from this page. */
-(function (win, doc) {
+(async function (win, doc) {
   'use strict';
 
   var CFG = win.MOR_CONFIG, LOC = win.MOR_LOC, BANK = win.MOR_BANK, UI = win.MOR_UI;
   var $ = function (id) { return doc.getElementById(id); };
+
+  /* Session gate. The write APIs this page drives (publish/cities) now
+     require the 'locations.manage' capability server-side (see
+     functions/utils/rbac.js) — this is the client-side courtesy that
+     keeps an unauthenticated visitor from seeing the tool at all, per
+     Doc 18 Article 9.1 ("UI hiding is never the control"; the real gate
+     is the API). requireSession() already redirects to admin-login.html
+     on a 401. Nothing below this block runs until it resolves. */
+  var ME = await win.MOR_ADMIN.requireSession();
+  if (!ME) return;
+  if ((ME.capabilities || []).indexOf('locations.manage') === -1) {
+    win.location.href = CFG.routes.adminPage;
+    return;
+  }
 
   /* Working set: [{ main, subs: [] }] — the editable preview model. */
   var groups = [];

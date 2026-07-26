@@ -79,7 +79,6 @@ export async function onRequestPost(context) {
   var error = validateSubmitRequest(body);
   if (error) return json(env, { error: error }, 422);
 
-  var db = getServiceClient(env);
   var p = body.property, owner = body.owner, media = body.media || [];
   var created = { verificationCaseId: null, listingId: null, unitId: null, ownershipClaimId: null, propertyId: null };
 
@@ -94,6 +93,12 @@ export async function onRequestPost(context) {
   }
 
   try {
+    /* getServiceClient() throws when an env var is missing (env.js
+       requireEnv) — kept inside this try so a misconfigured deployment
+       returns clean JSON instead of an unhandled Cloudflare exception.
+       `var` is function-scoped, so rollback() below still closes over it. */
+    var db = getServiceClient(env);
+
     /* OPTIONAL admin attribution. The public Submit Wizard sends no
        session cookie and this stays null, so the wizard's behaviour is
        byte-for-byte unchanged. When a signed-in Manager / Assistant CEO /

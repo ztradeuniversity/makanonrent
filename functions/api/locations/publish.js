@@ -9,15 +9,13 @@
                                             main, subs[] }] } }
    Response: { synced: true, mainAreas, subAreas }
 
-   ⚠ ADMIN AUTH IS NOT IMPLEMENTED. There is no auth system in the
-   project yet (the Submit Wizard's Google step is still a frontend
-   stub), so this endpoint is currently unauthenticated. Do NOT expose
-   the deployed URL publicly until Cloudflare Access — or an equivalent
-   check — is placed in front of /api/locations/publish. See the
-   report's "Manual steps" for the exact one-time setup. */
+   Requires the 'locations.manage' capability (CEO / Assistant CEO) —
+   see functions/utils/rbac.js. Nothing here is reachable anonymously. */
 import { json, preflight } from '../../utils/cors.js';
 import { getServiceClient } from '../../utils/supabase.js';
 import { isNonEmptyString } from '../../utils/validate.js';
+import { requireCapability } from '../../utils/rbac.js';
+import { auditFor } from '../../utils/audit.js';
 
 export async function onRequestOptions(context) {
   return preflight(context.env);
@@ -32,6 +30,9 @@ function slugify(v) {
 
 export async function onRequestPost(context) {
   var env = context.env;
+  var auth = await requireCapability(context, 'locations.manage');
+  if (auth.response) return auth.response;
+
   var body;
   try {
     body = await context.request.json();
@@ -44,7 +45,6 @@ export async function onRequestPost(context) {
     return json(env, { error: 'bank.entries is required.' }, 422);
   }
 
-  var db = getServiceClient(env);
   var rows = [];
   var mainCount = 0, subCount = 0;
 
@@ -77,6 +77,11 @@ export async function onRequestPost(context) {
   if (!rows.length) return json(env, { error: 'Nothing publishable in bank.entries.' }, 422);
 
   try {
+    /* getServiceClient() throws when an env var is missing (env.js
+       requireEnv) — kept inside this try so a misconfigured deployment
+       returns clean JSON instead of an unhandled Cloudflare exception. */
+    var db = getServiceClient(env);
+
     /* Parents must exist before children (FK on parent_node_id), so
        cities/main areas are written before sub areas. */
     var mains = rows.filter(function (r) { return r.type === 'locality'; });
@@ -94,6 +99,10 @@ export async function onRequestPost(context) {
         if (r2.error) throw r2.error;
       }
     }
+
+    await auditFor(env, auth.user, context.request)(
+      'publish_locations', 'locations_bank', null,
+      { mainAreas: mainCount, subAreas: subCount });
 
     return json(env, { synced: true, mainAreas: mainCount, subAreas: subCount });
   } catch (e) {

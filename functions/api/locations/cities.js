@@ -26,12 +26,15 @@
                                                     still has data under it
    Response: { ok: true, ... } or { error, childCount? }
 
-   ⚠ ADMIN AUTH IS NOT IMPLEMENTED — same caveat as publish.js/suggest.js.
-   Do not expose this endpoint publicly until it sits behind Cloudflare
-   Access or an equivalent check. */
+   GET is public/unauthenticated by design — it is how every page's
+   Location Engine hydrates the full city list (see location-bank.js
+   pullCitiesFromApi()). POST requires the 'locations.manage' capability
+   (CEO / Assistant CEO) — see functions/utils/rbac.js. */
 import { json, preflight } from '../../utils/cors.js';
 import { getServiceClient } from '../../utils/supabase.js';
 import { isNonEmptyString } from '../../utils/validate.js';
+import { requireCapability } from '../../utils/rbac.js';
+import { auditFor } from '../../utils/audit.js';
 
 export async function onRequestOptions(context) {
   return preflight(context.env);
@@ -77,6 +80,9 @@ export async function onRequestGet(context) {
 
 export async function onRequestPost(context) {
   var env = context.env;
+  var auth = await requireCapability(context, 'locations.manage');
+  if (auth.response) return auth.response;
+
   var body;
   try {
     body = await context.request.json();
@@ -84,10 +90,15 @@ export async function onRequestPost(context) {
     return json(env, { error: 'Request body must be valid JSON.' }, 400);
   }
 
-  var db = getServiceClient(env);
   var action = body && body.action;
+  var audit = auditFor(env, auth.user, context.request);
 
   try {
+    /* getServiceClient() throws when an env var is missing (env.js
+       requireEnv) — kept inside this try so a misconfigured deployment
+       returns clean JSON instead of an unhandled Cloudflare exception. */
+    var db = getServiceClient(env);
+
     if (action === 'add') {
       if (!isNonEmptyString(body.name, 120)) return json(env, { error: 'name is required.' }, 422);
       var slug = slugify(body.name);
@@ -98,6 +109,7 @@ export async function onRequestPost(context) {
         type: 'city', status: 'approved', active: true, sort_order: 0, source: 'bank'
       }, { onConflict: 'node_id' });
       if (res.error) throw res.error;
+      await audit('add_city', 'location', slug, { name: body.name });
       return json(env, { ok: true, nodeId: slug }, 201);
     }
 
@@ -113,6 +125,7 @@ export async function onRequestPost(context) {
         .eq('node_id', body.nodeId)
         .eq('type', 'city');
       if (upd.error) throw upd.error;
+      await audit('rename_city', 'location', body.nodeId, { name: body.name });
       return json(env, { ok: true });
     }
 
@@ -126,6 +139,7 @@ export async function onRequestPost(context) {
         .eq('node_id', body.nodeId)
         .eq('type', 'city');
       if (toggled.error) throw toggled.error;
+      await audit(action === 'disable' ? 'disable_city' : 'enable_city', 'location', body.nodeId, null);
       return json(env, { ok: true });
     }
 
@@ -151,6 +165,7 @@ export async function onRequestPost(context) {
 
       var del = await db.from('locations').delete().eq('node_id', body.nodeId).eq('type', 'city');
       if (del.error) throw del.error;
+      await audit('delete_city', 'location', body.nodeId, null);
       return json(env, { ok: true });
     }
 

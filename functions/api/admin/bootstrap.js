@@ -58,9 +58,11 @@ export async function onRequestPost(context) {
   var weak = validatePasswordStrength(body.password);
   if (weak) return json(env, { error: weak }, 422);
 
-  var db = getServiceClient(env);
-
   try {
+    /* getServiceClient() throws when an env var is missing (env.js
+       requireEnv) — kept inside this try so a misconfigured deployment
+       returns clean JSON instead of an unhandled Cloudflare exception. */
+    var db = getServiceClient(env);
     var existing = await db.from('admin_users')
       .select('id', { count: 'exact', head: true })
       .eq('role', 'ceo');

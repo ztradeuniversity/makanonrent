@@ -124,10 +124,12 @@ export async function onRequestPost(context) {
     return json(env, { error: 'Publish at most 200 verifications at a time.' }, 422);
   }
 
-  var db = getServiceClient(env);
-  var audit = auditFor(env, auth.user, context.request);
-
   try {
+    /* getServiceClient() throws when an env var is missing (env.js
+       requireEnv) — kept inside this try so a misconfigured deployment
+       returns clean JSON instead of an unhandled Cloudflare exception. */
+    var db = getServiceClient(env);
+    var audit = auditFor(env, auth.user, context.request);
     var scope = await getScopeNodeIds(env, auth.user);
     var applied = [];
     var rejected = [];

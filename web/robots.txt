@@ -1,0 +1,8 @@
+User-agent: *
+Disallow: /admin
+Disallow: /admin.html
+Disallow: /dashboard
+Disallow: /dashboard.html
+Disallow: /location-manager
+Disallow: /location-manager.html
+Allow: /

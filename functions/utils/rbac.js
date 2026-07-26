@@ -29,6 +29,12 @@ export var PERMISSIONS = {
   'areas.assign':               ['ceo', 'assistant_ceo'],
   'areas.list':                 ['ceo', 'assistant_ceo', 'manager'],
 
+  /* — Location Data Bank (Location Manager: City/Main/Sub master data) —
+     Distinct from areas.assign, which grants a MANAGER access to areas
+     already published here; this is the authority to create/edit/publish
+     the master data itself. */
+  'locations.manage':           ['ceo', 'assistant_ceo'],
+
   /* — tasks — */
   'tasks.assign':               ['ceo', 'assistant_ceo'],
   'tasks.list.any':             ['ceo', 'assistant_ceo'],

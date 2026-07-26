@@ -122,10 +122,12 @@ export async function onRequestPost(context) {
     return json(env, { error: 'A comment is required when rejecting or returning a property.' }, 422);
   }
 
-  var db = getServiceClient(env);
-  var audit = auditFor(env, auth.user, context.request);
-
   try {
+    /* getServiceClient() throws when an env var is missing (env.js
+       requireEnv) — kept inside this try so a misconfigured deployment
+       returns clean JSON instead of an unhandled Cloudflare exception. */
+    var db = getServiceClient(env);
+    var audit = auditFor(env, auth.user, context.request);
     var cfg = await getWorkflowConfig(env);
 
     var lres = await db.from('listings')

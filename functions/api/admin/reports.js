@@ -35,10 +35,13 @@ export async function onRequestGet(context) {
     return json(env, { error: 'report must be one of: ' + REPORTS.join(', ') + '.' }, 422);
   }
 
-  var db = getServiceClient(env);
   var days = Math.min(Number(url.searchParams.get('days')) || 30, 365);
 
   try {
+    /* getServiceClient() throws when an env var is missing (env.js
+       requireEnv) — kept inside this try so a misconfigured deployment
+       returns clean JSON instead of an unhandled Cloudflare exception. */
+    var db = getServiceClient(env);
     if (report === 'managers') {
       var q = db.from('admin_report_manager_ranking')
         .select('*')

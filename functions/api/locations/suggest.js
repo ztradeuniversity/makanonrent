@@ -37,9 +37,12 @@ export async function onRequestPost(context) {
   if (!isNonEmptyString(body.name, 160)) return json(env, { error: 'name is required.' }, 422);
   if (!isNonEmptyString(body.parentId, 200)) return json(env, { error: 'parentId is required.' }, 422);
 
-  var db = getServiceClient(env);
-
   try {
+    /* getServiceClient() throws when an env var is missing (env.js
+       requireEnv) — kept inside this try so a misconfigured deployment
+       returns clean JSON instead of an unhandled Cloudflare exception. */
+    var db = getServiceClient(env);
+
     /* The parent must exist AND be a main area — this is what stops a
        user from attaching a "sub area" directly to a city (which would
        effectively create a main area). */

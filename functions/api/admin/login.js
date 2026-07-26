@@ -56,9 +56,12 @@ export async function onRequestPost(context) {
   }
 
   var username = String(body.username).trim().toLowerCase();
-  var db = getServiceClient(env);
 
   try {
+    /* getServiceClient() throws when an env var is missing (env.js
+       requireEnv) — kept inside this try so a misconfigured deployment
+       returns clean JSON instead of an unhandled Cloudflare exception. */
+    var db = getServiceClient(env);
     if (await recentFailures(db, username) >= MAX_FAILED) {
       await logAudit(env, {
         action: 'login_throttled', entityType: 'admin_login', entityId: username,

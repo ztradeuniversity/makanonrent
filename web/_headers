@@ -1,0 +1,24 @@
+# MakanOnRent — production security headers (Cloudflare Pages).
+# Applies to every static asset served from web/. Function responses
+# (functions/api/*) set their own headers via functions/utils/cors.js and
+# are unaffected by this file.
+#
+# CSP is tuned against the ACTUAL codebase, verified before writing this:
+#   - script-src has no 'unsafe-inline': zero inline <script> blocks exist
+#     anywhere in web/ (confirmed by grep before this file was written).
+#   - style-src keeps 'unsafe-inline': admin.html, location-manager.html
+#     and submit.html use inline style="" attributes already — removing
+#     them would be a redesign, not a security fix, so the exception is
+#     kept narrowly on style-src only (not script-src, where it matters).
+#   - img-src allows https: because property photos are served from
+#     R2_PUBLIC_BASE_URL, an operator-configured domain not known here.
+#   - connect-src allows https: because uploads.js PUTs directly to a
+#     presigned R2/S3 URL (functions/utils/r2.js), which is cross-origin
+#     by design and would otherwise be blocked.
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; font-src 'self'; connect-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: geolocation=(), microphone=(), camera=()

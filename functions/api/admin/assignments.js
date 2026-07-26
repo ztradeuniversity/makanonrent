@@ -81,10 +81,13 @@ export async function onRequestPost(context) {
     return json(env, { error: 'Request body must be valid JSON.' }, 400);
   }
 
-  var db = getServiceClient(env);
-  var audit = auditFor(env, auth.user, context.request);
-
   try {
+    /* getServiceClient() throws when an env var is missing (env.js
+       requireEnv) — kept inside this try so a misconfigured deployment
+       returns clean JSON instead of an unhandled Cloudflare exception. */
+    var db = getServiceClient(env);
+    var audit = auditFor(env, auth.user, context.request);
+
     if (body.action === 'assign') {
       if (!isNonEmptyString(body.userId, 60)) return json(env, { error: 'userId is required.' }, 422);
       if (!isNonEmptyString(body.nodeId, 200)) return json(env, { error: 'nodeId is required.' }, 422);
