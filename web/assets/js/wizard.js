@@ -18,7 +18,12 @@
   var state = {
     signedIn: false,
     category: 'homes', type: '',
+    /* `area`/`areaName` mirror the Main Location. They are kept because the
+       submit API, the properties table (area_slug/area_name) and the
+       /rent/{city}/{area} URL contract all read them — renaming would be a
+       breaking change to a shipped contract for no gain. */
     city: '', cityName: '', area: '', areaName: '',
+    mainArea: '', mainAreaName: '', subArea: '', subAreaName: '',
     landmark: '', roadWidth: '', size: '', sizeUnit: 'marla',
     beds: 0, baths: 0, parking: 0,
     currency: 'PKR', rent: '', advance: '', negotiable: 0,
@@ -125,34 +130,99 @@
   });
   renderTypes();
 
-  /* ── STEP 3 · location — single Smart Location Engine (Phase 6) ── */
-  var citySel = $('wCity'), areaInput = $('wArea');
+  /* ── STEP 3 · location — strict City → Main → Sub cascade ────────
+     Every level is a predefined choice from the location engine; free text is
+     accepted only for the landmark below. Each select stays disabled
+     until its parent is chosen, so an orphan selection is impossible.
+
+     All three levels are MANDATORY. The hierarchy is complete — every
+     Main Location carries at least one Sub Location (see
+     location-sample-subareas.js) — so there is no skip path and no
+     optional fallback. If a Main Location ever shows no Sub Locations,
+     that is a DATA GAP to fix in the Location Data Bank, not a case to
+     work around here. */
+  var citySel = $('wCity'), mainSel = $('wMainLoc'), subSel = $('wSubLoc');
   var cityIdBySlug = {};
+  var mainIdBySlug = {};
 
   LOC.listCities().forEach(function (c) {
     citySel.appendChild(new Option(c.name, c.slug));
     cityIdBySlug[c.slug] = c.id;
   });
 
-  var locSearch = win.MOR_LOC_SEARCH.mount(areaInput, {
-    getScope: function () { return state.city ? cityIdBySlug[state.city] : null; },
-    onSelect: function (node) {
-      if (!node) { state.area = ''; state.areaName = ''; setErr('errLoc', ''); refreshNav(); saveDraft(); return; }
-      state.city = node.citySlug || state.city;
-      state.cityName = node.cityName || state.cityName;
-      state.area = node.areaSlug || '';
-      state.areaName = node.areaName || (node.type === 'city' ? '' : node.name);
-      citySel.value = state.city;
-      setErr('errLoc', '');
-      refreshNav(); saveDraft();
+  function resetSelect(sel, placeholder) {
+    sel.innerHTML = '';
+    sel.appendChild(new Option(placeholder, ''));
+    sel.disabled = true;
+  }
+
+  /* True when the selected Main Location genuinely offers sub-locations. */
+  function subOptionsAvailable() {
+    return subSel.options.length > 1;
+  }
+
+  function populateMain(preserveSlug) {
+    resetSelect(mainSel, 'Select main location');
+    mainIdBySlug = {};
+    var cityId = cityIdBySlug[state.city];
+    if (!cityId) { resetSelect(mainSel, 'Select a city first'); return; }
+
+    LOC.getMainAreas(cityId).forEach(function (m) {
+      mainSel.appendChild(new Option(m.name, m.slug));
+      mainIdBySlug[m.slug] = m.id;
+    });
+    mainSel.disabled = false;
+    if (preserveSlug && mainIdBySlug[preserveSlug]) mainSel.value = preserveSlug;
+  }
+
+  function populateSub(preserveSlug) {
+    resetSelect(subSel, 'Select sub location');
+    var mainId = mainIdBySlug[state.mainArea];
+    if (!mainId) { resetSelect(subSel, 'Select a main location first'); return; }
+
+    LOC.getSubAreas(mainId).forEach(function (s) {
+      subSel.appendChild(new Option(s.name, s.slug));
+    });
+
+    if (subOptionsAvailable()) {
+      subSel.disabled = false;
+      if (preserveSlug) subSel.value = preserveSlug;
+    } else {
+      /* No sub-locations published for this area yet. Blocking here would
+         make the property un-submittable, so the field states the reason
+         and stays out of the way. */
+      resetSelect(subSel, 'No sub locations available for this area');
     }
-  });
+  }
 
   citySel.addEventListener('change', function () {
     state.city = citySel.value;
     state.cityName = citySel.options[citySel.selectedIndex].text;
-    state.area = ''; state.areaName = '';
-    locSearch.clear();
+    state.mainArea = ''; state.mainAreaName = '';
+    state.subArea = '';  state.subAreaName = '';
+    state.area = '';     state.areaName = '';
+    populateMain();
+    populateSub();
+    setErr('errLoc', '');
+    refreshNav(); saveDraft();
+  });
+
+  mainSel.addEventListener('change', function () {
+    state.mainArea = mainSel.value;
+    state.mainAreaName = mainSel.value ? mainSel.options[mainSel.selectedIndex].text : '';
+    /* area/areaName track the Main Location — the shipped API contract. */
+    state.area = state.mainArea;
+    state.areaName = state.mainAreaName;
+    state.subArea = ''; state.subAreaName = '';
+    populateSub();
+    setErr('errLoc', '');
+    refreshNav(); saveDraft();
+  });
+
+  subSel.addEventListener('change', function () {
+    state.subArea = subSel.value;
+    state.subAreaName = subSel.value ? subSel.options[subSel.selectedIndex].text : '';
+    setErr('errLoc', '');
     refreshNav(); saveDraft();
   });
 
@@ -353,7 +423,9 @@
         row('Category', state.category === 'homes' ? 'Home' : 'Commercial') +
         row('Type', typeName())) +
       group('Location', 3,
-        row('City', state.cityName) + row('Area', state.areaName) +
+        row('City', state.cityName) +
+        row('Main Location', state.mainAreaName) +
+        row('Sub Location', state.subAreaName) +
         row('Landmark', state.landmark) +
         row('Road width', state.roadWidth ? state.roadWidth + ' feet' : '') +
         row('Size', state.size ? state.size + ' ' + (state.sizeUnit === 'marla' ? 'Marla' : 'Sq Ft') : '')) +
@@ -393,11 +465,18 @@
         if (!state.type && showErrors) setErr('errType', 'Please choose a property type.');
         return !!state.type;
       case 3:
+        /* City, Main Location and Sub Location are all mandatory. */
         if (showErrors) {
-          if (!state.city || !state.area) setErr('errLoc', 'Please select city and area.');
+          if (!state.city) setErr('errLoc', 'Please select a city.');
+          else if (!state.mainArea) setErr('errLoc', 'Please select a main location.');
+          else if (!state.subArea) {
+            setErr('errLoc', subOptionsAvailable()
+              ? 'Please select a sub location.'
+              : 'No sub locations exist for this area yet — please choose another area.');
+          }
           else if (!state.size) setErr('errSize', 'Please enter the property size.');
         }
-        return !!(state.city && state.area && state.size);
+        return !!(state.city && state.mainArea && state.subArea && state.size);
       case 5:
         if (!state.rent && showErrors) setErr('errRent', 'Please enter the monthly rent.');
         return !!state.rent;
@@ -484,7 +563,22 @@
     renderTypes(); renderTags();
     if (state.city) {
       citySel.value = state.city;
-      locSearch.setValue(state.area ? LOC.findBySlug(state.city, state.area) : null);
+      /* Rebuild the cascade from the saved draft, parent first, so each
+         level's options exist before its value is restored. */
+      populateMain(state.mainArea || state.area);
+      if (mainSel.value) {
+        state.mainArea = mainSel.value;
+        state.mainAreaName = mainSel.options[mainSel.selectedIndex].text;
+        state.area = state.mainArea;
+        state.areaName = state.mainAreaName;
+        populateSub(state.subArea);
+        if (subSel.value) {
+          state.subArea = subSel.value;
+          state.subAreaName = subSel.options[subSel.selectedIndex].text;
+        } else {
+          state.subArea = ''; state.subAreaName = '';
+        }
+      }
     }
     $('wLandmark').value = state.landmark;
     $('wRoad').value = commas(state.roadWidth);

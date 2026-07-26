@@ -31,12 +31,24 @@ export async function onRequestOptions(context) {
    correspond to a real location row — area_node_id is a foreign key, so
    guessing a path that does not exist would fail the whole insert.
    Public submissions are unaffected either way. */
-async function resolveAreaNodeId(db, citySlug, areaSlug) {
+async function resolveAreaNodeId(db, citySlug, areaSlug, subAreaSlug) {
   if (!citySlug) return null;
-  var candidate = areaSlug ? citySlug + '/' + areaSlug : citySlug;
-  var res = await db.from('locations').select('node_id').eq('node_id', candidate).maybeSingle();
-  if (res.error || !res.data) return null;
-  return res.data.node_id;
+
+  /* Most specific first: city/main/sub → city/main → city. The Sub
+     Location needs no new column — pinning area_node_id at the deepest
+     node identifies it exactly, and joining `locations` recovers its
+     name. Falls back cleanly when a level is absent, so submissions that
+     predate the cascade (city + main only) resolve exactly as before. */
+  var candidates = [];
+  if (areaSlug && subAreaSlug) candidates.push(citySlug + '/' + areaSlug + '/' + subAreaSlug);
+  if (areaSlug) candidates.push(citySlug + '/' + areaSlug);
+  candidates.push(citySlug);
+
+  for (var i = 0; i < candidates.length; i++) {
+    var res = await db.from('locations').select('node_id').eq('node_id', candidates[i]).maybeSingle();
+    if (!res.error && res.data) return res.data.node_id;
+  }
+  return null;
 }
 
 function normalizePkPhone(raw) {
@@ -133,7 +145,7 @@ export async function onRequestPost(context) {
       road_width_ft: p.roadWidth ? Number(p.roadWidth) : null,
       first_discovered_via: 'owner',
       added_by_admin_id: addedByAdminId,
-      area_node_id: await resolveAreaNodeId(db, p.city, p.area)
+      area_node_id: await resolveAreaNodeId(db, p.city, p.area, p.subArea)
     }).select('id').single();
     if (propRes.error) throw propRes.error;
     created.propertyId = propRes.data.id;

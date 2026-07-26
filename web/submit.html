@@ -93,16 +93,24 @@
             <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
           </div>
         </div>
+        <!-- Main Location — predefined only, no free text. Stays disabled
+             until a City is chosen. -->
         <div class="wz-field">
-          <label for="wArea">Area</label>
-          <div class="loc-wrap">
-            <div class="control loc-field">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
-              <input type="text" id="wArea" autocomplete="off" placeholder="Search society, phase, block…"
-                     role="combobox" aria-expanded="false" aria-autocomplete="list" />
-              <button type="button" class="loc-clear" hidden aria-label="Clear location">&times;</button>
-            </div>
-            <div class="loc-panel" role="listbox" hidden></div>
+          <label for="wMainLoc">Main Location</label>
+          <div class="control">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-5.6-7-11a7 7 0 1 1 14 0c0 5.4-7 11-7 11z"/><circle cx="12" cy="10" r="2.6"/></svg>
+            <select id="wMainLoc" disabled><option value="">Select a city first</option></select>
+            <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+          </div>
+        </div>
+        <!-- Sub Location — predefined only, no free text. Stays disabled
+             until a Main Location is chosen. -->
+        <div class="wz-field">
+          <label for="wSubLoc">Sub Location</label>
+          <div class="control">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-5.6-7-11a7 7 0 1 1 14 0c0 5.4-7 11-7 11z"/><circle cx="12" cy="10" r="2.6"/></svg>
+            <select id="wSubLoc" disabled><option value="">Select a main location first</option></select>
+            <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
           </div>
           <p class="err" id="errLoc"></p>
         </div>
@@ -417,6 +425,7 @@
 <script src="assets/js/pk-locations.js"></script>
 <script src="assets/js/location-engine.js"></script>
 <script src="assets/js/location-fixture.js"></script>
+<script src="assets/js/location-sample-subareas.js"></script>
 <script src="assets/js/location-bank.js"></script>
 <script src="assets/js/shared.js"></script>
 <script src="assets/js/location-search.js"></script>
