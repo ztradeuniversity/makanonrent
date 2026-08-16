@@ -348,10 +348,14 @@
     el.className = 'lm-msg' + (cls ? ' ' + cls : '');
   }
 
-  $('lmPublish').addEventListener('click', function () {
+  $('lmPublish').addEventListener('click', async function () {
     var clean = cleanGroups();
-    var res = BANK.publish(citySel.value, clean);
-    if (!res.ok) { msg(res.error, 'is-error'); return; }
+    var btn = this;
+    btn.disabled = true;
+    msg('Publishing…');
+    var res = await BANK.publish(citySel.value, clean);
+    btn.disabled = false;
+    if (!res.ok) { msg(res.error, 'is-error'); renderBank(); return; }
 
     var subs = clean.reduce(function (n, g) { return n + g.subs.length; }, 0);
     msg('Published — ' + clean.length + ' main area' + (clean.length === 1 ? '' : 's') +

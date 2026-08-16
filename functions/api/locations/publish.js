@@ -28,6 +28,26 @@ function slugify(v) {
     .replace(/^-+|-+$/g, '');
 }
 
+/* Two differently-typed names in the same paste can slugify to the same
+   node_id (accents/punctuation stripped, near-duplicate names). Supabase's
+   upsert(rows, {onConflict}) is one INSERT ... ON CONFLICT DO UPDATE
+   statement — Postgres rejects a batch that repeats the same conflict key
+   twice ("ON CONFLICT DO UPDATE command cannot affect row a second time"),
+   which previously failed the WHOLE batch, silently dropping every valid
+   row alongside the offending one. Deduping by node_id first (last one
+   wins, matching the existing "re-publish merges" rule) keeps every
+   unique location publishable regardless of a stray collision elsewhere
+   in the same paste. */
+function dedupeByNodeId(list) {
+  var byId = {};
+  var order = [];
+  list.forEach(function (r) {
+    if (!byId[r.node_id]) order.push(r.node_id);
+    byId[r.node_id] = r;
+  });
+  return order.map(function (id) { return byId[id]; });
+}
+
 export async function onRequestPost(context) {
   var env = context.env;
   var auth = await requireCapability(context, 'locations.manage');
@@ -111,27 +131,55 @@ export async function onRequestPost(context) {
       if (r0.error) throw r0.error;
     }
 
-    var mains = rows.filter(function (r) { return r.type === 'locality'; });
-    var subs = rows.filter(function (r) { return r.type === 'subarea'; });
+    var mains = dedupeByNodeId(rows.filter(function (r) { return r.type === 'locality'; }));
+    var subs = dedupeByNodeId(rows.filter(function (r) { return r.type === 'subarea'; }));
 
-    var r1 = await db.from('locations').upsert(mains, { onConflict: 'node_id' });
-    if (r1.error) throw r1.error;
+    /* Chunked (and, for mains, now also try/caught per chunk) so a bad
+       or oversized chunk never takes valid, unrelated chunks down with
+       it — each chunk persists or fails independently instead of the
+       previous all-or-nothing single call. */
+    var failures = [];
+    var persistedMain = 0, persistedSub = 0;
 
-    if (subs.length) {
-      /* Chunked so a very large city (5,000+ sub areas) never exceeds
-         the request size limit. */
-      for (var s = 0; s < subs.length; s += 500) {
-        var chunk = subs.slice(s, s + 500);
-        var r2 = await db.from('locations').upsert(chunk, { onConflict: 'node_id' });
+    for (var m = 0; m < mains.length; m += 500) {
+      var mainChunk = mains.slice(m, m + 500);
+      try {
+        var r1 = await db.from('locations').upsert(mainChunk, { onConflict: 'node_id' });
+        if (r1.error) throw r1.error;
+        persistedMain += mainChunk.length;
+      } catch (e1) {
+        failures.push({ stage: 'main', count: mainChunk.length, error: (e1 && e1.message) || 'unknown error' });
+      }
+    }
+
+    for (var s = 0; s < subs.length; s += 500) {
+      var subChunk = subs.slice(s, s + 500);
+      try {
+        var r2 = await db.from('locations').upsert(subChunk, { onConflict: 'node_id' });
         if (r2.error) throw r2.error;
+        persistedSub += subChunk.length;
+      } catch (e2) {
+        failures.push({ stage: 'sub', count: subChunk.length, error: (e2 && e2.message) || 'unknown error' });
       }
     }
 
     await auditFor(env, auth.user, context.request)(
       'publish_locations', 'locations_bank', null,
-      { mainAreas: mainCount, subAreas: subCount });
+      { mainAreas: persistedMain, subAreas: persistedSub, failures: failures.length || undefined });
 
-    return json(env, { synced: true, mainAreas: mainCount, subAreas: subCount });
+    /* Nothing persisted at all — a real failure, not a partial one. */
+    if (!persistedMain && !persistedSub) {
+      return json(env, {
+        error: failures.length
+          ? failures.map(function (f) { return f.stage + ': ' + f.error; }).join('; ')
+          : 'Publish failed.'
+      }, 500);
+    }
+
+    return json(env, {
+      synced: true, mainAreas: persistedMain, subAreas: persistedSub,
+      failures: failures.length ? failures : undefined
+    });
   } catch (e) {
     return json(env, { error: (e && e.message) || 'Publish failed.' }, 500);
   }

@@ -202,8 +202,17 @@
      One published group = one Main Area plus its Sub Areas, under a
      city. Re-publishing the same main area MERGES (adds new subs,
      re-orders existing) rather than duplicating — the brief's "no
-     duplicated names" rule. */
-  function publish(cityId, groups, opts) {
+     duplicated names" rule.
+
+     Async: the local apply below still happens synchronously first (so
+     search stays instant even if the caller doesn't await), but the
+     returned promise only resolves ok:true once the server sync has
+     actually confirmed — a failed sync used to be swallowed here and
+     reported as success, which is exactly how locations ended up
+     existing only in this browser's localStorage and never in
+     Supabase. skipSync callers still get the old fire-and-forget
+     behaviour, unchanged. */
+  async function publish(cityId, groups, opts) {
     var city = LOC.getById(cityId);
     if (!city) return { ok: false, error: 'Unknown city.' };
     if (!groups || !groups.length) return { ok: false, error: 'Nothing to publish.' };
@@ -234,10 +243,20 @@
 
     write(bank);
 
-    /* Durable sync — best-effort, never blocks searchability. */
-    if (!(opts && opts.skipSync)) syncToApi(bank).catch(function () {});
+    if (opts && opts.skipSync) {
+      return { ok: true, applied: applied, totalEntries: bank.entries.length };
+    }
 
-    return { ok: true, applied: applied, totalEntries: bank.entries.length };
+    try {
+      var syncRes = await syncToApi(bank);
+      return { ok: true, applied: applied, totalEntries: bank.entries.length, sync: syncRes };
+    } catch (e) {
+      return {
+        ok: false, applied: applied, totalEntries: bank.entries.length, syncFailed: true,
+        error: 'Saved on this device, but failed to save to the server (' + ((e && e.message) || 'unknown error') +
+          '). It will not appear on the site or survive a refresh until this succeeds — try publishing again.'
+      };
+    }
   }
 
   /* Removes a published entry from the Bank and disables its nodes.
@@ -261,17 +280,26 @@
     return { ok: true };
   }
 
-  /* ── optional durable sync (Supabase via Pages Functions) ──── */
+  /* ── durable sync (Supabase via Pages Functions) ──────────────
+     Rejects (rather than resolving to a falsy "didn't work" value) on
+     any failure — no route configured, network failure, or a non-OK
+     response — so publish() can tell the admin the truth instead of
+     treating "didn't sync" the same as "synced". */
   function syncToApi(bank) {
     if (!root.fetch || !CFG.routes.api || !CFG.routes.api.locationsPublish) {
-      return Promise.resolve({ synced: false });
+      return Promise.reject(new Error('Publish sync endpoint is not configured.'));
     }
     return root.fetch(CFG.routes.api.locationsPublish, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ bank: bank || read() })
     }).then(function (r) {
-      return r.ok ? r.json() : { synced: false };
+      return r.json().catch(function () { return null; }).then(function (data) {
+        if (!r.ok) {
+          throw new Error((data && data.error) || ('Publish sync failed (' + r.status + ')'));
+        }
+        return data || { synced: true };
+      });
     });
   }
 
