@@ -46,12 +46,23 @@
     });
   }
 
+  /* `aria-pressed` stays as the accessible state, but the SELECTED STYLING
+     hangs off an `is-on` class. Chrome does not reliably invalidate an
+     attribute-selector match for elements built by script inside the
+     collapsed advanced panel, so a chip could report aria-pressed="true"
+     while still painting as unselected; a class change always
+     invalidates. setPressed keeps the two in lockstep. */
+  function setPressed(el, on) {
+    el.setAttribute('aria-pressed', on ? 'true' : 'false');
+    el.classList.toggle('is-on', !!on);
+  }
+
   function makeChip(label, pressed) {
     var b = doc.createElement('button');
     b.type = 'button';
     b.className = 'chip';
     b.textContent = label;
-    b.setAttribute('aria-pressed', pressed ? 'true' : 'false');
+    setPressed(b, pressed);
     return b;
   }
 
@@ -62,8 +73,8 @@
       if (!btn || !container.contains(btn)) return;
       var was = btn.getAttribute('aria-pressed') === 'true';
       var sibs = container.querySelectorAll('[aria-pressed]');
-      for (var i = 0; i < sibs.length; i++) sibs[i].setAttribute('aria-pressed', 'false');
-      btn.setAttribute('aria-pressed', was ? 'false' : 'true');
+      for (var i = 0; i < sibs.length; i++) setPressed(sibs[i], false);
+      setPressed(btn, !was);
       onPick(was ? '' : btn);
     });
   }
@@ -272,7 +283,7 @@
     if (!chip) return;
     var key = chip.getAttribute('data-need');
     var on = chip.getAttribute('aria-pressed') === 'true';
-    chip.setAttribute('aria-pressed', on ? 'false' : 'true');
+    setPressed(chip, !on);
     if (on) state.needs = state.needs.filter(function (k) { return k !== key; });
     else if (state.needs.indexOf(key) === -1) state.needs.push(key);
   });

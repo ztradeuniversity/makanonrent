@@ -264,12 +264,15 @@
     bannerEl.innerHTML = '';
   }
 
+  /* Reassuring rather than dead-end: a search with no result reads as
+     work in progress, not as a failure. The Notify Me button and its
+     data-notify-open hook are untouched. */
   function renderEmpty() {
     cardsEl.innerHTML =
       '<div class="empty" style="grid-column:1/-1">' +
-        '<div class="empty-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2M8.5 11h5"/></svg></div>' +
-        '<h2>No matching properties yet</h2>' +
-        '<p>Nothing matches these filters right now. Widen your budget or area — or let us alert you the moment something lands.</p>' +
+        '<div class="empty-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 1.9"/></svg></div>' +
+        '<h2>Under Process</h2>' +
+        '<p>Want to be notified when a matching property is listed?<br>Click Notify Me and enter your email.</p>' +
         '<button class="btn-gold" type="button" data-notify-open>Notify Me</button>' +
       '</div>';
     pagerEl.innerHTML = '';

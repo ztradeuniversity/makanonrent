@@ -282,7 +282,10 @@
       if (!b) return;
       var key = b.getAttribute('data-feat');
       var on = b.getAttribute('aria-pressed') === 'true';
+      /* Class mirrors the attribute so the selected style always repaints
+         — same reason as home.js setPressed(). */
       b.setAttribute('aria-pressed', on ? 'false' : 'true');
+      b.classList.toggle('is-on', !on);
       if (on) state.features = state.features.filter(function (f) { return f !== key; });
       else if (state.features.indexOf(key) === -1) state.features.push(key);
       renderTags();
@@ -291,8 +294,9 @@
     /* Reflect a restored draft back onto the chips. */
     win.MOR_WZ_SYNC_FEATS = function () {
       [].slice.call(host.querySelectorAll('[data-feat]')).forEach(function (b) {
-        b.setAttribute('aria-pressed',
-          state.features.indexOf(b.getAttribute('data-feat')) > -1 ? 'true' : 'false');
+        var on = state.features.indexOf(b.getAttribute('data-feat')) > -1;
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+        b.classList.toggle('is-on', on);
       });
     };
   })();

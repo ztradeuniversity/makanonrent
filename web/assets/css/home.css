@@ -139,15 +139,48 @@ img, svg { display: block; max-width: 100%; }
 }
 .hero-eyebrow svg { width: 14px; height: 14px; }
 
-/* Editorial rather than oversized: the serif still leads the page, but at
-   a size that sits with the search module instead of shouting over it. */
+/* Upright, tightly-tracked serif — the italic flourish is gone; weight,
+   tracking and a single accent carry the premium read instead. Height is
+   unchanged from the previous treatment. */
 .hero h1 {
   font-family: var(--font-serif);
   font-size: clamp(27px, 3.3vw, 40px);
   font-weight: 600; line-height: 1.14; letter-spacing: -.5px;
   color: #fff; margin-bottom: 10px;
 }
-.hero h1 em { font-style: italic; color: var(--gold); }
+.hero-title {
+  display: flex; align-items: center; justify-content: center;
+  flex-wrap: wrap; gap: 0 .34em;
+  font-style: normal; letter-spacing: -.2px;
+}
+/* "Pakistan" in the brand gold, with a hairline underline that reads as
+   a considered detail rather than decoration. */
+.hero-accent {
+  position: relative; color: var(--gold); font-style: normal;
+  white-space: nowrap;
+}
+.hero-accent::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: -.12em;
+  height: 1.5px; border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--gold), transparent);
+  opacity: .55;
+  transform: scaleX(0); transform-origin: center;
+  animation: accentIn .9s var(--ease) .55s forwards;
+}
+@keyframes accentIn { to { transform: scaleX(1); } }
+
+/* Property mark between "Rent" and "in Pakistan". Sized in em so it
+   tracks the responsive headline and never changes the hero's height. */
+.hero-title-ic {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: .92em; height: .92em; color: var(--gold);
+  animation: icFloat 5.5s var(--ease) infinite;
+}
+.hero-title-ic svg { width: 100%; height: 100%; }
+@keyframes icFloat {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-2.5px); }
+}
 .hero-sub {
   font-size: clamp(13px, 1.15vw, 14.5px); color: rgba(255, 255, 255, .72);
   max-width: 520px; margin: 0 auto 26px; font-weight: 400; line-height: 1.55;
@@ -263,11 +296,10 @@ img, svg { display: block; max-width: 100%; }
 /* The left column is wider because it carries three stacked blocks; the
    right holds only Area, so it takes the remainder. */
 .adv-body {
-  /* The left column is given enough width for all six My Needs chips to
-     sit on a single row — that one wrap was worth ~38px of panel height.
-     Area needs far less room, and wraps its unit toggle under the input
-     if the column gets tight without costing the panel any height. */
-  display: grid; grid-template-columns: 2.45fr 1fr; gap: 16px;
+  /* Left holds Category + Bedrooms; right holds Area + My Needs. The
+     right column is the wider of the two because My Needs carries six
+     worded chips, while the left side is only segments and digits. */
+  display: grid; grid-template-columns: 1fr 1.25fr; gap: 16px;
   padding-top: 13px; border-top: 1px solid var(--line);
 }
 .adv-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
@@ -309,12 +341,15 @@ img, svg { display: block; max-width: 100%; }
 .chips { display: flex; flex-wrap: wrap; gap: 7px; }
 /* My Needs carries an icon plus words, so it sets its own tighter metrics
    while staying visually in the same control family as Bedrooms. */
+/* Tighter than the standard chip so the group reads as a quiet extension
+   of the Area control above it rather than a second form. */
+.chips.is-tight { gap: 6px; }
 #needChips .chip, #featChips .chip {
   display: inline-flex; align-items: center; gap: 5px;
-  padding: 5px 10px; font-size: 12px;
+  padding: 4px 9px; font-size: 11.5px; line-height: 1.5;
 }
 #needChips .chip svg, #featChips .chip svg {
-  width: 13px; height: 13px; flex-shrink: 0;
+  width: 12px; height: 12px; flex-shrink: 0;
   color: var(--green-lift); opacity: .85;
   transition: color .2s var(--ease), opacity .2s var(--ease);
 }
@@ -325,24 +360,30 @@ img, svg { display: block; max-width: 100%; }
   padding: 5px 10px; border-radius: 100px;
   background: var(--surface); border: 1.5px solid var(--line);
   font-size: 12.5px; font-weight: 650; color: var(--text); cursor: pointer;
-  transition: border-color .2s var(--ease), background .2s var(--ease),
+  /* background-color, not the `background` shorthand: the shorthand is not
+     reliably animatable, and on chips built by JS inside the collapsed
+     advanced panel it left the element pinned at its start colour, so a
+     selected chip never actually turned green. */
+  transition: border-color .2s var(--ease), background-color .2s var(--ease),
               color .2s var(--ease), transform .18s var(--ease);
 }
 .chip:hover { border-color: var(--gold); color: #8A6D22; transform: translateY(-1px); }
-.chip[aria-pressed="true"] {
+/* `.is-on` mirrors aria-pressed — see setPressed() in home.js for why the
+   styling hook is a class rather than the attribute. */
+.chip.is-on, .chip[aria-pressed="true"] {
   background: var(--gold-soft); border-color: var(--gold); color: #8A6D22;
 }
 /* Multi-select needs a stronger "on" state than the single-choice rows:
    several chips are lit at once, so a filled swatch plus a tick reads at
    a glance instead of a subtle tint that blurs together. */
-#needChips .chip[aria-pressed="true"],
-#featChips .chip[aria-pressed="true"] {
+#needChips .chip.is-on, #needChips .chip[aria-pressed="true"],
+#featChips .chip.is-on, #featChips .chip[aria-pressed="true"] {
   background: var(--green); border-color: var(--green); color: #fff; font-weight: 700;
 }
 /* The icon turns gold on selection — the accent does the signalling, so
    no tick glyph is needed and the chip keeps its width. */
-#needChips .chip[aria-pressed="true"] svg,
-#featChips .chip[aria-pressed="true"] svg { color: var(--gold); opacity: 1; }
+#needChips .chip.is-on svg, #needChips .chip[aria-pressed="true"] svg,
+#featChips .chip.is-on svg, #featChips .chip[aria-pressed="true"] svg { color: var(--gold); opacity: 1; }
 
 .area-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .area-row .control { flex: 1 1 150px; min-width: 0; }
@@ -481,6 +522,8 @@ img, svg { display: block; max-width: 100%; }
 @keyframes rise { to { opacity: 1; transform: translateY(0); } }
 
 @media (prefers-reduced-motion: reduce) {
+  .hero-title-ic { animation: none; }
+  .hero-accent::after { animation: none; transform: scaleX(1); }
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
   .rise { opacity: 1; transform: none; }
   html { scroll-behavior: auto; }
