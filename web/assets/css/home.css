@@ -102,8 +102,17 @@ img, svg { display: block; max-width: 100%; }
     radial-gradient(1100px 520px at 50% -8%, rgba(200, 162, 74, .18), transparent 62%),
     radial-gradient(760px 420px at 88% 12%, rgba(18, 90, 68, .55), transparent 60%),
     linear-gradient(168deg, var(--ink) 0%, var(--green) 52%, #08281E 100%);
-  overflow: hidden;
-  isolation: isolate;
+  /* NO overflow:hidden and NO isolation:isolate here.
+
+     Both used to be on this rule and together they broke the search
+     dropdowns: `overflow:hidden` geometrically CLIPPED the open location
+     list (it extends ~150px past the hero's bottom edge), and
+     `isolation:isolate` made .hero a stacking context, which trapped the
+     list inside it — so the property-type chips in the section below
+     painted on top of it no matter how large .pms-list's z-index was.
+     Raising that z-index could never have worked; the containment had to
+     go. Every decorative layer below is inset within the hero box and
+     clips itself, so nothing needs the parent to clip on its behalf. */
 }
 .hero::after {
   content: ''; position: absolute; inset: auto 0 0; height: 120px; z-index: 2;
@@ -113,6 +122,9 @@ img, svg { display: block; max-width: 100%; }
 .hero-skyline {
   position: absolute; inset: auto 0 0; width: 100%; height: 260px; z-index: 1;
   opacity: .3; pointer-events: none;
+  /* Self-clipping, so removing the hero's overflow:hidden cannot let the
+     skyline artwork spill past the hero. */
+  overflow: hidden;
 }
 .hero-grid {
   position: absolute; inset: 0; z-index: 0; pointer-events: none;
@@ -444,8 +456,13 @@ img, svg { display: block; max-width: 100%; }
 .pms { position: relative; flex: 1; min-width: 0; height: 100%; }
 .pms-trigger {
   width: 100%; height: 100%; border: 0; background: transparent;
-  font: inherit; font-size: 15px; font-weight: 600; color: var(--text);
+  font: inherit; font-size: 14px; font-weight: 600; color: var(--text);
   text-align: left; cursor: pointer; padding: 0;
+  /* A long name ("Lahore Development Authority City") used to wrap onto a
+     second line and push the control taller than its neighbours. One line
+     with an ellipsis keeps the row geometry fixed; the full text is always
+     readable in the open list below. */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .pms-trigger.is-placeholder { color: #A3ADA7; font-weight: 500; }
 .pms-trigger:disabled { color: #A3ADA7; cursor: not-allowed; }
@@ -457,9 +474,19 @@ img, svg { display: block; max-width: 100%; }
   padding: 6px;
 }
 .pms-opt {
-  padding: 9px 12px; border-radius: 8px; font-size: 14px; font-weight: 600;
+  padding: 9px 12px; border-radius: 8px; font-size: 13.5px; font-weight: 600;
   color: var(--text); cursor: pointer;
+  /* Long names and Urdu wrap inside the option instead of overflowing the
+     panel or forcing it to scroll sideways. */
+  line-height: 1.38; overflow-wrap: anywhere; word-break: break-word;
 }
 .pms-opt:hover { background: var(--gold-soft); color: #8A6D22; }
 .pms-opt.is-selected { background: rgba(18, 90, 68, .1); color: var(--green); font-weight: 750; }
 .pms-opt.is-disabled { color: #A3ADA7; cursor: not-allowed; }
+/* Touch targets and legibility win over compactness on small screens, so
+   the smaller desktop sizing above is not carried down to mobile. */
+@media (max-width: 640px) {
+  .pms-trigger { font-size: 14.5px; }
+  .pms-opt { font-size: 14.5px; padding: 11px 12px; }
+  .pms-list { max-height: 52vh; }
+}

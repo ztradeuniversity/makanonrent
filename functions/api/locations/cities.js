@@ -35,16 +35,10 @@ import { getServiceClient } from '../../utils/supabase.js';
 import { isNonEmptyString } from '../../utils/validate.js';
 import { requireCapability } from '../../utils/rbac.js';
 import { auditFor } from '../../utils/audit.js';
+import { slugify } from '../../utils/slug.js';
 
 export async function onRequestOptions(context) {
   return preflight(context.env);
-}
-
-function slugify(v) {
-  return String(v).toLowerCase().trim()
-    .replace(/[()]/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
 }
 
 /* GET /api/locations/cities
@@ -178,8 +172,22 @@ export async function onRequestPost(context) {
     if (action === 'delete-node') {
       /* Deletes a Main or Sub Location (never a city — use 'delete' for
          that) and, for a Main Location, every Sub Location beneath it.
-         Always cascades — a Main Location without its subs is never a
-         valid outcome the client offers. */
+
+         Deleting a location row is NOT self-contained. Per the schema:
+           locations.parent_node_id          → ON DELETE CASCADE
+           admin_area_assignments.node_id    → ON DELETE CASCADE  (!)
+           admin_tasks.area_node_id          → ON DELETE SET NULL
+           properties.area_node_id           → ON DELETE SET NULL
+         so a delete can silently destroy a manager's area assignment and
+         detach live properties — and properties.city_slug/area_slug are
+         plain text with no FK at all, so they are left dangling with no
+         database protection whatsoever.
+
+         Therefore this refuses (409) whenever anything depends on the
+         node and reports exactly what would be affected; the caller must
+         come back with confirm:true. Same shape as the city 'delete'
+         action's existing childCount refusal, so the client pattern is
+         unchanged. */
       if (!isNonEmptyString(body.nodeId, 200)) return json(env, { error: 'nodeId is required.' }, 422);
 
       var node = await db.from('locations').select('node_id, type').eq('node_id', body.nodeId).maybeSingle();
@@ -187,13 +195,43 @@ export async function onRequestPost(context) {
       if (!node.data) return json(env, { error: 'No such location.' }, 404);
       if (node.data.type === 'city') return json(env, { error: "Use action 'delete' for a city." }, 422);
 
+      /* A missing optional table must not block a legitimate delete, so a
+         failed count is reported as null ("unknown") rather than thrown. */
+      async function countWhere(table, column, value, op) {
+        try {
+          var q = db.from(table).select(column, { count: 'exact', head: true });
+          q = op === 'like' ? q.like(column, value) : q.eq(column, value);
+          var res = await q;
+          if (res.error) return null;
+          return res.count || 0;
+        } catch (err) { return null; }
+      }
+
+      var deps = {
+        subLocations: await countWhere('locations', 'node_id', body.nodeId + '/%', 'like'),
+        properties: await countWhere('properties', 'area_node_id', body.nodeId),
+        areaAssignments: await countWhere('admin_area_assignments', 'node_id', body.nodeId),
+        tasks: await countWhere('admin_tasks', 'area_node_id', body.nodeId)
+      };
+      var blocking = (deps.properties || 0) + (deps.areaAssignments || 0) + (deps.tasks || 0) + (deps.subLocations || 0);
+
+      if (blocking > 0 && !body.confirm) {
+        return json(env, {
+          error: 'This location has dependent records. Confirm to proceed.',
+          requiresConfirmation: true,
+          dependents: deps
+        }, 409);
+      }
+
       var delSub = await db.from('locations').delete().like('node_id', body.nodeId + '/%');
       if (delSub.error) throw delSub.error;
       var delSelf = await db.from('locations').delete().eq('node_id', body.nodeId);
       if (delSelf.error) throw delSelf.error;
 
-      await audit('delete_location_node', 'location', body.nodeId, { type: node.data.type });
-      return json(env, { ok: true });
+      await audit('delete_location_node', 'location', body.nodeId, {
+        type: node.data.type, dependents: deps, confirmed: !!body.confirm
+      });
+      return json(env, { ok: true, deleted: deps });
     }
 
     return json(env, { error: "action must be one of: 'add', 'rename', 'disable', 'enable', 'delete', 'delete-node'." }, 422);

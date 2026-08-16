@@ -275,6 +275,12 @@
           '<span class="lm-count">' + g.subs.length + ' sub</span>' +
           '<button class="lm-ico is-danger" type="button" data-act="main-del" data-g="' + gi + '" aria-label="Delete main area">' + IC.del + '</button>' +
         '</div>' +
+        /* Alias names for this same main area — shown so the admin can
+           see they were understood as one location, not several. */
+        ((g.aliases || []).length
+          ? '<div class="lm-crumb" style="margin-left:34px">Also known as: ' +
+              g.aliases.map(esc).join(' · ') + '</div>'
+          : '') +
         '<div class="lm-subs">' + subs +
           '<button class="lm-addsub" type="button" data-act="sub-add" data-g="' + gi + '">' + IC.plus + 'Add sub area</button>' +
         '</div>' +
@@ -322,6 +328,10 @@
       .map(function (g) {
         return {
           main: String(g.main || '').trim(),
+          /* Alternate names for the same main location — carried through
+             to publish so they reach locations.aliases rather than being
+             dropped between preview and publish. */
+          aliases: (g.aliases || []).map(function (a) { return String(a || '').trim(); }).filter(Boolean),
           subs: g.subs.map(function (s) { return String(s || '').trim(); }).filter(Boolean)
         };
       })
@@ -368,36 +378,241 @@
     renderBank();
   });
 
-  /* ── published bank list ────────────────────────────────── */
-  function renderBank() {
-    var bank = BANK.read();
-    var rows = bank.entries.filter(function (e) {
+  /* ── published bank list ──────────────────────────────────
+     Reads the SERVER, not localStorage. This panel is the admin's proof
+     that a publish actually reached the database, so showing the local
+     optimistic copy here would defeat its only purpose — a publish that
+     never synced must appear absent here, not published. */
+  /* Server truth, cached only for the lifetime of a render so the edit
+     handlers can find the entry they act on. Never written to storage. */
+  var serverBank = { version: 1, entries: [] };
+  /* Per-main-location expand state, keyed by cityId + KEY_SEP + main. */
+  var KEY_SEP = '::';
+  var bankOpen = {};
+
+  function bankMsg(text, cls) {
+    var el = $('lmBankMsg');
+    if (!el) return;
+    el.textContent = text || '';
+    el.className = 'lm-msg' + (cls ? ' ' + cls : '');
+  }
+
+  function entryKey(e) { return e.cityId + KEY_SEP + e.main; }
+  function findEntry(key) {
+    for (var i = 0; i < serverBank.entries.length; i++) {
+      if (entryKey(serverBank.entries[i]) === key) return serverBank.entries[i];
+    }
+    return null;
+  }
+
+  /* Re-reads the database, then paints. Use this after any mutation. */
+  async function renderBank() {
+    if (!$('lmBankCount')) return;
+    $('lmBankCount').textContent = 'Loading published data…';
+
+    try {
+      serverBank = await BANK.readServer();
+    } catch (e) {
+      $('lmBankCount').textContent = 'Could not read published data from the server — ' + e.message;
+      $('lmBank').innerHTML = '';
+      return;
+    }
+    paintBank();
+  }
+
+  /* Paints the already-fetched server data. Expanding/collapsing a row is
+     a pure view change, so it repaints from this cache rather than
+     re-querying the database on every click. */
+  function paintBank() {
+    if (!$('lmBankCount')) return;
+    var entries = serverBank.entries;
+    var rows = entries.filter(function (e) {
       return !citySel.value || e.cityId === citySel.value;
     });
 
-    $('lmBankCount').textContent = bank.entries.length
-      ? bank.entries.length + ' main area' + (bank.entries.length === 1 ? '' : 's') + ' published' +
-        (citySel.value ? ' · showing ' + rows.length + ' in this city' : '')
-      : 'Empty — nothing published yet.';
+    var totalSubs = entries.reduce(function (n, e) { return n + (e.subs || []).length; }, 0);
+    var cities = {};
+    entries.forEach(function (e) { cities[e.cityId] = 1; });
+    var cityCount = Object.keys(cities).length;
 
-    $('lmBank').innerHTML = rows.length
-      ? rows.map(function (e) {
-          return '<div class="lm-bank-row">' +
-            '<div class="lm-grow"><b>' + esc(e.main) + '</b><br>' +
-            '<span>' + esc(e.cityName || '') + ' · ' + (e.subs || []).length + ' sub areas</span></div>' +
-            '<button class="lm-mini is-no" type="button" data-unpub="' + esc(e.main) + '" data-city="' + esc(e.cityId) + '">Unpublish</button>' +
+    $('lmBankCount').textContent = entries.length
+      ? 'In the database: ' + cityCount + ' cit' + (cityCount === 1 ? 'y' : 'ies') + ' · ' +
+        entries.length + ' main location' + (entries.length === 1 ? '' : 's') + ' · ' +
+        totalSubs + ' sub location' + (totalSubs === 1 ? '' : 's') +
+        (citySel.value ? ' — showing ' + rows.length + ' in the selected city' : '')
+      : 'Empty — nothing is published in the database yet.';
+
+    if (!rows.length) {
+      $('lmBank').innerHTML = '<div class="lm-empty">Nothing published' +
+        (citySel.value ? ' in this city' : '') + ' yet.</div>';
+      return;
+    }
+
+    /* City → Main Location → (Also Known As, Sub Locations). Grouped by
+       city so the hierarchy the admin published is the hierarchy shown. */
+    var byCity = {};
+    var cityOrder = [];
+    rows.forEach(function (e) {
+      if (!byCity[e.cityId]) { byCity[e.cityId] = { name: e.cityName || e.cityId, list: [] }; cityOrder.push(e.cityId); }
+      byCity[e.cityId].list.push(e);
+    });
+
+    $('lmBank').innerHTML = cityOrder.map(function (cid) {
+      var city = byCity[cid];
+      return '<div class="lm-tree-city">' +
+        '<div class="lm-bank-row">' +
+          '<div class="lm-grow"><b>' + esc(city.name) + '</b>' +
+          '<span class="lm-crumb">' + city.list.length + ' main location' + (city.list.length === 1 ? '' : 's') + '</span></div>' +
+        '</div>' +
+        '<div class="lm-tree-children">' + city.list.map(function (e) {
+          var key = entryKey(e);
+          var subs = e.subs || [];
+          var aliases = e.aliases || [];
+          var open = !!bankOpen[key];
+          return '<div class="lm-tree-main">' +
+            '<div class="lm-bank-row lm-bank-row-sm">' +
+              '<button class="lm-ico lm-toggle" type="button" data-bank-toggle="' + esc(key) + '" aria-label="Expand or collapse">' +
+                (open ? IC.up : IC.down) + '</button>' +
+              '<span class="lm-grow"><b>' + esc(e.main) + '</b></span>' +
+              '<span>' + aliases.length + ' alias' + (aliases.length === 1 ? '' : 'es') +
+                ' · ' + subs.length + ' sub' + (subs.length === 1 ? '' : 's') + '</span>' +
+              '<button class="lm-mini" type="button" data-bank-edit="' + esc(key) + '">Edit</button>' +
+              '<button class="lm-ico is-danger" type="button" data-bank-del="' + esc(key) + '" aria-label="Delete main location">' + IC.del + '</button>' +
+            '</div>' +
+            (open
+              ? '<div class="lm-tree-children">' +
+                  '<div class="lm-crumb"><b>Also Known As</b>' + (aliases.length
+                    ? ':<br>' + aliases.map(function (a) { return '&nbsp;&nbsp;• ' + esc(a); }).join('<br>')
+                    : ': none') + '</div>' +
+                  '<div class="lm-crumb"><b>Sub Locations (' + subs.length + ')</b>' + (subs.length
+                    ? ':' : ': none') + '</div>' +
+                  subs.map(function (s) {
+                    return '<div class="lm-bank-row lm-bank-row-sm">' +
+                      '<span class="lm-grow" style="margin-left:30px">' + esc(s) + '</span>' +
+                      '<button class="lm-ico is-danger" type="button" data-bank-delsub="' + esc(key) + '" data-sub="' + esc(s) + '" aria-label="Delete sub location">' + IC.del + '</button>' +
+                    '</div>';
+                  }).join('') +
+                '</div>'
+              : '') +
           '</div>';
-        }).join('')
-      : '';
+        }).join('') + '</div>' +
+      '</div>';
+    }).join('');
   }
 
-  $('lmBank').addEventListener('click', function (e) {
-    var b = e.target.closest('[data-unpub]');
-    if (!b) return;
-    BANK.unpublish(b.getAttribute('data-city'), b.getAttribute('data-unpub'));
-    renderBank();
-    msg('Unpublished. The area and its sub areas no longer appear in search.', 'is-ok');
+  /* Every mutation below goes to the SERVER and then re-reads the server.
+     A failure is surfaced verbatim and the panel is left showing the real
+     state — success is never assumed. */
+  async function bankMutate(runner, okText) {
+    try {
+      await runner();
+      bankMsg(okText, 'is-ok');
+    } catch (e) {
+      bankMsg(e.message, 'is-error');
+    }
+    await renderBank();
+  }
+
+  $('lmBank').addEventListener('click', function (ev) {
+    var t = ev.target.closest('[data-bank-toggle]');
+    if (t) {
+      var k = t.getAttribute('data-bank-toggle');
+      bankOpen[k] = !bankOpen[k];
+      paintBank();
+      return;
+    }
+
+    var del = ev.target.closest('[data-bank-del]');
+    if (del) {
+      var e1 = findEntry(del.getAttribute('data-bank-del'));
+      if (!e1) return;
+      var nodeId = e1.cityId + '/' + LOC.slugify(e1.main);
+      if (!win.confirm('Delete "' + e1.main + '" from the database?\n\nThis also removes its ' +
+        (e1.subs || []).length + ' sub location(s) and its ' + (e1.aliases || []).length +
+        ' alias name(s). Properties already using this area keep their records but lose the area link.')) return;
+      bankMutate(async function () {
+        try {
+          await BANK.deleteNode(nodeId, false);
+        } catch (err) {
+          /* 409 = the server found dependents and is refusing until the
+             admin is told exactly what they are. */
+          if (err.status !== 409 || !err.data || !err.data.dependents) throw err;
+          var d = err.data.dependents;
+          var lines = 'Deleting "' + e1.main + '" will affect:\n' +
+            '· ' + (d.subLocations == null ? 'unknown' : d.subLocations) + ' sub location(s) — deleted\n' +
+            '· ' + (d.properties == null ? 'unknown' : d.properties) + ' property/properties — kept, area link cleared\n' +
+            '· ' + (d.areaAssignments == null ? 'unknown' : d.areaAssignments) + ' admin area assignment(s) — DELETED\n' +
+            '· ' + (d.tasks == null ? 'unknown' : d.tasks) + ' task(s) — kept, area cleared\n\nProceed?';
+          if (!win.confirm(lines)) throw new Error('Deletion cancelled.');
+          await BANK.deleteNode(nodeId, true);
+        }
+      }, 'Deleted from the database.');
+      return;
+    }
+
+    var delSub = ev.target.closest('[data-bank-delsub]');
+    if (delSub) {
+      var e2 = findEntry(delSub.getAttribute('data-bank-delsub'));
+      if (!e2) return;
+      var subName = delSub.getAttribute('data-sub');
+      if (!win.confirm('Delete sub location "' + subName + '" from the database?')) return;
+      var subNode = e2.cityId + '/' + LOC.slugify(e2.main) + '/' + LOC.slugify(subName);
+      bankMutate(function () { return BANK.deleteNode(subNode, true); }, 'Sub location deleted.');
+      return;
+    }
+
+    var edit = ev.target.closest('[data-bank-edit]');
+    if (edit) {
+      var e3 = findEntry(edit.getAttribute('data-bank-edit'));
+      if (!e3) return;
+      /* The canonical name derives node_id, so renaming it would create a
+         different node and strand the sub locations. Aliases and sub
+         locations are freely editable; the canonical name is shown but
+         not editable here, which is what the schema safely permits. */
+      var nextAliases = win.prompt(
+        'Also Known As for "' + e3.main + '" (one per line).\n' +
+        'These are alternate names for this SAME main location.',
+        (e3.aliases || []).join('\n'));
+      if (nextAliases === null) return;
+      var nextSubs = win.prompt(
+        'Sub Locations for "' + e3.main + '" (one per line).\n' +
+        'Removing a line here does NOT delete that sub location — use its delete button.',
+        (e3.subs || []).join('\n'));
+      if (nextSubs === null) return;
+
+      function lines(v) {
+        return String(v).split(/\r?\n/).map(function (s) { return s.trim(); }).filter(Boolean);
+      }
+      bankMutate(function () {
+        return BANK.publishEntry({
+          cityId: e3.cityId, citySlug: e3.citySlug, cityName: e3.cityName,
+          main: e3.main, aliases: lines(nextAliases), subs: lines(nextSubs)
+        });
+      }, 'Saved to the database.');
+      return;
+    }
   });
+
+  /* CSP (`script-src 'self'`) blocks inline handlers, so the Published
+     Data disclosure is bound here instead of in the markup. */
+  (function () {
+    var head = $('lmBankToggle'), body = $('lmBankBody');
+    if (!head || !body) return;
+    function toggle() {
+      body.hidden = !body.hidden;
+      head.setAttribute('aria-expanded', String(!body.hidden));
+      head.textContent = (body.hidden ? '▶' : '▼') + ' Published Data';
+      if (!body.hidden) renderBank();
+    }
+    head.addEventListener('click', toggle);
+    head.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+    });
+    $('lmBankRefresh').addEventListener('click', function () {
+      bankMsg('');
+      renderBank();
+    });
+  })();
 
   /* ── pending user suggestions (sub areas only) ──────────── */
   function renderPending() {

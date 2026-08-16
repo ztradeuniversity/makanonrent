@@ -87,7 +87,10 @@
     mainIdBySlug = {};
     var cityId = cityIdBySlug[state.city];
     if (!cityId) { resetSel(mainSel, 'Select a city first'); return; }
-    LOC.getMainAreas(cityId).forEach(function (m) {
+    /* Options, not nodes: every alias is its own selectable name mapping
+       back to the same canonical id, so picking any of them yields the
+       same sub locations. */
+    LOC.getMainAreaOptions(cityId).forEach(function (m) {
       mainSel.appendChild(new Option(m.name, m.slug));
       mainIdBySlug[m.slug] = m.id;
     });

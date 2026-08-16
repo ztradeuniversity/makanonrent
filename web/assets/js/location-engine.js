@@ -38,11 +38,26 @@
   var SUB_AREA_TYPE = 'subarea';
 
   /* ── string utilities (kept local — no dependency on any page) ── */
+  /* An ASCII-only slug strips a wholly non-Latin name (Urdu, Arabic,
+     Chinese…) down to the empty string. That produced node ids like
+     'lahore/' — degenerate, and identical for EVERY such name in the
+     city, so the second one silently overwrote the first. The FNV-1a
+     fallback keeps those ids non-empty, unique per distinct name, and
+     stable across re-publishes (it must stay byte-identical to the copy
+     in functions/utils/slug.js — the server derives the same ids). */
   function slugify(v) {
-    return String(v).toLowerCase().trim()
+    var s = String(v).toLowerCase().trim()
       .replace(/[()]/g, '')
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '');
+    if (s) return s;
+    var str = String(v).trim();
+    var h = 2166136261;
+    for (var i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    return 'loc-' + h.toString(36);
   }
   function normalize(v) {
     return String(v || '').toLowerCase().trim().replace(/\s+/g, ' ');
@@ -518,6 +533,38 @@
     return getChildren(cityId, o).sort(function (a, b) { return a.name.localeCompare(b.name); });
   }
 
+  /* One entry per SELECTABLE NAME of each main area — the canonical name
+     plus every alias — with all of them carrying the SAME canonical node
+     id. "LDA City, Lahore", "LDA City", "Lahore Development Authority
+     City" and "ایل ڈی اے سٹی" are four options in a picker but ONE node in
+     the graph, so whichever is chosen, getSubAreas(option.id) returns the
+     identical sub-area set. Aliases are never nodes of their own, so they
+     cannot drift apart or own a competing set of sub areas.
+
+     Distinct from getMainAreas(), which stays exactly as it was (one
+     entry per location) for every caller that counts or iterates real
+     nodes. */
+  function getMainAreaOptions(cityId, opts) {
+    var out = [];
+    var seenSlug = {};
+    getMainAreas(cityId, opts).forEach(function (m) {
+      if (!seenSlug[m.slug]) {
+        seenSlug[m.slug] = 1;
+        out.push({ id: m.id, name: m.name, slug: m.slug, isAlias: false, canonicalName: m.name });
+      }
+      (m.aliases || []).forEach(function (a) {
+        var s = slugify(a);
+        /* An alias that slugs to the canonical (or to another option
+           already listed) would make the picker ambiguous — the name is
+           still searchable via the token index either way. */
+        if (!s || seenSlug[s]) return;
+        seenSlug[s] = 1;
+        out.push({ id: m.id, name: a, slug: s, isAlias: true, canonicalName: m.name });
+      });
+    });
+    return out;
+  }
+
   function getSubAreas(mainAreaId, opts) {
     var o = { types: [SUB_AREA_TYPE] };
     if (opts && opts.includeInactive) o.includeInactive = true;
@@ -547,14 +594,22 @@
 
   /* ── search ─────────────────────────────────────────────────── */
   function scoreNode(node, q) {
-    var nameNorm = normalize(node.name);
-    var nameToks = tokens(node.name);
     var best = 0;
 
-    if (nameNorm === q) best = Math.max(best, 100);
-    if (nameNorm.indexOf(q) === 0) best = Math.max(best, 90);
-    if (nameToks.some(function (t) { return t.indexOf(q) === 0; })) best = Math.max(best, 80);
-    if (nameNorm.indexOf(q) > -1) best = Math.max(best, 40);
+    /* An alias IS a name for this node, so it scores exactly like the
+       primary name. Without this, indexNode() would put the node in the
+       token bucket for an alias term ("ایل", "authority") and then this
+       function would score it 0 against an unrelated canonical name — the
+       node is retrieved and then silently discarded, so searching by any
+       alias that isn't a prefix of the canonical name found nothing. */
+    [node.name].concat(node.aliases || []).forEach(function (nm) {
+      var nameNorm = normalize(nm);
+      var nameToks = tokens(nm);
+      if (nameNorm === q) best = Math.max(best, 100);
+      if (nameNorm.indexOf(q) === 0) best = Math.max(best, 90);
+      if (nameToks.some(function (t) { return t.indexOf(q) === 0; })) best = Math.max(best, 80);
+      if (nameNorm.indexOf(q) > -1) best = Math.max(best, 40);
+    });
 
     if (best < 80) {
       var ancestors = getBreadcrumb(node.id).slice(1); // exclude self
@@ -716,6 +771,7 @@
     MAIN_AREA_TYPES: MAIN_AREA_TYPES,
     SUB_AREA_TYPE: SUB_AREA_TYPE,
     getMainAreas: getMainAreas,
+    getMainAreaOptions: getMainAreaOptions,
     getSubAreas: getSubAreas,
     normalize: normalize,
     slugify: slugify,

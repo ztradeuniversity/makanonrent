@@ -16,16 +16,10 @@ import { getServiceClient } from '../../utils/supabase.js';
 import { isNonEmptyString } from '../../utils/validate.js';
 import { requireCapability } from '../../utils/rbac.js';
 import { auditFor } from '../../utils/audit.js';
+import { slugify } from '../../utils/slug.js';
 
 export async function onRequestOptions(context) {
   return preflight(context.env);
-}
-
-function slugify(v) {
-  return String(v).toLowerCase().trim()
-    .replace(/[()]/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
 }
 
 /* Two differently-typed names in the same paste can slugify to the same
@@ -92,10 +86,17 @@ export async function onRequestPost(context) {
     var mainSlug = slugify(e.main);
     var mainNode = e.cityId + '/' + mainSlug;
 
+    /* Alternate names for THIS SAME main location (locations.aliases).
+       They are never their own rows — one canonical node_id owns the sub
+       areas, and every alias resolves to it. */
+    var aliases = Array.isArray(e.aliases)
+      ? e.aliases.filter(function (a) { return isNonEmptyString(a, 160); })
+      : [];
+
     rows.push({
       node_id: mainNode, parent_node_id: e.cityId, name: e.main,
       slug: mainSlug, type: 'locality', status: 'approved',
-      active: true, sort_order: 0, source: 'bank'
+      active: true, sort_order: 0, source: 'bank', aliases: aliases
     });
     mainCount++;
 

@@ -22,7 +22,7 @@ export async function onRequestGet(context) {
 
     var res = await db
       .from('locations')
-      .select('node_id, parent_node_id, name, slug, type, sort_order')
+      .select('node_id, parent_node_id, name, slug, type, sort_order, aliases')
       .eq('status', 'approved')
       .eq('active', true)
       .in('type', ['city', 'locality', 'society', 'subarea'])
@@ -46,7 +46,7 @@ export async function onRequestGet(context) {
         .map(function (r) { return r.name; });
       entries.push({
         cityId: city.node_id, citySlug: city.slug, cityName: city.name,
-        main: m.name, subs: subs, publishedAt: null
+        main: m.name, aliases: m.aliases || [], subs: subs, publishedAt: null
       });
     });
 

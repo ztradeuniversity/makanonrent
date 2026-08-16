@@ -167,7 +167,10 @@
     var cityId = cityIdBySlug[state.city];
     if (!cityId) { resetSelect(mainSel, 'Select a city first'); return; }
 
-    LOC.getMainAreas(cityId).forEach(function (m) {
+    /* Options, not nodes — see MOR_LOC.getMainAreaOptions: each alias is
+       a selectable name resolving to the same canonical id, so a property
+       submitted against any alias lands on the same main location. */
+    LOC.getMainAreaOptions(cityId).forEach(function (m) {
       mainSel.appendChild(new Option(m.name, m.slug));
       mainIdBySlug[m.slug] = m.id;
     });

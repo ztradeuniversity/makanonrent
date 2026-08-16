@@ -152,10 +152,24 @@
       <div id="lmPending"></div>
     </section>
 
-    <!-- ══ PUBLISHED BANK ══ -->
+    <!-- ══ PUBLISHED BANK ══
+         The toggle is bound in location-manager.js, NOT with inline
+         onclick/onkeydown attributes: the production CSP is
+         `script-src 'self'` with no 'unsafe-inline' (see web/_headers),
+         which blocks inline event handlers outright — so the old inline
+         version silently never opened this panel on the live site. -->
     <section class="lm-card">
-      <div class="lm-card-head" role="button" tabindex="0" aria-expanded="false" aria-controls="lmBank" onclick="var bank=document.getElementById('lmBank');bank.hidden=!bank.hidden;this.setAttribute('aria-expanded',String(!bank.hidden));this.firstChild.nodeValue=bank.hidden?'▶ Published Data':'▼ Published Data';" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}">▶ Published Data</div>
-      <div id="lmBank" class="lm-bank" hidden></div>
+      <div class="lm-card-head" id="lmBankToggle" role="button" tabindex="0"
+           aria-expanded="false" aria-controls="lmBankBody">▶ Published Data</div>
+      <div id="lmBankBody" hidden>
+        <p class="lm-hint">Read live from the database. This is what is actually published — not what is stored on this device.</p>
+        <div class="lm-actions">
+          <button class="lm-mini" type="button" id="lmBankRefresh">Refresh from server</button>
+        </div>
+        <div class="lm-msg" id="lmBankCount"></div>
+        <div class="lm-msg" id="lmBankMsg"></div>
+        <div id="lmBank" class="lm-bank"></div>
+      </div>
     </section>
 
   </div>
