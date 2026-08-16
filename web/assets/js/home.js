@@ -242,9 +242,28 @@
      canonical keys from MOR_CONFIG.propertyNeeds. */
   var needChips = $('needChips');
 
+  /* Inline 24px stroke icons in the same visual language as the rest of
+     the page (same viewBox, stroke width and cap style as the field
+     icons), so recognition improves without pulling in an icon library
+     or making the chips any taller. */
+  var NEED_IC = {
+    car_parking:       '<path d="M5 17h14M6.5 17v2M17.5 17v2"/><path d="M6 17l1.4-5.2A2 2 0 0 1 9.3 10h5.4a2 2 0 0 1 1.9 1.8L18 17"/><circle cx="8.5" cy="14" r=".6"/><circle cx="15.5" cy="14" r=".6"/>',
+    separate_entrance: '<path d="M6 21V4a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v17"/><path d="M4 21h16"/><circle cx="13" cy="12" r=".8"/>',
+    ground_floor:      '<path d="M3 20h5v-4h5v-4h5V8"/><path d="M3 20V9"/>',
+    roof:              '<path d="M3 11 12 4l9 7"/><path d="M6 11v9h12v-9"/>',
+    gas_meter:         '<path d="M12 3c2.5 3 4.5 5 4.5 8a4.5 4.5 0 0 1-9 0c0-1.4.6-2.6 1.6-3.9"/>',
+    solar:             '<path d="M4 15h16l-1.6-8H5.6z"/><path d="M9.6 7 8.6 15M14.4 7l1 8M4.8 11h14.4"/><path d="M12 19v2"/>'
+  };
+
   (CFG.propertyNeeds || []).forEach(function (n) {
     var chip = makeChip(n.label, false);
     chip.setAttribute('data-need', n.key);
+    if (NEED_IC[n.key]) {
+      chip.innerHTML =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" ' +
+        'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + NEED_IC[n.key] + '</svg>' +
+        '<span>' + n.label + '</span>';
+    }
     needChips.appendChild(chip);
   });
 

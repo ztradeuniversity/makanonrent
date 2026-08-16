@@ -127,48 +127,59 @@
 
       <div class="adv-panel" id="advPanel">
         <div class="adv-inner">
+          <!-- Two columns, each an explicit stack. The left column carries
+               the decision order a renter actually follows — what kind of
+               property, how many bedrooms, then the must-haves — so "My
+               Needs" sits directly under Bedrooms rather than wrapping
+               into the opposite column as it did when all four blocks
+               flowed through one grid. -->
           <div class="adv-body">
 
-            <div class="adv-block">
-              <span class="adv-label" id="lblCategory">Property Category</span>
-              <div class="seg" role="group" aria-labelledby="lblCategory">
-                <button type="button" data-cat="homes" aria-pressed="true">Homes</button>
-                <button type="button" data-cat="commercial" aria-pressed="false">Commercial</button>
-              </div>
-              <div class="chips" id="typeChips" role="group" aria-label="Property type"></div>
-            </div>
-
-            <!-- Bedrooms is the filter renters reach for first, and it was
-                 the one practical requirement already supported end to end
-                 (state.beds → beds param → MOR_DATA.query) yet missing from
-                 this panel. Minimum match: "2" returns 2-bed and larger. -->
-            <div class="adv-block">
-              <span class="adv-label" id="lblBeds">Bedrooms</span>
-              <div class="chips" id="bedChips" role="group" aria-labelledby="lblBeds"></div>
-              <span class="adv-hint">Shows homes with at least this many bedrooms.</span>
-            </div>
-
-            <!-- Practical requirements. Options come from
-                 MOR_CONFIG.propertyNeeds — the same canonical keys the
-                 Submit wizard writes and the details page reads — so the
-                 list can never drift between screens. Multi-select. -->
-            <div class="adv-block">
-              <span class="adv-label" id="lblNeeds">My Needs</span>
-              <div class="chips" id="needChips" role="group" aria-labelledby="lblNeeds"></div>
-              <span class="adv-hint">Pick any that matter. If nothing matches them all, we show the closest.</span>
-            </div>
-
-            <div class="adv-block">
-              <span class="adv-label" id="lblArea">Area</span>
-              <div class="area-row">
-                <div class="control">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 17V9M12 17v-5M17 17V6"/></svg>
-                  <input id="fSize" name="size" type="text" inputmode="numeric"
-                         autocomplete="off" placeholder="Enter area size" aria-labelledby="lblArea" />
+            <div class="adv-col">
+              <!-- Segment and type chips share one row: at this column
+                   width they fit side by side, which removes a whole
+                   stacked row from the panel's height. -->
+              <div class="adv-block">
+                <span class="adv-label" id="lblCategory">Property Category</span>
+                <div class="adv-inline">
+                  <div class="seg" role="group" aria-labelledby="lblCategory">
+                    <button type="button" data-cat="homes" aria-pressed="true">Homes</button>
+                    <button type="button" data-cat="commercial" aria-pressed="false">Commercial</button>
+                  </div>
+                  <div class="chips" id="typeChips" role="group" aria-label="Property type"></div>
                 </div>
-                <div class="seg seg-sm" role="group" aria-label="Area unit">
-                  <button type="button" data-unit="marla" aria-pressed="true">Marla</button>
-                  <button type="button" data-unit="sqft" aria-pressed="false">Sq Ft</button>
+              </div>
+
+              <!-- "(min)" in the label replaces the explanatory line that
+                   used to sit under these chips — same meaning, one row
+                   less height. -->
+              <div class="adv-block">
+                <span class="adv-label" id="lblBeds">Bedrooms <em>(min)</em></span>
+                <div class="chips" id="bedChips" role="group" aria-labelledby="lblBeds"></div>
+              </div>
+
+              <!-- Options come from MOR_CONFIG.propertyNeeds — the same
+                   canonical keys the Submit wizard writes and the details
+                   page reads. Multi-select. -->
+              <div class="adv-block">
+                <span class="adv-label" id="lblNeeds">My Needs</span>
+                <div class="chips" id="needChips" role="group" aria-labelledby="lblNeeds"></div>
+              </div>
+            </div>
+
+            <div class="adv-col">
+              <div class="adv-block">
+                <span class="adv-label" id="lblArea">Area</span>
+                <div class="area-row">
+                  <div class="control">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 17V9M12 17v-5M17 17V6"/></svg>
+                    <input id="fSize" name="size" type="text" inputmode="numeric"
+                           autocomplete="off" placeholder="Enter area size" aria-labelledby="lblArea" />
+                  </div>
+                  <div class="seg seg-sm" role="group" aria-label="Area unit">
+                    <button type="button" data-unit="marla" aria-pressed="true">Marla</button>
+                    <button type="button" data-unit="sqft" aria-pressed="false">Sq Ft</button>
+                  </div>
                 </div>
               </div>
             </div>
