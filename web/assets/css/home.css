@@ -173,10 +173,17 @@ img, svg { display: block; max-width: 100%; }
    tracks the responsive headline and never changes the hero's height. */
 .hero-title-ic {
   display: inline-flex; align-items: center; justify-content: center;
-  width: .92em; height: .92em; color: var(--gold);
+  /* flex: none + a fixed em box stop the icon from expanding: a flex item
+     defaults to min-width:auto, and an inline SVG with only a viewBox
+     reports a large intrinsic min-content size, so a % or unsized SVG
+     overrides the em box and the glyph blows up to fill the row. */
+  flex: 0 0 auto;
+  width: .9em; height: .9em; color: var(--gold);
   animation: icFloat 5.5s var(--ease) infinite;
 }
-.hero-title-ic svg { width: 100%; height: 100%; }
+/* Sized directly in em (not 100%) and displayed as a block so it can never
+   fall back to the SVG's intrinsic size, and carries no baseline gap. */
+.hero-title-ic svg { display: block; width: .9em; height: .9em; }
 @keyframes icFloat {
   0%, 100% { transform: translateY(0); }
   50%      { transform: translateY(-2.5px); }
