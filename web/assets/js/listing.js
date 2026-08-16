@@ -10,6 +10,9 @@
 
   var cardsEl = $('cards'), pagerEl = $('pager'), bannerEl = $('bannerSlot');
   var results = [], page = 1, view = 'grid';
+  /* True when `results` holds ranked partial matches rather than exact
+     ones — read by the headline and the notice above the grid. */
+  var isClosest = false;
 
   /* ── criteria from URL ──────────────────────────────────── */
   var q = new URLSearchParams(win.location.search);
@@ -17,6 +20,7 @@
     city:      q.get('city') || '',
     area:      q.get('area') || '',
     subarea:   q.get('subarea') || '',
+    needs:     q.get('needs') || '',
     budgetMin: q.get(P.budgetMin) || '',
     budgetMax: q.get(P.budgetMax) || '',
     category:  q.get(P.category) || '',
@@ -128,6 +132,7 @@
     add('city', criteria.city);
     add('area', criteria.area);
     add('subarea', criteria.subarea);
+    add('needs', criteria.needs);
     add(P.budgetMin, criteria.budgetMin);
     add(P.budgetMax, criteria.budgetMax);
     add(P.category, criteria.category);
@@ -202,6 +207,12 @@
           '<span class="advance">Advance <b>PKR ' + UI.fmtPKR(r.advance) + '</b></span>' +
         '</div>' +
         UI.badgeHTML(r.verified) +
+        /* Only present on closest-match results, where the score is the
+           reason this card ranks where it does. */
+        (r.needsTotal
+          ? '<span class="match-pill">Matches ' + r.needsMatched + ' of ' + r.needsTotal +
+            ' requirements</span>'
+          : '') +
         '<h2 class="pcard-title">' + r.title + '</h2>' +
         '<p class="pcard-loc">' + r.area + ', ' + r.city + '</p>' +
         '<p class="pcard-upd">Updated ' + UI.fmtRelative(r.updatedAt) + '</p>' +
@@ -319,9 +330,31 @@
       ? locAreaName + (locCityName ? ', ' + locCityName : '')
       : (locCityName || 'Pakistan');
     $('resTitle').textContent = 'Properties for Rent in ' + where;
+    if (isClosest) {
+      $('resCount').textContent = results.length + ' closest ' +
+        (results.length === 1 ? 'match' : 'matches');
+      return;
+    }
     $('resCount').textContent = results.length
       ? results.length + ' verified & listed ' + (results.length === 1 ? 'property' : 'properties')
       : 'No properties found';
+  }
+
+  /* Sits directly above the grid so the distinction between "these match
+     what you asked for" and "these are the nearest we have" is never
+     ambiguous. Cleared on any search that produced exact matches. */
+  function renderClosestNotice() {
+    var host = $('closestNotice');
+    if (!host) return;
+    if (!isClosest) { host.innerHTML = ''; host.hidden = true; return; }
+    var total = DATA.needList(criteria.needs).length;
+    host.hidden = false;
+    host.innerHTML =
+      '<div class="closest-note">' +
+        '<b>No property currently matches all your requirements.</b>' +
+        '<span>Showing the closest matches, ranked by how many of your ' +
+          total + ' requirement' + (total === 1 ? '' : 's') + ' each one meets.</span>' +
+      '</div>';
   }
 
   function load() {
@@ -331,8 +364,20 @@
        state and disappears when a real API supplies latency. */
     setTimeout(function () {
       results = DATA.query(criteria);
+      isClosest = false;
+
+      /* Nothing satisfies every selected requirement: rather than an
+         empty page, fall back to the ranked partial matches. Only
+         reachable when requirements were actually selected, so ordinary
+         no-result searches still show the normal empty state. */
+      if (!results.length && DATA.needList(criteria.needs).length) {
+        var near = DATA.closest(criteria);
+        if (near.length) { results = near; isClosest = true; }
+      }
+
       headline();
-      renderBanner(results.length);
+      renderClosestNotice();
+      renderBanner(isClosest ? 0 : results.length);
       if (!results.length) { cardsEl.setAttribute('aria-busy', 'false'); renderEmpty(); return; }
       paint();
     }, S.simulatedLatencyMs);

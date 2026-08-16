@@ -20,7 +20,9 @@
     subarea: '', subareaName: '',
     budgetMin: '', budgetMax: '',
     category: 'homes', type: '', size: '', unit: 'marla',
-    beds: '', preference: ''
+    beds: '', preference: '',
+    /* Canonical requirement keys (MOR_CONFIG.propertyNeeds), multi-select. */
+    needs: []
   };
 
   var TYPES = {
@@ -234,6 +236,28 @@
 
   renderBeds();
 
+  /* My Needs — multi-select, unlike every other chip group on this page,
+     so it toggles each chip independently instead of reusing
+     bindToggleGroup (which enforces a single choice). Values are the
+     canonical keys from MOR_CONFIG.propertyNeeds. */
+  var needChips = $('needChips');
+
+  (CFG.propertyNeeds || []).forEach(function (n) {
+    var chip = makeChip(n.label, false);
+    chip.setAttribute('data-need', n.key);
+    needChips.appendChild(chip);
+  });
+
+  needChips.addEventListener('click', function (e) {
+    var chip = e.target.closest('[data-need]');
+    if (!chip) return;
+    var key = chip.getAttribute('data-need');
+    var on = chip.getAttribute('aria-pressed') === 'true';
+    chip.setAttribute('aria-pressed', on ? 'false' : 'true');
+    if (on) state.needs = state.needs.filter(function (k) { return k !== key; });
+    else if (state.needs.indexOf(key) === -1) state.needs.push(key);
+  });
+
   /* Area size + unit */
   bindNumeric($('fSize'), function (raw) { state.size = raw; });
 
@@ -311,6 +335,9 @@
        this exact parameter name, and it stays a query parameter in both
        routing modes so the results page parses it identically. */
     add('subarea', state.subarea);
+    /* Comma-separated so several requirements travel in one readable
+       parameter; listing.js and MOR_DATA both accept this form. */
+    add('needs', state.needs.join(','));
 
     add(P.budgetMin, state.budgetMin);
     add(P.budgetMax, state.budgetMax);

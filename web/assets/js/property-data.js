@@ -10,6 +10,7 @@
     { id: 'L-LHR-1041', title: '10 Marla Upper Portion, Separate Entrance', category: 'homes', type: 'portion',
       city: 'Lahore', citySlug: 'lahore', area: 'Valencia Housing Society', areaSlug: 'valencia-town',
       rent: 165000, advance: 330000, beds: 5, baths: 6, carPorch: true, size: 10, sizeUnit: 'marla',
+      features: ['separate_entrance', 'roof', 'gas_meter'], roadWidthFt: 30,
       verified: true, updatedAt: '2026-07-24T09:10:00Z', images: [],
       phone: '+923000000001', email: 'listings@makanonrent.pk',
       details: {
@@ -29,6 +30,7 @@
       city: 'Lahore', citySlug: 'lahore', area: 'Johar Town', areaSlug: 'johar-town',
       subArea: 'Block J', subAreaSlug: 'block-j',
       rent: 95000, advance: 190000, beds: 3, baths: 3, carPorch: true, size: 5, sizeUnit: 'marla',
+      features: ['separate_entrance', 'ground_floor', 'gas_meter'], roadWidthFt: 25,
       verified: true, updatedAt: '2026-07-23T14:30:00Z', images: [],
       phone: '+923000000002', email: 'listings@makanonrent.pk',
       details: {
@@ -48,6 +50,8 @@
       city: 'Lahore', citySlug: 'lahore', area: 'Allama Iqbal Town, Lahore', areaSlug: 'allama-iqbal-town-lahore',
       subArea: 'Asif Block', subAreaSlug: 'asif-block',
       rent: 78000, advance: 156000, beds: 3, baths: 3, carPorch: true, size: 5, sizeUnit: 'marla',
+      /* Meets all six requirements (car_parking via carPorch above). */
+      features: ['separate_entrance', 'ground_floor', 'roof', 'gas_meter', 'solar'], roadWidthFt: 30,
       verified: true, updatedAt: '2026-08-10T10:00:00Z', images: [],
       phone: '+923000000010', email: 'listings@makanonrent.pk', details: {} },
 
@@ -55,6 +59,8 @@
       city: 'Lahore', citySlug: 'lahore', area: 'Allama Iqbal Town, Lahore', areaSlug: 'allama-iqbal-town-lahore',
       subArea: 'Asif Block', subAreaSlug: 'asif-block',
       rent: 52000, advance: 104000, beds: 2, baths: 2, carPorch: false, size: 4, sizeUnit: 'marla',
+      /* Partial: 3 of 6 — exercises the closest-match ranking. */
+      features: ['ground_floor', 'gas_meter', 'roof'], roadWidthFt: 20,
       verified: true, updatedAt: '2026-08-11T10:00:00Z', images: [],
       phone: '+923000000011', email: 'listings@makanonrent.pk', details: {} },
 
@@ -62,6 +68,7 @@
       city: 'Lahore', citySlug: 'lahore', area: 'Allama Iqbal Town, Lahore', areaSlug: 'allama-iqbal-town-lahore',
       subArea: 'Badar Block', subAreaSlug: 'badar-block',
       rent: 145000, advance: 290000, beds: 5, baths: 5, carPorch: true, size: 10, sizeUnit: 'marla',
+      features: ['roof', 'solar'], roadWidthFt: 40,
       verified: true, updatedAt: '2026-08-12T10:00:00Z', images: [],
       phone: '+923000000012', email: 'listings@makanonrent.pk', details: {} },
 
@@ -144,8 +151,33 @@
 
   /* Filters a criteria object into a result set. Same signature the
      API client will expose, so renderers stay untouched. */
+  /* ── practical requirements ("My Needs") ──────────────────────
+     car_parking reads the existing carPorch field (units.car_porch in
+     the schema); every other key is a tag in the record's features array
+     (listings.features). A record that never recorded the attribute
+     answers FALSE — "not specified" must never be counted as a yes, or
+     old listings would masquerade as matches. */
+  function hasNeed(r, key) {
+    if (key === 'car_parking') return !!r.carPorch;
+    return (r.features || []).indexOf(key) > -1;
+  }
+
+  /* Accepts an array or the comma-separated form used in the URL. */
+  function needList(v) {
+    if (!v) return [];
+    var arr = Array.isArray(v) ? v : String(v).split(',');
+    return arr.map(function (s) { return String(s).trim(); }).filter(Boolean);
+  }
+
+  function countNeeds(r, needs) {
+    var n = 0;
+    needs.forEach(function (k) { if (hasNeed(r, k)) n++; });
+    return n;
+  }
+
   function query(c) {
     c = c || {};
+    var needs = needList(c.needs);
     var out = LISTINGS.filter(function (r) {
       if (c.city && r.citySlug !== c.city) return false;
       if (c.area && r.areaSlug !== c.area) return false;
@@ -171,6 +203,12 @@
         if (c.sizePref === 'medium' && (sq <= 700 || sq > 2000)) return false;
         if (c.sizePref === 'large'  && sq <= 2000) return false;
       }
+      /* Strict AND across every selected requirement. Partial matches are
+         not returned here — closest() is the deliberate, separately
+         labelled fallback for them. */
+      for (var n = 0; n < needs.length; n++) {
+        if (!hasNeed(r, needs[n])) return false;
+      }
       return true;
     });
 
@@ -183,9 +221,44 @@
     return out;
   }
 
+  /* Closest matches: everything that satisfies every OTHER filter (city,
+     area, sub area, budget, beds…) but only SOME of the requirements.
+     Ranked by how many requirements it meets, best first, so a 4/5 can
+     never appear below a 2/5. Records meeting none are left out — they
+     are not "close" to anything the user asked for.
+     Each result carries needsMatched/needsTotal for the UI to label. */
+  function closest(c) {
+    c = c || {};
+    var needs = needList(c.needs);
+    if (!needs.length) return [];
+
+    var relaxed = {};
+    for (var k in c) { if (Object.prototype.hasOwnProperty.call(c, k)) relaxed[k] = c[k]; }
+    relaxed.needs = '';
+
+    return query(relaxed)
+      .map(function (r) {
+        var matched = countNeeds(r, needs);
+        var copy = {};
+        for (var p in r) { if (Object.prototype.hasOwnProperty.call(r, p)) copy[p] = r[p]; }
+        copy.needsMatched = matched;
+        copy.needsTotal = needs.length;
+        copy.needsMissing = needs.filter(function (n) { return !hasNeed(r, n); });
+        return copy;
+      })
+      .filter(function (r) { return r.needsMatched > 0; })
+      .sort(function (a, b) {
+        if (b.needsMatched !== a.needsMatched) return b.needsMatched - a.needsMatched;
+        return new Date(b.updatedAt) - new Date(a.updatedAt);
+      });
+  }
+
   function byId(id) {
     return LISTINGS.filter(function (r) { return r.id === id; })[0] || null;
   }
 
-  root.MOR_DATA = { query: query, byId: byId, toSqft: toSqft };
+  root.MOR_DATA = {
+    query: query, closest: closest, byId: byId, toSqft: toSqft,
+    hasNeed: hasNeed, needList: needList
+  };
 })(window);

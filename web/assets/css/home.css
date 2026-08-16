@@ -293,6 +293,10 @@ img, svg { display: block; max-width: 100%; }
 
 /* chips */
 .chips { display: flex; flex-wrap: wrap; gap: 9px; }
+/* My Needs holds longer labels than the numeric Bedrooms row, so its
+   chips are a touch tighter and allowed to wrap — the group still reads
+   as the same control family, just carrying words instead of digits. */
+#needChips .chip, #featChips .chip { padding: 8px 14px; font-size: 13px; }
 .chip {
   padding: 9px 17px; border-radius: 100px;
   background: var(--surface); border: 1.5px solid var(--line);
@@ -302,6 +306,17 @@ img, svg { display: block; max-width: 100%; }
 .chip:hover { border-color: var(--gold); color: #8A6D22; transform: translateY(-1px); }
 .chip[aria-pressed="true"] {
   background: var(--gold-soft); border-color: var(--gold); color: #8A6D22;
+}
+/* Multi-select needs a stronger "on" state than the single-choice rows:
+   several chips are lit at once, so a filled swatch plus a tick reads at
+   a glance instead of a subtle tint that blurs together. */
+#needChips .chip[aria-pressed="true"],
+#featChips .chip[aria-pressed="true"] {
+  background: var(--green); border-color: var(--green); color: #fff; font-weight: 700;
+}
+#needChips .chip[aria-pressed="true"]::before,
+#featChips .chip[aria-pressed="true"]::before {
+  content: '✓'; margin-right: 6px; font-weight: 800;
 }
 
 .area-row { display: flex; gap: 10px; align-items: center; }

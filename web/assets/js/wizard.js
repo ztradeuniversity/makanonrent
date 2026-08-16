@@ -254,6 +254,49 @@
   });
   pressGroup($('parkSeg'), 'data-park', function (v) { state.parking = Number(v); });
 
+  /* Property features — canonical keys from MOR_CONFIG.propertyNeeds,
+     stored in state.features (the array the submit API already sends to
+     listings.features). car_parking is excluded here on purpose: the
+     "Car parking" segmented control above owns that value and writes
+     units.car_porch, so duplicating it would create two sources of
+     truth for one attribute. Free-text tags remain available further
+     down the wizard for anything outside this canonical set. */
+  (function () {
+    var host = $('featChips');
+    if (!host) return;
+    var defs = ((win.MOR_CONFIG && win.MOR_CONFIG.propertyNeeds) || [])
+      .filter(function (n) { return n.key !== 'car_parking'; });
+
+    defs.forEach(function (n) {
+      var b = doc.createElement('button');
+      b.type = 'button';
+      b.className = 'chip';
+      b.textContent = n.label;
+      b.setAttribute('data-feat', n.key);
+      b.setAttribute('aria-pressed', 'false');
+      host.appendChild(b);
+    });
+
+    host.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-feat]');
+      if (!b) return;
+      var key = b.getAttribute('data-feat');
+      var on = b.getAttribute('aria-pressed') === 'true';
+      b.setAttribute('aria-pressed', on ? 'false' : 'true');
+      if (on) state.features = state.features.filter(function (f) { return f !== key; });
+      else if (state.features.indexOf(key) === -1) state.features.push(key);
+      renderTags();
+    });
+
+    /* Reflect a restored draft back onto the chips. */
+    win.MOR_WZ_SYNC_FEATS = function () {
+      [].slice.call(host.querySelectorAll('[data-feat]')).forEach(function (b) {
+        b.setAttribute('aria-pressed',
+          state.features.indexOf(b.getAttribute('data-feat')) > -1 ? 'true' : 'false');
+      });
+    };
+  })();
+
   /* ── STEP 5 · rent ──────────────────────────────────────── */
   var curSel = $('wCurrency');
   CFG.currencies.forEach(function (c) {
@@ -343,11 +386,21 @@
     return '<button type="button" class="chip" data-sug="' + UI.esc(t) + '">' + UI.esc(t) + '</button>';
   }).join('');
 
+  /* A canonical key stored by the feature chips ("gas_meter") is shown by
+     its human label here, so the tag list stays readable whether an entry
+     came from a chip or was typed freehand. */
+  function featureLabel(key) {
+    var defs = (win.MOR_CONFIG && win.MOR_CONFIG.propertyNeeds) || [];
+    for (var i = 0; i < defs.length; i++) if (defs[i].key === key) return defs[i].label;
+    return key;
+  }
+
   function renderTags() {
     tagList.innerHTML = state.features.length
       ? state.features.map(function (t, i) {
-          return '<span class="tag">' + UI.esc(t) +
-                 '<button type="button" data-tagrm="' + i + '" aria-label="Remove ' + UI.esc(t) + '">&times;</button></span>';
+          var label = featureLabel(t);
+          return '<span class="tag">' + UI.esc(label) +
+                 '<button type="button" data-tagrm="' + i + '" aria-label="Remove ' + UI.esc(label) + '">&times;</button></span>';
         }).join('')
       : '<span class="tag-empty">No features added yet.</span>';
     saveDraft();
@@ -374,6 +427,9 @@
     var b = e.target.closest('[data-tagrm]');
     if (!b) return;
     state.features.splice(Number(b.getAttribute('data-tagrm')), 1);
+    /* Removing a canonical feature from the tag list must un-light its
+       chip, or the two views would disagree. */
+    if (win.MOR_WZ_SYNC_FEATS) win.MOR_WZ_SYNC_FEATS();
     renderTags();
   });
   renderTags();
@@ -608,6 +664,7 @@
           b.setAttribute('aria-pressed', b.getAttribute(s[1]) === s[2] ? 'true' : 'false');
         });
       });
+    if (win.MOR_WZ_SYNC_FEATS) win.MOR_WZ_SYNC_FEATS();
     $('cnicWrap').hidden = !state.wantVerification;
   }
 

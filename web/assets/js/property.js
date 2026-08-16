@@ -107,8 +107,29 @@
         tile(IC.car, 'Car Porch', r.carPorch ? 'Available' : 'Not available') +
         tile(IC.size, 'Property Size', UI.fmtSize(r)) +
         tile(IC.type, 'Property Type', UI.typeLabel(r.type)) +
+        /* Practical for a renter deciding whether to visit: can a car
+           reach the door. Only shown when recorded — an unset value is
+           left out rather than displayed as 0 ft. */
+        (r.roadWidthFt ? tile(IC.size, 'Entrance / Street', r.roadWidthFt + ' ft') : '') +
         tile(IC.ref, 'Reference', r.id) +
       '</div>';
+
+    /* Property features — the canonical requirement keys captured by the
+       Submit wizard and matched by the homepage "My Needs" filter. Only
+       the ones this property actually has are listed; anything absent is
+       simply not claimed. */
+    var needDefs = (win.MOR_CONFIG && win.MOR_CONFIG.propertyNeeds) || [];
+    var present = needDefs.filter(function (n) {
+      return n.key === 'car_parking' ? !!r.carPorch : (r.features || []).indexOf(n.key) > -1;
+    });
+    var featuresBlock = present.length
+      ? '<h2 class="detail-title">Property Features</h2>' +
+        '<div class="feat-grid">' +
+          present.map(function (n) {
+            return '<span class="feat-item"><b>&#10003;</b>' + UI.esc(n.label) + '</span>';
+          }).join('') +
+        '</div>'
+      : '';
 
     var details = r.details || {};
     var sections = SECTIONS.map(function (s) {
@@ -131,7 +152,7 @@
     root.setAttribute('aria-busy', 'false');
     root.innerHTML =
       '<div class="detail-grid">' +
-        '<div>' + gallery + specs +
+        '<div>' + gallery + specs + featuresBlock +
           '<h2 class="detail-title">Property Information</h2>' +
           '<div class="sections">' + sections + '</div>' +
         '</div>' + summary +

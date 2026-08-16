@@ -148,6 +148,16 @@
               <span class="adv-hint">Shows homes with at least this many bedrooms.</span>
             </div>
 
+            <!-- Practical requirements. Options come from
+                 MOR_CONFIG.propertyNeeds — the same canonical keys the
+                 Submit wizard writes and the details page reads — so the
+                 list can never drift between screens. Multi-select. -->
+            <div class="adv-block">
+              <span class="adv-label" id="lblNeeds">My Needs</span>
+              <div class="chips" id="needChips" role="group" aria-labelledby="lblNeeds"></div>
+              <span class="adv-hint">Pick any that matter. If nothing matches them all, we show the closest.</span>
+            </div>
+
             <div class="adv-block">
               <span class="adv-label" id="lblArea">Area</span>
               <div class="area-row">

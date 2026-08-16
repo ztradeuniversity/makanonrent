@@ -148,6 +148,24 @@
       bucketChars: 2
     },
 
+    /* Practical rental requirements — the ONE canonical list shared by the
+       homepage "My Needs" filter, the Submit Property wizard, the results
+       filtering and the property details page, so a value written at
+       submission is the same string every other screen matches on.
+
+       Storage reuses columns that already exist (no new ones):
+         car_parking → units.car_porch (boolean, migration 0001)
+         the rest    → listings.features text[] (migration 0001)
+       An absent value means "not specified" and never counts as a yes. */
+    propertyNeeds: [
+      { key: 'car_parking',       label: 'Car Parking' },
+      { key: 'separate_entrance', label: 'Separate Entrance' },
+      { key: 'ground_floor',      label: 'Ground Floor' },
+      { key: 'roof',              label: 'Roof' },
+      { key: 'gas_meter',         label: 'Gas Meter' },
+      { key: 'solar',             label: 'Solar' }
+    ],
+
     /* PKR today; the selector is currency-ready for expansion. */
     currencies: [
       { code: 'PKR', symbol: 'Rs',  label: 'Pakistani Rupee', default: true },
