@@ -169,6 +169,102 @@ export async function onRequestPost(context) {
       return json(env, { ok: true, deletedChildren: childCount });
     }
 
+    /* ── Main/Sub Location management (Published Data panel) ──────────
+       These address rows by their STORED node_id, which the client gets
+       from GET /api/locations. node_id is never recomputed from a name. */
+
+    if (action === 'add-node') {
+      /* Creates ONE Main Location (under a city) or ONE Sub Location
+         (under a main). Aliases are written onto this single row — an
+         alias never becomes a row of its own. */
+      if (!isNonEmptyString(body.parentNodeId, 200)) return json(env, { error: 'parentNodeId is required.' }, 422);
+      if (!isNonEmptyString(body.name, 160)) return json(env, { error: 'name is required.' }, 422);
+
+      var parent = await db.from('locations').select('node_id, type').eq('node_id', body.parentNodeId).maybeSingle();
+      if (parent.error) throw parent.error;
+      if (!parent.data) return json(env, { error: 'Parent location does not exist.' }, 404);
+
+      var childType;
+      if (parent.data.type === 'city') childType = 'locality';
+      else if (parent.data.type === 'locality' || parent.data.type === 'society') childType = 'subarea';
+      else return json(env, { error: 'A location cannot be added under a ' + parent.data.type + '.' }, 422);
+
+      var newSlug = slugify(body.name);
+      if (!newSlug) return json(env, { error: 'That name has no usable characters.' }, 422);
+      var newNode = body.parentNodeId + '/' + newSlug;
+
+      var exists = await db.from('locations').select('node_id').eq('node_id', newNode).maybeSingle();
+      if (exists.error) throw exists.error;
+      if (exists.data) return json(env, { error: 'A location with that name already exists here.' }, 409);
+
+      var addAliases = (childType === 'locality' && Array.isArray(body.aliases))
+        ? body.aliases.filter(function (a) { return isNonEmptyString(a, 160); })
+        : [];
+
+      var ins = await db.from('locations').insert({
+        node_id: newNode, parent_node_id: body.parentNodeId, name: body.name,
+        slug: newSlug, type: childType, status: 'approved', active: true,
+        sort_order: Number(body.sortOrder) || 0, source: 'bank', aliases: addAliases
+      });
+      if (ins.error) throw ins.error;
+
+      await audit('add_location_node', 'location', newNode, { type: childType, name: body.name });
+      return json(env, { ok: true, nodeId: newNode, type: childType }, 201);
+    }
+
+    if (action === 'rename-node') {
+      /* DISPLAY NAME ONLY — node_id and slug are deliberately untouched.
+         node_id is the identity that sub locations reference as their
+         parent, that properties.area_node_id points at, and that admin
+         area assignments are keyed on. Re-deriving it from a new name
+         would strand every one of those references, so a rename here
+         changes what is shown and searched, never what is referenced.
+         This is the same rule the city 'rename' action already follows. */
+      if (!isNonEmptyString(body.nodeId, 200)) return json(env, { error: 'nodeId is required.' }, 422);
+      if (!isNonEmptyString(body.name, 160)) return json(env, { error: 'name is required.' }, 422);
+
+      var target = await db.from('locations').select('node_id, type').eq('node_id', body.nodeId).maybeSingle();
+      if (target.error) throw target.error;
+      if (!target.data) return json(env, { error: 'No such location.' }, 404);
+      if (target.data.type === 'city') return json(env, { error: "Use action 'rename' for a city." }, 422);
+
+      var ren = await db.from('locations').update({ name: body.name }).eq('node_id', body.nodeId);
+      if (ren.error) throw ren.error;
+      await audit('rename_location_node', 'location', body.nodeId, { name: body.name, type: target.data.type });
+      return json(env, { ok: true, nodeId: body.nodeId });
+    }
+
+    if (action === 'set-aliases') {
+      /* Replaces the alias list on ONE canonical Main Location row. This
+         is the add/edit/remove path for "Also Known As" — because aliases
+         are a column on the canonical row, changing them can never create
+         a second parent and can never move the sub locations. */
+      if (!isNonEmptyString(body.nodeId, 200)) return json(env, { error: 'nodeId is required.' }, 422);
+      if (!Array.isArray(body.aliases)) return json(env, { error: 'aliases must be an array.' }, 422);
+
+      var aliasTarget = await db.from('locations').select('node_id, type').eq('node_id', body.nodeId).maybeSingle();
+      if (aliasTarget.error) throw aliasTarget.error;
+      if (!aliasTarget.data) return json(env, { error: 'No such location.' }, 404);
+      if (aliasTarget.data.type !== 'locality' && aliasTarget.data.type !== 'society') {
+        return json(env, { error: 'Only a Main Location can carry Also Known As names.' }, 422);
+      }
+
+      var cleanAliases = [];
+      var seenAlias = {};
+      body.aliases.forEach(function (a) {
+        if (!isNonEmptyString(a, 160)) return;
+        var k = String(a).trim().toLowerCase();
+        if (seenAlias[k]) return;
+        seenAlias[k] = 1;
+        cleanAliases.push(String(a).trim());
+      });
+
+      var setA = await db.from('locations').update({ aliases: cleanAliases }).eq('node_id', body.nodeId);
+      if (setA.error) throw setA.error;
+      await audit('set_location_aliases', 'location', body.nodeId, { count: cleanAliases.length });
+      return json(env, { ok: true, nodeId: body.nodeId, aliases: cleanAliases });
+    }
+
     if (action === 'delete-node') {
       /* Deletes a Main or Sub Location (never a city — use 'delete' for
          that) and, for a Main Location, every Sub Location beneath it.
@@ -234,7 +330,7 @@ export async function onRequestPost(context) {
       return json(env, { ok: true, deleted: deps });
     }
 
-    return json(env, { error: "action must be one of: 'add', 'rename', 'disable', 'enable', 'delete', 'delete-node'." }, 422);
+    return json(env, { error: "action must be one of: 'add', 'rename', 'disable', 'enable', 'delete', 'add-node', 'rename-node', 'set-aliases', 'delete-node'." }, 422);
   } catch (e) {
     return json(env, { error: (e && e.message) || 'City management request failed.' }, 500);
   }

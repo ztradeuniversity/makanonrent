@@ -21,10 +21,12 @@
       <span class="brand-text"><b>MakanOnRent</b><span>Verified Rentals</span></span>
     </a>
     <div class="head-right">
-      <div class="head-trust">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2 4 5.5v6c0 5 3.4 8.6 8 10.5 4.6-1.9 8-5.5 8-10.5v-6z"/><path d="m9 12 2 2 4-4"/></svg>
-        <span>Field-Verified Listings</span>
-      </div>
+      <!-- The "Field-Verified Listings" pill that sat here was the third
+           verification claim within one screen (brand sub-text, this pill,
+           and the hero eyebrow directly below it). The hero eyebrow is the
+           stronger placement, so this duplicate is dropped for breathing
+           room rather than repeating the same promise twice in the same
+           sightline. -->
       <a class="btn-gold head-cta" href="submit.html">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
         Submit Property
@@ -61,7 +63,9 @@
     </span>
 
     <h1 class="rise rise-2">Search for Rent in <em>Pakistan</em></h1>
-    <p class="hero-sub rise rise-2">Verified from the street to the front door — not just from a listing photo.</p>
+    <!-- Reworded so the sub-line adds information instead of repeating the
+         word "Verified" a third time in three consecutive elements. -->
+    <p class="hero-sub rise rise-2">Every home checked in person, with the rent and availability confirmed before you call.</p>
 
     <!-- ── SEARCH PANEL ── -->
     <form class="search-panel rise rise-3" id="searchForm" novalidate>
@@ -96,19 +100,16 @@
           </div>
         </div>
 
+        <!-- From and To share ONE control separated by a hairline, so the
+             budget reads as a single range rather than two unrelated
+             fields. Both keep their original ids/attributes — home.js
+             still reads fBudgetMin/fBudgetMax exactly as before. -->
         <div class="field field-budget">
-          <label for="fBudgetMin">From</label>
-          <div class="control">
-            <span class="prefix">PKR</span>
-            <input id="fBudgetMin" data-premium type="number" inputmode="numeric" min="0" step="1" placeholder="5000">
-          </div>
-        </div>
-
-        <div class="field field-budget">
-          <label for="fBudgetMax">To</label>
-          <div class="control">
-            <span class="prefix">PKR</span>
-            <input id="fBudgetMax" data-premium type="number" inputmode="numeric" min="0" step="1" placeholder="20000">
+          <label for="fBudgetMin">Monthly Rent (PKR)</label>
+          <div class="control control-budget">
+            <input id="fBudgetMin" data-premium type="number" inputmode="numeric" min="0" step="1" placeholder="Min">
+            <span class="bud-sep" aria-hidden="true"></span>
+            <input id="fBudgetMax" data-premium type="number" inputmode="numeric" min="0" step="1" placeholder="Max">
           </div>
         </div>
 
@@ -135,6 +136,16 @@
                 <button type="button" data-cat="commercial" aria-pressed="false">Commercial</button>
               </div>
               <div class="chips" id="typeChips" role="group" aria-label="Property type"></div>
+            </div>
+
+            <!-- Bedrooms is the filter renters reach for first, and it was
+                 the one practical requirement already supported end to end
+                 (state.beds → beds param → MOR_DATA.query) yet missing from
+                 this panel. Minimum match: "2" returns 2-bed and larger. -->
+            <div class="adv-block">
+              <span class="adv-label" id="lblBeds">Bedrooms</span>
+              <div class="chips" id="bedChips" role="group" aria-labelledby="lblBeds"></div>
+              <span class="adv-hint">Shows homes with at least this many bedrooms.</span>
             </div>
 
             <div class="adv-block">

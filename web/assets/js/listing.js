@@ -83,7 +83,11 @@
   populateSub(criteria.subarea);
 
   mainSel.addEventListener('change', function () {
-    criteria.area = mainSel.value;
+    /* Same rule as the homepage: an alias option resolves to its
+       canonical node, so re-filtering here by "AIT" matches the same
+       properties as "Allama Iqbal Town". */
+    var canonical = mainSel.value ? LOC.getById(mainIdBySlug[mainSel.value]) : null;
+    criteria.area = canonical ? canonical.slug : mainSel.value;
     locAreaName = mainSel.value ? mainSel.options[mainSel.selectedIndex].text : '';
     criteria.subarea = '';
     populateSub();

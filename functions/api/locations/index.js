@@ -41,12 +41,25 @@ export async function onRequestGet(context) {
     mains.forEach(function (m) {
       var city = byNode[m.parent_node_id];
       if (!city || city.type !== 'city') return;
-      var subs = rows
-        .filter(function (r) { return r.type === 'subarea' && r.parent_node_id === m.node_id; })
-        .map(function (r) { return r.name; });
+      var subRows = rows.filter(function (r) {
+        return r.type === 'subarea' && r.parent_node_id === m.node_id;
+      });
       entries.push({
         cityId: city.node_id, citySlug: city.slug, cityName: city.name,
-        main: m.name, aliases: m.aliases || [], subs: subs, publishedAt: null
+        /* nodeId/subNodes carry the REAL stored identifiers. Management
+           screens must address rows by these, never by re-deriving a slug
+           from the display name: rows written before a slug-rule change
+           (e.g. the non-Latin fallback) keep their original node_id
+           forever, so a recomputed id would miss them and the API would
+           answer "No such location". `subs` (names only) is kept because
+           the search hydration path consumes that shape. */
+        nodeId: m.node_id,
+        main: m.name, aliases: m.aliases || [],
+        subs: subRows.map(function (r) { return r.name; }),
+        subNodes: subRows.map(function (r) {
+          return { nodeId: r.node_id, name: r.name, slug: r.slug };
+        }),
+        publishedAt: null
       });
     });
 

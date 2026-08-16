@@ -463,10 +463,12 @@
         '<div class="lm-bank-row">' +
           '<div class="lm-grow"><b>' + esc(city.name) + '</b>' +
           '<span class="lm-crumb">' + city.list.length + ' main location' + (city.list.length === 1 ? '' : 's') + '</span></div>' +
+          '<button class="lm-mini" type="button" data-bank-addmain="' + esc(cid) + '">+ Main Location</button>' +
         '</div>' +
         '<div class="lm-tree-children">' + city.list.map(function (e) {
           var key = entryKey(e);
           var subs = e.subs || [];
+          var subNodes = e.subNodes || [];
           var aliases = e.aliases || [];
           var open = !!bankOpen[key];
           return '<div class="lm-tree-main">' +
@@ -476,22 +478,37 @@
               '<span class="lm-grow"><b>' + esc(e.main) + '</b></span>' +
               '<span>' + aliases.length + ' alias' + (aliases.length === 1 ? '' : 'es') +
                 ' · ' + subs.length + ' sub' + (subs.length === 1 ? '' : 's') + '</span>' +
-              '<button class="lm-mini" type="button" data-bank-edit="' + esc(key) + '">Edit</button>' +
+              '<button class="lm-mini" type="button" data-bank-renamemain="' + esc(key) + '">Rename</button>' +
               '<button class="lm-ico is-danger" type="button" data-bank-del="' + esc(key) + '" aria-label="Delete main location">' + IC.del + '</button>' +
             '</div>' +
             (open
               ? '<div class="lm-tree-children">' +
-                  '<div class="lm-crumb"><b>Also Known As</b>' + (aliases.length
-                    ? ':<br>' + aliases.map(function (a) { return '&nbsp;&nbsp;• ' + esc(a); }).join('<br>')
-                    : ': none') + '</div>' +
-                  '<div class="lm-crumb"><b>Sub Locations (' + subs.length + ')</b>' + (subs.length
-                    ? ':' : ': none') + '</div>' +
-                  subs.map(function (s) {
-                    return '<div class="lm-bank-row lm-bank-row-sm">' +
-                      '<span class="lm-grow" style="margin-left:30px">' + esc(s) + '</span>' +
-                      '<button class="lm-ico is-danger" type="button" data-bank-delsub="' + esc(key) + '" data-sub="' + esc(s) + '" aria-label="Delete sub location">' + IC.del + '</button>' +
-                    '</div>';
-                  }).join('') +
+                  '<div class="lm-bank-row lm-bank-row-sm">' +
+                    '<span class="lm-grow"><b>Also Known As</b> (' + aliases.length + ')</span>' +
+                    '<button class="lm-mini" type="button" data-bank-addalias="' + esc(key) + '">+ Alias</button>' +
+                  '</div>' +
+                  (aliases.length
+                    ? aliases.map(function (a, ai) {
+                        return '<div class="lm-bank-row lm-bank-row-sm">' +
+                          '<span class="lm-grow" style="margin-left:30px">' + esc(a) + '</span>' +
+                          '<button class="lm-mini" type="button" data-bank-editalias="' + esc(key) + '" data-idx="' + ai + '">Edit</button>' +
+                          '<button class="lm-ico is-danger" type="button" data-bank-delalias="' + esc(key) + '" data-idx="' + ai + '" aria-label="Remove alias">' + IC.del + '</button>' +
+                        '</div>';
+                      }).join('')
+                    : '<div class="lm-empty" style="margin-left:30px">No alias names.</div>') +
+                  '<div class="lm-bank-row lm-bank-row-sm">' +
+                    '<span class="lm-grow"><b>Sub Locations</b> (' + subs.length + ')</span>' +
+                    '<button class="lm-mini" type="button" data-bank-addsub="' + esc(key) + '">+ Sub Location</button>' +
+                  '</div>' +
+                  (subNodes.length
+                    ? subNodes.map(function (s) {
+                        return '<div class="lm-bank-row lm-bank-row-sm">' +
+                          '<span class="lm-grow" style="margin-left:30px">' + esc(s.name) + '</span>' +
+                          '<button class="lm-mini" type="button" data-bank-renamesub="' + esc(s.nodeId) + '" data-name="' + esc(s.name) + '">Edit</button>' +
+                          '<button class="lm-ico is-danger" type="button" data-bank-delsub="' + esc(s.nodeId) + '" data-name="' + esc(s.name) + '" aria-label="Delete sub location">' + IC.del + '</button>' +
+                        '</div>';
+                      }).join('')
+                    : '<div class="lm-empty" style="margin-left:30px">No sub locations.</div>') +
                 '</div>'
               : '') +
           '</div>';
@@ -522,76 +539,158 @@
       return;
     }
 
+    /* ── Main Location: delete ─────────────────────────────────────
+       Addressed by e.nodeId — the id the SERVER stores. Deriving it from
+       the display name breaks on any row written under an older slug
+       rule (that is what produced "No such location." on the Urdu row,
+       whose stored id is 'lahore/' from the pre-fallback slugify). */
     var del = ev.target.closest('[data-bank-del]');
     if (del) {
       var e1 = findEntry(del.getAttribute('data-bank-del'));
-      if (!e1) return;
-      var nodeId = e1.cityId + '/' + LOC.slugify(e1.main);
+      if (!e1 || !e1.nodeId) return;
       if (!win.confirm('Delete "' + e1.main + '" from the database?\n\nThis also removes its ' +
         (e1.subs || []).length + ' sub location(s) and its ' + (e1.aliases || []).length +
-        ' alias name(s). Properties already using this area keep their records but lose the area link.')) return;
+        ' alias name(s).')) return;
       bankMutate(async function () {
         try {
-          await BANK.deleteNode(nodeId, false);
+          await BANK.deleteNode(e1.nodeId, false);
         } catch (err) {
           /* 409 = the server found dependents and is refusing until the
              admin is told exactly what they are. */
           if (err.status !== 409 || !err.data || !err.data.dependents) throw err;
           var d = err.data.dependents;
-          var lines = 'Deleting "' + e1.main + '" will affect:\n' +
+          var warn = 'Deleting "' + e1.main + '" will affect:\n' +
             '· ' + (d.subLocations == null ? 'unknown' : d.subLocations) + ' sub location(s) — deleted\n' +
             '· ' + (d.properties == null ? 'unknown' : d.properties) + ' property/properties — kept, area link cleared\n' +
             '· ' + (d.areaAssignments == null ? 'unknown' : d.areaAssignments) + ' admin area assignment(s) — DELETED\n' +
             '· ' + (d.tasks == null ? 'unknown' : d.tasks) + ' task(s) — kept, area cleared\n\nProceed?';
-          if (!win.confirm(lines)) throw new Error('Deletion cancelled.');
-          await BANK.deleteNode(nodeId, true);
+          if (!win.confirm(warn)) throw new Error('Deletion cancelled.');
+          await BANK.deleteNode(e1.nodeId, true);
         }
       }, 'Deleted from the database.');
       return;
     }
 
-    var delSub = ev.target.closest('[data-bank-delsub]');
-    if (delSub) {
-      var e2 = findEntry(delSub.getAttribute('data-bank-delsub'));
-      if (!e2) return;
-      var subName = delSub.getAttribute('data-sub');
-      if (!win.confirm('Delete sub location "' + subName + '" from the database?')) return;
-      var subNode = e2.cityId + '/' + LOC.slugify(e2.main) + '/' + LOC.slugify(subName);
-      bankMutate(function () { return BANK.deleteNode(subNode, true); }, 'Sub location deleted.');
+    /* ── Main Location: rename (display name only) ──────────────── */
+    var renMain = ev.target.closest('[data-bank-renamemain]');
+    if (renMain) {
+      var e4 = findEntry(renMain.getAttribute('data-bank-renamemain'));
+      if (!e4 || !e4.nodeId) return;
+      var newMain = win.prompt(
+        'Rename this main location.\n\nThe displayed and searched name changes; its internal id ' +
+        '(' + e4.nodeId + ') stays the same so its sub locations, property links and ' +
+        'area assignments keep working.', e4.main);
+      if (newMain === null) return;
+      newMain = newMain.trim();
+      if (!newMain || newMain === e4.main) return;
+      bankMutate(function () { return BANK.renameNode(e4.nodeId, newMain); }, 'Main location renamed.');
       return;
     }
 
-    var edit = ev.target.closest('[data-bank-edit]');
-    if (edit) {
-      var e3 = findEntry(edit.getAttribute('data-bank-edit'));
-      if (!e3) return;
-      /* The canonical name derives node_id, so renaming it would create a
-         different node and strand the sub locations. Aliases and sub
-         locations are freely editable; the canonical name is shown but
-         not editable here, which is what the schema safely permits. */
-      var nextAliases = win.prompt(
-        'Also Known As for "' + e3.main + '" (one per line).\n' +
-        'These are alternate names for this SAME main location.',
-        (e3.aliases || []).join('\n'));
-      if (nextAliases === null) return;
-      var nextSubs = win.prompt(
-        'Sub Locations for "' + e3.main + '" (one per line).\n' +
-        'Removing a line here does NOT delete that sub location — use its delete button.',
-        (e3.subs || []).join('\n'));
-      if (nextSubs === null) return;
-
-      function lines(v) {
-        return String(v).split(/\r?\n/).map(function (s) { return s.trim(); }).filter(Boolean);
-      }
+    /* ── Main Location: add under a city ───────────────────────── */
+    var addMain = ev.target.closest('[data-bank-addmain]');
+    if (addMain) {
+      var cityId = addMain.getAttribute('data-bank-addmain');
+      var mainName = win.prompt('New main location name (canonical):', '');
+      if (mainName === null) return;
+      mainName = mainName.trim();
+      if (!mainName) return;
+      var aliasBlob = win.prompt(
+        'Also Known As for "' + mainName + '" — one per line.\n' +
+        'These become alternate NAMES of this same location, not separate locations.\n' +
+        'Leave blank for none.', '');
+      if (aliasBlob === null) return;
       bankMutate(function () {
-        return BANK.publishEntry({
-          cityId: e3.cityId, citySlug: e3.citySlug, cityName: e3.cityName,
-          main: e3.main, aliases: lines(nextAliases), subs: lines(nextSubs)
-        });
-      }, 'Saved to the database.');
+        return BANK.addNode(cityId, mainName, toLines(aliasBlob));
+      }, 'Main location added.');
+      return;
+    }
+
+    /* ── Alias: add / edit / remove ─────────────────────────────
+       All three write the whole aliases array back onto the canonical
+       row, so an alias can never become a second parent. */
+    var addAlias = ev.target.closest('[data-bank-addalias]');
+    if (addAlias) {
+      var e5 = findEntry(addAlias.getAttribute('data-bank-addalias'));
+      if (!e5 || !e5.nodeId) return;
+      var newAlias = win.prompt('New "Also Known As" name for "' + e5.main + '":', '');
+      if (newAlias === null) return;
+      newAlias = newAlias.trim();
+      if (!newAlias) return;
+      bankMutate(function () {
+        return BANK.setAliases(e5.nodeId, (e5.aliases || []).concat([newAlias]));
+      }, 'Alias added — it resolves to the same main location.');
+      return;
+    }
+
+    var editAlias = ev.target.closest('[data-bank-editalias]');
+    if (editAlias) {
+      var e6 = findEntry(editAlias.getAttribute('data-bank-editalias'));
+      if (!e6 || !e6.nodeId) return;
+      var ai = Number(editAlias.getAttribute('data-idx'));
+      var cur = (e6.aliases || [])[ai];
+      var nextAlias = win.prompt('Edit alias of "' + e6.main + '":', cur || '');
+      if (nextAlias === null) return;
+      nextAlias = nextAlias.trim();
+      if (!nextAlias) return;
+      var updated = (e6.aliases || []).slice();
+      updated[ai] = nextAlias;
+      bankMutate(function () { return BANK.setAliases(e6.nodeId, updated); }, 'Alias updated.');
+      return;
+    }
+
+    var delAlias = ev.target.closest('[data-bank-delalias]');
+    if (delAlias) {
+      var e7 = findEntry(delAlias.getAttribute('data-bank-delalias'));
+      if (!e7 || !e7.nodeId) return;
+      var di = Number(delAlias.getAttribute('data-idx'));
+      var gone = (e7.aliases || [])[di];
+      if (!win.confirm('Remove the alias "' + gone + '"?\n\nOnly this alternate name is removed — "' +
+        e7.main + '" and its sub locations are untouched.')) return;
+      var remaining = (e7.aliases || []).filter(function (_, i) { return i !== di; });
+      bankMutate(function () { return BANK.setAliases(e7.nodeId, remaining); }, 'Alias removed.');
+      return;
+    }
+
+    /* ── Sub Location: add / rename / delete ───────────────────── */
+    var addSub = ev.target.closest('[data-bank-addsub]');
+    if (addSub) {
+      var e8 = findEntry(addSub.getAttribute('data-bank-addsub'));
+      if (!e8 || !e8.nodeId) return;
+      var subName = win.prompt('New sub location under "' + e8.main + '":', '');
+      if (subName === null) return;
+      subName = subName.trim();
+      if (!subName) return;
+      bankMutate(function () { return BANK.addNode(e8.nodeId, subName, []); }, 'Sub location added.');
+      return;
+    }
+
+    var renSub = ev.target.closest('[data-bank-renamesub]');
+    if (renSub) {
+      var subNodeId = renSub.getAttribute('data-bank-renamesub');
+      var curSub = renSub.getAttribute('data-name');
+      var nextSub = win.prompt('Rename sub location:', curSub);
+      if (nextSub === null) return;
+      nextSub = nextSub.trim();
+      if (!nextSub || nextSub === curSub) return;
+      bankMutate(function () { return BANK.renameNode(subNodeId, nextSub); }, 'Sub location renamed.');
+      return;
+    }
+
+    var delSub = ev.target.closest('[data-bank-delsub]');
+    if (delSub) {
+      var delSubId = delSub.getAttribute('data-bank-delsub');
+      var delSubName = delSub.getAttribute('data-name');
+      if (!win.confirm('Delete sub location "' + delSubName + '" from the database?')) return;
+      bankMutate(function () { return BANK.deleteNode(delSubId, true); }, 'Sub location deleted.');
       return;
     }
   });
+
+  function toLines(v) {
+    return String(v == null ? '' : v).split(/\r?\n/)
+      .map(function (s) { return s.trim(); }).filter(Boolean);
+  }
 
   /* CSP (`script-src 'self'`) blocks inline handlers, so the Published
      Data disclosure is bound here instead of in the markup. */

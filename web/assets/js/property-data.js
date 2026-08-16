@@ -27,6 +27,7 @@
     },
     { id: 'L-LHR-1042', title: '5 Marla House in Johar Town Block J', category: 'homes', type: 'house',
       city: 'Lahore', citySlug: 'lahore', area: 'Johar Town', areaSlug: 'johar-town',
+      subArea: 'Block J', subAreaSlug: 'block-j',
       rent: 95000, advance: 190000, beds: 3, baths: 3, carPorch: true, size: 5, sizeUnit: 'marla',
       verified: true, updatedAt: '2026-07-23T14:30:00Z', images: [],
       phone: '+923000000002', email: 'listings@makanonrent.pk',
@@ -37,6 +38,33 @@
         'nearby-market': [['Nearest market', 'Emporium area, 2 km']]
       }
     },
+    /* Allama Iqbal Town — the canonical Main Location published through
+       the Location Manager (node lahore/allama-iqbal-town-lahore), whose
+       Also Known As names are "AIT", "Iqbal Town" and "علامہ اقبال ٹاؤن".
+       Tagged with the CANONICAL area slug, which is what makes all four
+       names return this same set. Two different sub areas so a Sub
+       Location filter has something to actually narrow. */
+    { id: 'L-LHR-1051', title: '5 Marla House, Asif Block', category: 'homes', type: 'house',
+      city: 'Lahore', citySlug: 'lahore', area: 'Allama Iqbal Town, Lahore', areaSlug: 'allama-iqbal-town-lahore',
+      subArea: 'Asif Block', subAreaSlug: 'asif-block',
+      rent: 78000, advance: 156000, beds: 3, baths: 3, carPorch: true, size: 5, sizeUnit: 'marla',
+      verified: true, updatedAt: '2026-08-10T10:00:00Z', images: [],
+      phone: '+923000000010', email: 'listings@makanonrent.pk', details: {} },
+
+    { id: 'L-LHR-1052', title: 'Upper Portion in Asif Block', category: 'homes', type: 'portion',
+      city: 'Lahore', citySlug: 'lahore', area: 'Allama Iqbal Town, Lahore', areaSlug: 'allama-iqbal-town-lahore',
+      subArea: 'Asif Block', subAreaSlug: 'asif-block',
+      rent: 52000, advance: 104000, beds: 2, baths: 2, carPorch: false, size: 4, sizeUnit: 'marla',
+      verified: true, updatedAt: '2026-08-11T10:00:00Z', images: [],
+      phone: '+923000000011', email: 'listings@makanonrent.pk', details: {} },
+
+    { id: 'L-LHR-1053', title: '10 Marla House, Badar Block', category: 'homes', type: 'house',
+      city: 'Lahore', citySlug: 'lahore', area: 'Allama Iqbal Town, Lahore', areaSlug: 'allama-iqbal-town-lahore',
+      subArea: 'Badar Block', subAreaSlug: 'badar-block',
+      rent: 145000, advance: 290000, beds: 5, baths: 5, carPorch: true, size: 10, sizeUnit: 'marla',
+      verified: true, updatedAt: '2026-08-12T10:00:00Z', images: [],
+      phone: '+923000000012', email: 'listings@makanonrent.pk', details: {} },
+
     { id: 'L-LHR-1043', title: '2 Bed Flat, Family Building', category: 'homes', type: 'flat',
       city: 'Lahore', citySlug: 'lahore', area: 'Bahria Town', areaSlug: 'bahria-town',
       rent: 55000, advance: 110000, beds: 2, baths: 2, carPorch: false, size: 1100, sizeUnit: 'sqft',
@@ -67,6 +95,7 @@
       details: { 'corner': [['Corner unit', 'Yes']], 'nearby-market': [['Location', 'Main commercial belt']] } },
     { id: 'L-LHR-2012', title: 'Furnished Office Floor, 6 Workstations', category: 'commercial', type: 'office',
       city: 'Lahore', citySlug: 'lahore', area: 'Johar Town', areaSlug: 'johar-town',
+      subArea: 'Block A', subAreaSlug: 'block-a',
       rent: 185000, advance: 370000, beds: 0, baths: 2, carPorch: true, size: 1600, sizeUnit: 'sqft',
       verified: true, updatedAt: '2026-07-23T09:00:00Z', images: [],
       phone: '+923000000008', email: 'listings@makanonrent.pk',
@@ -120,6 +149,12 @@
     var out = LISTINGS.filter(function (r) {
       if (c.city && r.citySlug !== c.city) return false;
       if (c.area && r.areaSlug !== c.area) return false;
+      /* Sub Location. Deliberately paired with the area check above: a
+         sub-area slug is only unique WITHIN its main area ("Block A"
+         exists under many), so area + subarea together are what identify
+         one place. A listing with no recorded sub area cannot satisfy a
+         sub-area request, so it is excluded rather than leaked through. */
+      if (c.subarea && r.subAreaSlug !== c.subarea) return false;
       if (c.category && r.category !== c.category) return false;
       if (c.type && r.type !== c.type) return false;
       if (c.beds && r.beds < Number(c.beds)) return false;

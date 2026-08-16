@@ -180,8 +180,14 @@
     return parentId + '/' + LOC.slugify(name);
   }
 
-  function ensure(parentId, name, type, sortOrder, aliases) {
-    var id = childId(parentId, name);
+  /* explicitId is the node_id the SERVER stores. When it is supplied it
+     always wins over a slug derived from the name: the server allows a
+     display-name rename that deliberately keeps node_id fixed, so
+     re-deriving the id here would invent a SECOND node for the renamed
+     location and the picker would list the same place twice with two
+     different sub-area sets. */
+  function ensure(parentId, name, type, sortOrder, aliases, explicitId) {
+    var id = explicitId || childId(parentId, name);
     var node = LOC.getById(id);
 
     if (node) {
@@ -189,6 +195,8 @@
          and refreshes its ordering, rather than creating a twin. */
       if (!node.active || node.status !== 'approved') LOC.enableLocation(id, { silent: true });
       if (sortOrder != null) LOC.updateLocation(id, { sortOrder: sortOrder }, { silent: true });
+      /* Adopt a rename that happened server-side. */
+      if (node.name !== name) LOC.updateLocation(id, { name: name }, { silent: true });
       /* updateLocation reindexes on an aliases patch, which is what makes
          every alias searchable against this one node. */
       if (aliases) LOC.updateLocation(id, { aliases: aliases.slice() }, { silent: true });
@@ -196,6 +204,7 @@
     }
 
     return LOC.addLocation({
+      id: id,
       parentId: parentId, name: name, type: type,
       status: 'approved', source: 'bank',
       aliases: aliases ? aliases.slice() : [],
@@ -210,7 +219,7 @@
     /* ONE node for the canonical name, carrying every alias — never one
        node per alias. Sub areas hang off this single id, so resolving any
        alias (search indexes them all) reaches the same 29 sub areas. */
-    var main = ensure(city.id, entry.main, 'locality', null, entry.aliases || []);
+    var main = ensure(city.id, entry.main, 'locality', null, entry.aliases || [], entry.nodeId);
     /* Keeps the legacy citySlug|areaSlug lookup (used by slug-based
        URLs and property filtering) resolving for bank-added areas. */
     LOC.registerCitySlugArea(city.slug, main.slug, main.id);
@@ -220,9 +229,19 @@
       LOC.registerCitySlugArea(city.slug, LOC.slugify(a), main.id);
     });
 
-    (entry.subs || []).forEach(function (name, i) {
-      ensure(main.id, name, LOC.SUB_AREA_TYPE, i);
-    });
+    /* subNodes carries the server's real ids (same reasoning as the main
+       above); `subs` is the older names-only shape, still accepted so a
+       locally-published bank that predates subNodes keeps hydrating. */
+    if (entry.subNodes && entry.subNodes.length) {
+      entry.subNodes.forEach(function (s, i) {
+        if (!s || !s.name) return;
+        ensure(main.id, s.name, LOC.SUB_AREA_TYPE, i, null, s.nodeId);
+      });
+    } else {
+      (entry.subs || []).forEach(function (name, i) {
+        ensure(main.id, name, LOC.SUB_AREA_TYPE, i);
+      });
+    }
 
     return main;
   }
@@ -473,6 +492,27 @@
     return cityApiStrict({ action: 'delete-node', nodeId: nodeId, confirm: !!confirm });
   }
 
+  /* Creates one Main Location (parent = city) or one Sub Location
+     (parent = main). `aliases` applies to a Main Location only and lands
+     on that single row — it never becomes another location. */
+  function addNode(parentNodeId, name, aliases) {
+    return cityApiStrict({
+      action: 'add-node', parentNodeId: parentNodeId, name: name,
+      aliases: aliases || []
+    });
+  }
+
+  /* Display-name-only rename. node_id is intentionally preserved so sub
+     locations, property links and area assignments keep resolving. */
+  function renameNode(nodeId, name) {
+    return cityApiStrict({ action: 'rename-node', nodeId: nodeId, name: name });
+  }
+
+  /* Replaces the Also Known As list on a canonical Main Location. */
+  function setAliases(nodeId, aliases) {
+    return cityApiStrict({ action: 'set-aliases', nodeId: nodeId, aliases: aliases || [] });
+  }
+
   /* Publishes a single main-location entry (canonical + aliases + subs).
      Upserts by node_id, so this is the ADD and the EDIT path both — the
      canonical name is what derives node_id, so aliases and sub areas can
@@ -561,6 +601,9 @@
     read: read,
     readServer: readServer,
     deleteNode: deleteNode,
+    addNode: addNode,
+    renameNode: renameNode,
+    setAliases: setAliases,
     publishEntry: publishEntry,
     stats: stats,
     seoIndex: seoIndex,

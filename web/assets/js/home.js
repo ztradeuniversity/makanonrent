@@ -15,7 +15,10 @@
 
   /* Search criteria — single source of truth for the whole page. */
   var state = {
-    city: '', cityName: '', area: '', areaName: '', budgetMin: '', budgetMax: '',
+    city: '', cityName: '', area: '', areaName: '',
+    /* area/subarea always hold CANONICAL slugs, never an alias slug. */
+    subarea: '', subareaName: '',
+    budgetMin: '', budgetMax: '',
     category: 'homes', type: '', size: '', unit: 'marla',
     beds: '', preference: ''
   };
@@ -134,7 +137,16 @@
   });
 
   mainSel.addEventListener('change', function () {
-    state.area = mainSel.value;
+    /* The picker lists aliases as their own options, so the selected
+       option's slug may be an alias ("ait") while every property is
+       tagged with the CANONICAL area slug. Resolving the option back to
+       its canonical node here is what makes "AIT", "Iqbal Town" and
+       "علامہ اقبال ٹاؤن" return the same results as the canonical name —
+       the alias is a way to find the place, never a different place.
+       mainIdBySlug already maps every option (canonical or alias) to the
+       one canonical node id. */
+    var canonical = mainSel.value ? LOC.getById(mainIdBySlug[mainSel.value]) : null;
+    state.area = canonical ? canonical.slug : mainSel.value;
     state.areaName = mainSel.value ? mainSel.options[mainSel.selectedIndex].text : '';
     state.subarea = ''; state.subareaName = '';
     populateSub();
@@ -201,6 +213,26 @@
   });
 
   renderTypes();
+
+  /* Bedrooms — reuses the existing chip + toggle-group helpers and the
+     existing state.beds field, so it rides the query contract that was
+     already in place (P.beds → MOR_DATA.query's `beds` predicate). The
+     value is the leading digit, so "5+" sends 5 and the predicate's
+     "at least" comparison covers everything above it. */
+  var bedChips = $('bedChips');
+
+  function renderBeds() {
+    bedChips.innerHTML = '';
+    ['1', '2', '3', '4', '5+'].forEach(function (b) {
+      bedChips.appendChild(makeChip(b, digits(b) === state.beds));
+    });
+  }
+
+  bindToggleGroup(bedChips, function (btn) {
+    state.beds = btn ? digits(btn.textContent) : '';
+  });
+
+  renderBeds();
 
   /* Area size + unit */
   bindNumeric($('fSize'), function (raw) { state.size = raw; });
@@ -273,6 +305,12 @@
       path = R.listingBase + '/' + (state.city || R.allCitiesSlug);
       if (state.area) path += '/' + state.area;
     }
+
+    /* The Sub Location was collected and stored but never sent, so
+       choosing one had no effect on the results. listing.js already reads
+       this exact parameter name, and it stays a query parameter in both
+       routing modes so the results page parses it identically. */
+    add('subarea', state.subarea);
 
     add(P.budgetMin, state.budgetMin);
     add(P.budgetMax, state.budgetMax);

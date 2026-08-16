@@ -545,23 +545,33 @@
      entry per location) for every caller that counts or iterates real
      nodes. */
   function getMainAreaOptions(cityId, opts) {
+    var mains = getMainAreas(cityId, opts);
     var out = [];
     var seenSlug = {};
-    getMainAreas(cityId, opts).forEach(function (m) {
-      if (!seenSlug[m.slug]) {
-        seenSlug[m.slug] = 1;
-        out.push({ id: m.id, name: m.name, slug: m.slug, isAlias: false, canonicalName: m.name });
-      }
+
+    /* Two passes on purpose. Every CANONICAL name is claimed first, so a
+       real location can never be shadowed in the picker by some other
+       location's alias that happens to share its name. Only then are
+       aliases added, and only for slugs still free — a duplicate would
+       otherwise put two identical labels in the list resolving to
+       different places, which is unpickable. A skipped alias is still
+       findable by search, which matches on the token index rather than
+       on this list. */
+    mains.forEach(function (m) {
+      if (seenSlug[m.slug]) return;
+      seenSlug[m.slug] = 1;
+      out.push({ id: m.id, name: m.name, slug: m.slug, isAlias: false, canonicalName: m.name });
+    });
+
+    mains.forEach(function (m) {
       (m.aliases || []).forEach(function (a) {
         var s = slugify(a);
-        /* An alias that slugs to the canonical (or to another option
-           already listed) would make the picker ambiguous — the name is
-           still searchable via the token index either way. */
         if (!s || seenSlug[s]) return;
         seenSlug[s] = 1;
         out.push({ id: m.id, name: a, slug: s, isAlias: true, canonicalName: m.name });
       });
     });
+
     return out;
   }
 
