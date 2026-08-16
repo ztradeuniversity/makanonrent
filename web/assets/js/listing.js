@@ -271,8 +271,7 @@
     cardsEl.innerHTML =
       '<div class="empty" style="grid-column:1/-1">' +
         '<div class="empty-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 1.9"/></svg></div>' +
-        '<h2>Under Process</h2>' +
-        '<p>Want to be notified when a matching property is listed?<br>Click Notify Me and enter your email.</p>' +
+        '<h2>We will email you when a suitable property is available. Please click &ldquo;Notify Me&rdquo; to get the update.</h2>' +
         '<button class="btn-gold" type="button" data-notify-open>Notify Me</button>' +
       '</div>';
     pagerEl.innerHTML = '';
