@@ -47,10 +47,27 @@ export async function onRequestPost(context) {
 
   var rows = [];
   var mainCount = 0, subCount = 0;
+  /* The client applies a publish to its local engine (and shows
+     "Published") the instant it's clicked, then syncs to this endpoint
+     in the background — it never waits for the city's own sync to land
+     first. If that city sync hasn't reached the DB yet (or failed),
+     the mains upsert below fails its parent_node_id FK and the whole
+     publish silently doesn't persist, even though the UI already said
+     it worked. Upserting the referenced cities here first closes that
+     race without requiring any change to the client's flow. */
+  var cities = {};
 
   for (var i = 0; i < bank.entries.length; i++) {
     var e = bank.entries[i];
     if (!isNonEmptyString(e.cityId, 200) || !isNonEmptyString(e.main, 160)) continue;
+
+    if (isNonEmptyString(e.citySlug, 200) && isNonEmptyString(e.cityName, 160)) {
+      cities[e.cityId] = {
+        node_id: e.cityId, parent_node_id: null, name: e.cityName,
+        slug: e.citySlug, type: 'city', status: 'approved',
+        active: true, sort_order: 0, source: 'bank'
+      };
+    }
 
     var mainSlug = slugify(e.main);
     var mainNode = e.cityId + '/' + mainSlug;
@@ -83,7 +100,17 @@ export async function onRequestPost(context) {
     var db = getServiceClient(env);
 
     /* Parents must exist before children (FK on parent_node_id), so
-       cities/main areas are written before sub areas. */
+       cities, then main areas, then sub areas. ignoreDuplicates so an
+       already-synced (possibly renamed/disabled) city is never
+       clobbered back to its stale name/active state — this step only
+       fills in a city that's missing, it never corrects one that's
+       already there. */
+    var cityRows = Object.keys(cities).map(function (k) { return cities[k]; });
+    if (cityRows.length) {
+      var r0 = await db.from('locations').upsert(cityRows, { onConflict: 'node_id', ignoreDuplicates: true });
+      if (r0.error) throw r0.error;
+    }
+
     var mains = rows.filter(function (r) { return r.type === 'locality'; });
     var subs = rows.filter(function (r) { return r.type === 'subarea'; });
 
