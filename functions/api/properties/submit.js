@@ -181,10 +181,18 @@ export async function onRequestPost(context) {
     if (listingRes.error) throw listingRes.error;
     created.listingId = listingRes.data.id;
 
-    /* property_media: one row per uploaded file */
+    /* property_media: one row per uploaded file.
+
+       visibility is set explicitly rather than left to the column default,
+       so the intent is visible at the insert site: a public submission has
+       not been reviewed, therefore its files are NOT publishable yet.
+       functions/utils/lifecycle.js moves them on when the listing is. */
     if (media.length) {
       var mediaRows = media.map(function (m, i) {
-        return { listing_id: created.listingId, kind: m.kind, r2_key: m.key, public_url: m.publicUrl || null, sort_order: i };
+        return {
+          listing_id: created.listingId, kind: m.kind, r2_key: m.key,
+          public_url: m.publicUrl || null, sort_order: i, visibility: 'draft'
+        };
       });
       var mediaRes = await db.from('property_media').insert(mediaRows);
       if (mediaRes.error) throw mediaRes.error;

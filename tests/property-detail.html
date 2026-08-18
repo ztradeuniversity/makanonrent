@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Public Listing Read Path — MakanOnRent</title>
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; color: #16211C; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: #6B7A73; margin-bottom: 20px; }
+  #summary { padding: 14px 18px; border-radius: 12px; font-weight: 700; margin-bottom: 18px; }
+  .ok   { background: #E7F3EE; border: 1px solid #0E5C44; color: #0E5C44; }
+  .bad  { background: #FBEAE8; border: 1px solid #C0392B; color: #C0392B; }
+  .grp  { margin: 18px 0 6px; font-weight: 800; font-size: 12px; letter-spacing: .6px; text-transform: uppercase; color: #6B7A73; }
+  li { list-style: none; padding: 4px 0; border-bottom: 1px solid #EEE; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .p { color: #0E5C44; } .f { color: #C0392B; font-weight: 700; }
+</style>
+<!-- Redirects the bare specifier so the REAL endpoint source loads unmodified. -->
+<script type="importmap">
+{ "imports": { "@supabase/supabase-js": "./stub-supabase-db.js" } }
+</script>
+</head>
+<body>
+
+<h1>Public listing read path — executable tests</h1>
+<p class="sub">
+  Imports <code>functions/api/properties/detail.js</code> directly against a queryable
+  Supabase fake. Covers the publication gate, the 404 surface, the money/field mapping
+  and — the point of the exercise — that no private column can reach the response.
+</p>
+
+<div id="summary">Running…</div>
+<div id="out"></div>
+
+<script type="module">
+import { onRequestGet, onRequestOptions } from '../functions/api/properties/detail.js';
+import { DB, reset } from './stub-supabase-db.js';
+
+var ENV = { SUPABASE_URL: 'https://stub.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'stub-key' };
+var PUB_ID  = '3f1a9c22-4d5e-4b7a-9f10-88c2e7d61a04';
+var OTHER_ID = '9c0b7e41-2a33-4c88-b5d1-77aa10ff2e63';
+var PROP_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+
+/* A row shaped like the real listing→unit→property join — and carrying,
+   on purpose, the private columns that live one join away in production
+   (contacts.phone_e164 / .email, documents, approval + audit trail). If
+   the endpoint ever spreads the row instead of naming its fields, these
+   are what would leak, so they are seeded here to make that a failure. */
+function listingRow(over) {
+  var row = {
+    id: PUB_ID,
+    lifecycle_state: 'published',
+    archived_at: null,
+    deleted_at: null,
+    currency: 'PKR',
+    rent_amount_minor: 16500000,      /* PKR 165,000 */
+    advance_amount_minor: 33000000,   /* PKR 330,000 */
+    negotiable: true,
+    features: ['separate_entrance', 'gas_meter'],
+    published_at: '2026-08-01T10:00:00Z',
+    updated_at: '2026-08-02T10:00:00Z',
+    /* — must never surface — */
+    approval_state: 'approved',
+    lifecycle_changed_by: 'admin-uuid-9999',
+    owner_email: 'owner.private@example.com',
+    owner_phone: '+923001234567',
+    owner_cnic: '35202-1234567-1',
+    internal_note: 'CEO said publish anyway',
+    units: {
+      unit_type: 'portion', beds: 5, baths: 6, car_porch: true,
+      size_value: 10, size_unit: 'marla',
+      properties: {
+        id: PROP_ID,
+        business_code: 'MOR-LHR-260801-4417',
+        category: 'homes', property_type: 'portion',
+        city_slug: 'lahore', city_name: 'Lahore',
+        area_slug: 'valencia-town', area_name: 'Valencia Housing Society',
+        landmark: 'Near main boulevard', road_width_ft: 30,
+        added_by_admin_id: 'admin-uuid-1234'
+      }
+    }
+  };
+  for (var k in (over || {})) row[k] = over[k];
+  return row;
+}
+
+function req(id) {
+  var url = 'https://makanonrent.com/api/properties/detail' +
+            (id === undefined ? '' : '?id=' + encodeURIComponent(id));
+  return { env: ENV, request: new Request(url) };
+}
+
+async function call(id) {
+  var res = await onRequestGet(req(id));
+  var body = await res.json();
+  return { status: res.status, body: body };
+}
+
+var results = [];
+function group(name) { results.push({ group: name }); }
+function check(desc, got, want) {
+  results.push({ desc: desc, pass: JSON.stringify(got) === JSON.stringify(want), got: got, want: want });
+}
+function ok(desc, cond, got) { results.push({ desc: desc, pass: !!cond, got: got }); }
+
+/* ── 1. Publication gate — the whole security surface ─────────────── */
+group('Publication gate');
+
+reset();
+DB.listings.push(listingRow());
+var r = await call(PUB_ID);
+check('published listing → 200', r.status, 200);
+check('published listing returns a property', !!r.body.property, true);
+
+var UNPUBLISHED = ['submitted', 'pending_review', 'verified', 'unavailable', 'rejected', 'archived', 'deleted'];
+for (var i = 0; i < UNPUBLISHED.length; i++) {
+  reset();
+  DB.listings.push(listingRow({ lifecycle_state: UNPUBLISHED[i] }));
+  var u = await call(PUB_ID);
+  check('lifecycle "' + UNPUBLISHED[i] + '" → 404', u.status, 404);
+  check('lifecycle "' + UNPUBLISHED[i] + '" returns no property', u.body.property === undefined, true);
+}
+
+reset();
+DB.listings.push(listingRow({ archived_at: '2026-08-10T00:00:00Z' }));
+check('published + archived_at set → 404', (await call(PUB_ID)).status, 404);
+
+reset();
+DB.listings.push(listingRow({ deleted_at: '2026-08-10T00:00:00Z' }));
+check('published + deleted_at set → 404', (await call(PUB_ID)).status, 404);
+
+reset();
+DB.listings.push(listingRow({ units: null }));
+check('listing with no unit row (inner join) → 404', (await call(PUB_ID)).status, 404);
+
+/* ── 2. The 404 surface ───────────────────────────────────────────── */
+group('Not-found surface');
+
+reset();
+DB.listings.push(listingRow());
+check('unknown uuid → 404', (await call(OTHER_ID)).status, 404);
+check('fixture id "L-LHR-1041" → 404', (await call('L-LHR-1041')).status, 404);
+check('missing id → 404', (await call(undefined)).status, 404);
+check('empty id → 404', (await call('')).status, 404);
+check('sql-ish id → 404', (await call("' or 1=1--")).status, 404);
+
+var hidden = await call(PUB_ID + '');
+reset();
+DB.listings.push(listingRow({ lifecycle_state: 'pending_review' }));
+var pend = await call(PUB_ID);
+var miss = await call(OTHER_ID);
+check('unpublished and unknown are indistinguishable',
+      JSON.stringify(pend.body) === JSON.stringify(miss.body), true);
+
+/* ── 3. Privacy — no private column may reach the client ──────────── */
+group('Privacy of the response shape');
+
+reset();
+DB.listings.push(listingRow());
+var pub = await call(PUB_ID);
+var raw = JSON.stringify(pub.body);
+
+var FORBIDDEN = [
+  'owner.private@example.com', '+923001234567', '35202-1234567-1',
+  'CEO said publish anyway', 'admin-uuid-1234', 'admin-uuid-9999', 'approved'
+];
+for (var j = 0; j < FORBIDDEN.length; j++) {
+  ok('response omits "' + FORBIDDEN[j] + '"', raw.indexOf(FORBIDDEN[j]) === -1, raw.indexOf(FORBIDDEN[j]));
+}
+var FORBIDDEN_KEYS = ['approval_state', 'approvalState', 'ownerEmail', 'owner_email',
+                      'ownerPhone', 'phone', 'email', 'cnic', 'addedByAdminId',
+                      'added_by_admin_id', 'lifecycleState', 'lifecycle_state',
+                      'internalNote', 'public_url', 'publicUrl', 'r2Key', 'r2_key'];
+for (var k2 = 0; k2 < FORBIDDEN_KEYS.length; k2++) {
+  ok('no "' + FORBIDDEN_KEYS[k2] + '" key', Object.keys(pub.body.property).indexOf(FORBIDDEN_KEYS[k2]) === -1);
+}
+check('images is empty — media only via the signed route', pub.body.property.images, []);
+
+/* ── 4. Field mapping the property page relies on ─────────────────── */
+group('Field mapping');
+
+check('listingId is the real listings.id', pub.body.property.listingId, PUB_ID);
+check('id matches listingId (favourites/links key)', pub.body.property.id, PUB_ID);
+check('reference is the business code', pub.body.property.reference, 'MOR-LHR-260801-4417');
+check('rent converted from minor units', pub.body.property.rent, 165000);
+check('advance converted from minor units', pub.body.property.advance, 330000);
+check('beds', pub.body.property.beds, 5);
+check('baths', pub.body.property.baths, 6);
+check('carPorch', pub.body.property.carPorch, true);
+check('size', pub.body.property.size, 10);
+check('sizeUnit', pub.body.property.sizeUnit, 'marla');
+check('type', pub.body.property.type, 'portion');
+check('city', pub.body.property.city, 'Lahore');
+check('area', pub.body.property.area, 'Valencia Housing Society');
+check('roadWidthFt', pub.body.property.roadWidthFt, 30);
+check('features', pub.body.property.features, ['separate_entrance', 'gas_meter']);
+check('updatedAt prefers published_at', pub.body.property.updatedAt, '2026-08-01T10:00:00Z');
+check('title composed from real columns', pub.body.property.title,
+      '10 Marla Portion in Valencia Housing Society');
+
+reset();
+DB.listings.push(listingRow({ advance_amount_minor: null }));
+check('null advance → 0', (await call(PUB_ID)).body.property.advance, 0);
+
+reset();
+DB.listings.push(listingRow({ units: Object.assign(listingRow().units, { size_unit: 'sqft', size_value: 1200 }) }));
+check('sqft title', (await call(PUB_ID)).body.property.title,
+      '1200 Sq Ft Portion in Valencia Housing Society');
+
+/* ── 5. Verified badge ────────────────────────────────────────────── */
+group('Verified badge');
+
+reset();
+DB.listings.push(listingRow());
+check('no verification visit → verified false', (await call(PUB_ID)).body.property.verified, false);
+
+reset();
+DB.listings.push(listingRow());
+DB.property_verifications.push({
+  id: 'v1', property_id: PROP_ID, gps_lat: 31.4, gps_lng: 74.2,
+  phone_number: '+923009999999', comments: 'internal', verified_by: 'admin-uuid-1234'
+});
+var withV = await call(PUB_ID);
+check('a verification visit → verified true', withV.body.property.verified, true);
+ok('no verification detail leaks', JSON.stringify(withV.body).indexOf('31.4') === -1 &&
+   JSON.stringify(withV.body).indexOf('+923009999999') === -1);
+
+reset();
+DB.listings.push(listingRow());
+DB.property_verifications.push({ id: 'v2', property_id: 'some-other-property' });
+check('another property’s visit does not count',
+      (await call(PUB_ID)).body.property.verified, false);
+
+/* ── 6. Transport ─────────────────────────────────────────────────── */
+group('Transport');
+var pre = await onRequestOptions({ env: ENV });
+check('OPTIONS preflight → 204', pre.status, 204);
+ok('CORS header present', !!pre.headers.get('Access-Control-Allow-Origin'));
+
+reset();
+DB.listings.push(listingRow());
+var res200 = await onRequestGet(req(PUB_ID));
+check('JSON content type', res200.headers.get('Content-Type'), 'application/json');
+
+/* ── render ───────────────────────────────────────────────────────── */
+var pass = results.filter(function (x) { return x.desc && x.pass; }).length;
+var fail = results.filter(function (x) { return x.desc && !x.pass; }).length;
+var s = document.getElementById('summary');
+s.className = fail ? 'bad' : 'ok';
+s.textContent = fail ? (fail + ' failed / ' + (pass + fail) + ' assertions')
+                     : (pass + ' assertions passed');
+
+document.getElementById('out').innerHTML = results.map(function (x) {
+  if (x.group) return '<div class="grp">' + x.group + '</div>';
+  return '<li class="' + (x.pass ? 'p' : 'f') + '">' + (x.pass ? '✓ ' : '✗ ') + x.desc +
+    (x.pass ? '' : ' — got ' + JSON.stringify(x.got) +
+      (x.want !== undefined ? ', want ' + JSON.stringify(x.want) : '')) + '</li>';
+}).join('');
+window.__RESULT__ = { pass: pass, fail: fail,
+  failures: results.filter(function (x) { return x.desc && !x.pass; })
+    .map(function (x) { return x.desc + ' — got ' + JSON.stringify(x.got); }) };
+</script>
+</body>
+</html>

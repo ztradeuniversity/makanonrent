@@ -49,12 +49,12 @@ function encodeRfc3986(str) {
   });
 }
 
-/* Presigned PUT URL, valid for `expiresSeconds`. `key` must already be
-   the full object key (see buildObjectKey below) — this function does
-   not sanitize it. */
-export async function presignPutUrl(env, key, opts) {
+/* Shared SigV4 presigner. Extracted verbatim from presignPutUrl so the
+   upload path is byte-for-byte what it always was; the only variable is
+   the HTTP method, which is the single difference between a presigned
+   upload and a presigned read. */
+async function presignUrl(env, key, method, expiresSeconds) {
   requireEnv(env, ['R2_ACCOUNT_ID', 'R2_BUCKET_NAME', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY']);
-  var expiresSeconds = (opts && opts.expiresSeconds) || 600;
 
   var host = env.R2_ACCOUNT_ID + '.r2.cloudflarestorage.com';
   var region = 'auto';
@@ -80,7 +80,7 @@ export async function presignPutUrl(env, key, opts) {
 
   var canonicalHeaders = 'host:' + host + '\n';
   var canonicalRequest = [
-    'PUT', canonicalUri, canonicalQuery, canonicalHeaders, 'host', 'UNSIGNED-PAYLOAD'
+    method, canonicalUri, canonicalQuery, canonicalHeaders, 'host', 'UNSIGNED-PAYLOAD'
   ].join('\n');
 
   var stringToSign = [
@@ -96,6 +96,27 @@ export async function presignPutUrl(env, key, opts) {
   return 'https://' + host + canonicalUri + '?' + canonicalQuery + '&X-Amz-Signature=' + signature;
 }
 
+/* Presigned PUT URL, valid for `expiresSeconds` (default 600). `key` must
+   already be the full object key (see buildObjectKey below) — this
+   function does not sanitize it. */
+export async function presignPutUrl(env, key, opts) {
+  return presignUrl(env, key, 'PUT', (opts && opts.expiresSeconds) || 600);
+}
+
+/* Presigned GET URL — the controlled read path for media whose listing is
+   published. Deliberately short-lived: the URL is minted per page view, so
+   a link that escapes (shared screenshot, referrer log, cached HTML) stops
+   working quickly instead of being a permanent public address the way an
+   R2_PUBLIC_BASE_URL link is.
+
+   This works against the bucket's S3 endpoint and is therefore independent
+   of whether the public custom domain is enabled — which is what lets the
+   read path be switched over and verified BEFORE public access is turned
+   off in the dashboard. */
+export async function presignGetUrl(env, key, opts) {
+  return presignUrl(env, key, 'GET', (opts && opts.expiresSeconds) || 600);
+}
+
 /* Deterministic, collision-safe object key. `visibility` splits public
    property media from private/sensitive documents (Doc 09 §4) so a
    sensitive object is never addressable via the public base URL even
@@ -106,7 +127,15 @@ export function buildObjectKey(draftId, kind, filename, visibility) {
   return prefix + '/' + draftId + '/' + Date.now() + '-' + safeName;
 }
 
-/* Public assets only. R2 has no public URL purely from account+bucket —
+/* NOTE ON DISPLAY: this permanent link is no longer how property media is
+   shown. Public display goes through GET /api/properties/media, which
+   returns short-lived presigned URLs and only for listings whose media is
+   'published'. The value is still recorded in property_media.public_url as
+   provenance, and nothing reads it for rendering — so once the bucket's
+   public access is switched off (the documented manual step) these stored
+   links stop resolving without affecting any page.
+
+   Public assets only. R2 has no public URL purely from account+bucket —
    the bucket's r2.dev subdomain must be enabled or a custom domain
    attached, and that base URL set as R2_PUBLIC_BASE_URL. Returns null
    (not a guessed/broken URL) if that isn't configured, so a caller

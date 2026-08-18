@@ -10,6 +10,7 @@
 import { json, preflight } from '../../utils/cors.js';
 import { getServiceClient } from '../../utils/supabase.js';
 import { sendEmail, renderTemplate } from '../../utils/mailer.js';
+import { dispatchAlertsForListing } from '../../utils/alert-match.js';
 
 export async function onRequestOptions(context) { return preflight(context.env); }
 
@@ -43,19 +44,39 @@ export async function onRequestPost(context) {
         failed++;
       }
     }
-    /* Notify Me: fulfil unfulfilled requests for now-available listings by
-       enqueueing onto the SAME email_delivery_queue (no second send path). */
+    /* Notify Me — entity requests ("tell me about THIS listing"): fulfil
+       the ones whose listing is now live by enqueueing onto the SAME
+       email_delivery_queue (no second send path). */
     var notified = 0;
-    var pending = await db.from('property_notify_requests').select('id, entity_id, email').is('fulfilled_at', null).not('email', 'is', null).limit(50);
+    var pending = await db.from('property_notify_requests').select('id, entity_id, email').is('fulfilled_at', null).not('entity_id', 'is', null).not('email', 'is', null).limit(50);
     if (!pending.error) {
       for (var j = 0; j < (pending.data || []).length; j++) {
         var n = pending.data[j];
         var live = await db.from('listings').select('id').eq('id', n.entity_id).eq('lifecycle_state', 'published').maybeSingle();
         if (live.data) {
-          await db.from('email_delivery_queue').insert({ to_email: n.email, template: 'notify_available', payload: { entityId: n.entity_id } });
+          await db.from('email_delivery_queue').insert({ to_email: n.email, template: 'notify_available', payload: { entityId: n.entity_id, listingId: n.entity_id } });
           await db.from('property_notify_requests').update({ fulfilled_at: new Date().toISOString() }).eq('id', n.id);
           notified++;
         }
+      }
+    }
+
+    /* Notify Me — saved searches. These are normally dispatched the moment
+       a listing publishes (functions/utils/lifecycle.js), so this pass is a
+       SAFETY NET: it catches requests saved after a property went live, and
+       anything the inline dispatch missed because of a transient DB error.
+       property_alert_sends makes it idempotent, so re-running cannot email
+       anyone twice. Bounded to recent listings to keep the sweep cheap. */
+    var swept = 0;
+    var openSearches = await db.from('property_notify_requests')
+      .select('id').is('fulfilled_at', null).not('criteria', 'is', null).limit(1);
+    if (!openSearches.error && (openSearches.data || []).length) {
+      var recent = await db.from('listings')
+        .select('id').eq('lifecycle_state', 'published')
+        .order('published_at', { ascending: false }).limit(50);
+      for (var m = 0; m < ((recent && recent.data) || []).length; m++) {
+        var res = await dispatchAlertsForListing(env, db, recent.data[m].id);
+        swept += res.queued;
       }
     }
 
@@ -83,7 +104,7 @@ export async function onRequestPost(context) {
       }
     }
 
-    return json(env, { ok: true, sent: sent, failed: failed, notified: notified, reverified: reverified });
+    return json(env, { ok: true, sent: sent, failed: failed, notified: notified, swept: swept, reverified: reverified });
   } catch (e) {
     return json(env, { error: (e && e.message) || 'Worker failed.' }, 500);
   }

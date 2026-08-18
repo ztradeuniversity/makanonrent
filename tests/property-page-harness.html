@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Property page harness</title>
+<!-- The real stylesheets property.html loads. Not cosmetic for a test:
+     gallery images are loading="lazy", and without the CSS that gives
+     .gal-frame img a size they stay 0×0, never intersect the viewport,
+     and never fetch — so "did the signed URL load" could not be asked. -->
+<link rel="stylesheet" href="../web/assets/css/home.css">
+<link rel="stylesheet" href="../web/assets/css/listing.css">
+</head>
+<body>
+<!-- The DOM contract of web/property.html, reduced to what property.js
+     touches. The real config.js / property-data.js / shared.js / property.js
+     are loaded unmodified below, so this harness boots the SAME code the
+     public page does — only fetch is replaced. -->
+<a id="backLink" href="rent.html">Back</a>
+<div id="detailRoot" aria-busy="true"></div>
+<span id="yr"></span>
+
+<script>
+/* Scenario is chosen by ?scenario= ; the id property.js reads is the
+   page's own ?id=, exactly as on property.html. */
+(function () {
+  var q = new URLSearchParams(location.search);
+  var scenario = q.get('scenario') || 'real';
+  var PUB_ID = q.get('id') || '';
+
+  /* Every fetch property.js makes is recorded so a test can assert which
+     endpoint was called with which id — the point of the exercise. */
+  window.__CALLS__ = [];
+
+  var PROPERTY = {
+    id: PUB_ID, listingId: PUB_ID, reference: 'MOR-LHR-260801-4417',
+    title: '10 Marla Portion in Valencia Housing Society',
+    category: 'homes', type: 'portion',
+    city: 'Lahore', citySlug: 'lahore',
+    area: 'Valencia Housing Society', areaSlug: 'valencia-town',
+    landmark: null, rent: 165000, advance: 330000, currency: 'PKR',
+    negotiable: true, beds: 5, baths: 6, carPorch: true,
+    size: 10, sizeUnit: 'marla', roadWidthFt: 30,
+    features: ['separate_entrance', 'gas_meter'],
+    verified: true, updatedAt: '2026-08-01T10:00:00Z',
+    images: [], details: {}
+  };
+
+  /* Stand-ins for presigned R2 GETs: same shape (absolute URL carrying a
+     signature query), pointing at real files this server can serve. */
+  var SIGNED_IMG = location.origin + '/tests/fixtures/pixel.png?X-Amz-Signature=deadbeef&X-Amz-Expires=600';
+  var SIGNED_VID = location.origin + '/tests/fixtures/clip.mp4?X-Amz-Signature=cafef00d&X-Amz-Expires=600';
+  var BROKEN_IMG = location.origin + '/tests/fixtures/missing.png?X-Amz-Signature=nope';
+
+  var MEDIA = {
+    'real':          [{ id: 'm1', kind: 'image', sortOrder: 0, url: SIGNED_IMG },
+                      { id: 'm2', kind: 'video', sortOrder: 1, url: SIGNED_VID }],
+    'real-nomedia':  [],
+    'broken-media':  [{ id: 'm1', kind: 'image', sortOrder: 0, url: BROKEN_IMG }],
+    'fixture':       []
+  };
+
+  function reply(body, status) {
+    return Promise.resolve({
+      ok: status === undefined || status < 400,
+      status: status || 200,
+      json: function () { return Promise.resolve(body); }
+    });
+  }
+
+  window.fetch = function (url) {
+    window.__CALLS__.push(String(url));
+
+    if (String(url).indexOf('/api/properties/detail') === 0) {
+      if (scenario === 'unpublished') return reply({ error: 'No such property.' }, 404);
+      if (scenario === 'server-down') return Promise.reject(new Error('network'));
+      return reply({ property: PROPERTY });
+    }
+    if (String(url).indexOf('/api/properties/media') === 0) {
+      return reply({ media: MEDIA[scenario] || [], expiresIn: 600 });
+    }
+    return reply({ error: 'unexpected route' }, 404);
+  };
+})();
+</script>
+
+<script src="../web/assets/js/config.js"></script>
+<script src="../web/assets/js/property-data.js"></script>
+<script src="../web/assets/js/shared.js"></script>
+<script src="../web/assets/js/property.js"></script>
+</body>
+</html>

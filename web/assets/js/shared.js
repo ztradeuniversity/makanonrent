@@ -56,9 +56,18 @@
 
   function mediaFill(src, alt) {
     return MEDIA_GLYPH + (src
-      ? '<img src="' + esc(src) + '" alt="' + esc(alt) + '" loading="lazy" onerror="this.remove()">'
+      ? '<img src="' + esc(src) + '" alt="' + esc(alt) + '" loading="lazy" data-media-fallback>'
       : '');
   }
+
+  /* CSP forbids inline onerror; 'error' doesn't bubble, so listen on
+     the capture phase at the document root instead — same effect
+     (broken image removed, gradient/glyph remains) for any image
+     mediaFill() produces, wherever it ends up in the DOM. */
+  doc.addEventListener('error', function (e) {
+    var t = e.target;
+    if (t && t.tagName === 'IMG' && t.hasAttribute('data-media-fallback')) t.remove();
+  }, true);
 
   /* First usable image for a record, or null. */
   function cover(rec) {
@@ -209,15 +218,46 @@
           input.focus();
           return;
         }
+        /* The local copy is kept as a per-device record, but the request
+           itself now goes to the server — a queue in localStorage can
+           never result in an email being sent. MOR_CRITERIA is the live
+           search the results page is showing, so the saved alert is
+           exactly the search that returned nothing. */
+        var criteria = win.MOR_CRITERIA || {};
         try {
           var key = CFG.storage.alertQueue;
           var q = JSON.parse(localStorage.getItem(key) || '[]');
-          q.push({ email: val, criteria: win.MOR_CRITERIA || null, at: new Date().toISOString() });
+          q.push({ email: val, criteria: criteria, at: new Date().toISOString() });
           localStorage.setItem(key, JSON.stringify(q));
         } catch (err) {}
-        msg.textContent = 'Done — we’ll alert you on new matches.';
-        msg.className = 'form-msg is-ok';
-        setTimeout(function () { d.close(); input.value = ''; msg.textContent = ''; }, 1400);
+
+        msg.textContent = 'Saving…';
+        msg.className = 'form-msg';
+
+        var btn = d.el.querySelector('button[type="submit"]');
+        if (btn) btn.disabled = true;
+
+        win.fetch(CFG.routes.api.notifyProperty, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ entityType: 'search', email: val, criteria: criteria })
+        }).then(function (r) {
+          return r.json().catch(function () { return null; }).then(function (data) {
+            if (!r.ok) throw new Error((data && data.error) || 'Could not save that request.');
+            return data;
+          });
+        }).then(function () {
+          msg.textContent = 'Done — we’ll email you when a match is listed.';
+          msg.className = 'form-msg is-ok';
+          setTimeout(function () {
+            d.close(); input.value = ''; msg.textContent = '';
+            if (btn) btn.disabled = false;
+          }, 1400);
+        }).catch(function (err) {
+          msg.textContent = err.message;
+          msg.className = 'form-msg is-error';
+          if (btn) btn.disabled = false;
+        });
       });
     }
 
@@ -229,13 +269,18 @@
   })();
 
   /* ── contact links ──────────────────────────────────────── */
+  /* A record from the public listing endpoint carries no phone/email —
+     owner contact details are private and are not served to the browser
+     — so the contact links are null for it rather than 'tel:undefined'.
+     Fixture records still have both, so their links are unchanged. */
   function links(rec) {
-    var ref = encodeURIComponent(rec.title + ' (' + rec.id + ')');
+    var label = rec.title + ' (' + (rec.reference || rec.id) + ')';
+    var ref = encodeURIComponent(label);
     return {
-      wa:    'https://wa.me/' + rec.phone.replace(/\D/g, '') + '?text=' +
-             encodeURIComponent('Assalam o Alaikum, I am interested in: ' + rec.title + ' (' + rec.id + ')'),
-      tel:   'tel:' + rec.phone,
-      mail:  'mailto:' + rec.email + '?subject=' + ref,
+      wa:    rec.phone ? 'https://wa.me/' + String(rec.phone).replace(/\D/g, '') + '?text=' +
+             encodeURIComponent('Assalam o Alaikum, I am interested in: ' + label) : null,
+      tel:   rec.phone ? 'tel:' + rec.phone : null,
+      mail:  rec.email ? 'mailto:' + rec.email + '?subject=' + ref : null,
       details: CFG.routes.detailsPage + '?id=' + encodeURIComponent(rec.id)
     };
   }

@@ -17,5 +17,15 @@ export function renderTemplate(template, payload) {
   if (template === 'admin_otp_email_verify' || template === 'admin_otp_password_reset' || template === 'admin_password_reset') {
     return { subject: 'Your MakanOnRent verification code', text: 'Your code is ' + payload.code + '. Expires in ' + (payload.expiresInMinutes || 10) + ' minutes.' };
   }
+  if (template === 'notify_available') {
+    var lines = [
+      'Good news — a verified property matching what you asked for is now available on MakanOnRent.',
+      ''
+    ];
+    if (payload.reference) lines.push('Reference: ' + payload.reference);
+    if (payload.url) lines.push('View it here: ' + payload.url);
+    lines.push('', 'You are receiving this because you asked to be notified when a suitable property was listed.');
+    return { subject: 'A property matching your search is now available', text: lines.join('\n') };
+  }
   return { subject: 'MakanOnRent notification', text: JSON.stringify(payload || {}) };
 }

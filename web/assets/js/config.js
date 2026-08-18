@@ -22,6 +22,13 @@
       api: {
         presign: '/api/uploads/presign',
         submitProperty: '/api/properties/submit',
+        notifyProperty: '/api/properties/notify',
+        /* Controlled media read — returns short-lived signed URLs, and only
+           for media whose listing is published. */
+        propertyMedia: '/api/properties/media',
+        /* One published listing, by listings.id. Published-only; an
+           unpublished or unknown id is a 404 either way. */
+        propertyDetail: '/api/properties/detail',
         locations: '/api/locations',
         locationsPublish: '/api/locations/publish',
         locationsSuggest: '/api/locations/suggest',

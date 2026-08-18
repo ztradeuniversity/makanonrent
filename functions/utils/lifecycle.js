@@ -11,6 +11,7 @@
    status changes without lifecycle_state changing with it. So this is
    not a convention anyone can quietly forget — it is enforced. */
 import { getServiceClient } from './supabase.js';
+import { dispatchAlertsForListing } from './alert-match.js';
 
 /* The eight operational states from the brief. */
 export var STATES = [
@@ -88,6 +89,28 @@ export var TRANSITION_ROLES = {
   'archived->deleted':          ['ceo'],
   'deleted->archived':          ['ceo']
 };
+
+/* Media visibility is a PROJECTION of the listing lifecycle, exactly as
+   listings.status already is (STATUS_PROJECTION above) — not a second
+   lifecycle. One listing state maps to one media visibility, so the two can
+   never drift and there is nothing extra for a reviewer to remember to set.
+
+     published                     -> published
+     rejected / archived / deleted -> rejected       (not active public media)
+     pending_review / verified /
+     unavailable                   -> pending_review (withheld, not refused)
+     submitted / draft             -> draft
+
+   Anything that is not 'published' is withheld from public reads; the three
+   buckets exist so an admin view can tell "not yet cleared" from "refused".
+   The same mapping is duplicated in migrations/0009's backfill — keep them
+   in step if a state is ever added. */
+export function mediaVisibilityFor(listingState) {
+  if (listingState === 'published') return 'published';
+  if (listingState === 'rejected' || listingState === 'archived' || listingState === 'deleted') return 'rejected';
+  if (listingState === 'pending_review' || listingState === 'verified' || listingState === 'unavailable') return 'pending_review';
+  return 'draft';
+}
 
 export function canTransition(fromState, toState) {
   var allowed = TRANSITIONS[fromState];
@@ -220,7 +243,42 @@ export async function transition(env, opts) {
     };
   }
 
-  return { ok: true, from: fromState, to: toState, before: before, after: after };
+  /* Media visibility follows the listing in the same transaction-ish step
+     as the state change itself, so a rejected/archived/deleted property's
+     files stop counting as published media immediately and a published
+     one's become publishable. Every media row for the listing moves
+     together — a listing never ends up with half its photos public.
+
+     A failure here is reported (not swallowed) because media that is still
+     marked 'published' after a rejection is a visibility problem, but it is
+     not allowed to undo the lifecycle change that already succeeded. */
+  var mediaVisibility = mediaVisibilityFor(toState);
+  var mediaUpd = await db.from('property_media')
+    .update({ visibility: mediaVisibility })
+    .eq('listing_id', listingId);
+
+  /* Notify Me — the property is live from this moment, so this is the
+     event that saved searches wait for. Matching happens HERE rather than
+     on a timer so a subscriber is emailed on publication rather than up to
+     an interval later.
+
+     dispatchAlertsForListing never throws and only ENQUEUES onto
+     email_delivery_queue (no outbound HTTP), so a Resend outage, a missing
+     key or a matcher bug cannot fail or slow the publication that just
+     succeeded. Anything that goes wrong is reported alongside the result
+     and the queued row is retried by the worker. */
+  var alerts = null;
+  if (toState === 'published') {
+    alerts = await dispatchAlertsForListing(env, db, listingId);
+  }
+
+  var result = { ok: true, from: fromState, to: toState, before: before, after: after };
+  result.mediaVisibility = mediaVisibility;
+  if (mediaUpd && mediaUpd.error) {
+    result.warning = 'State changed but media visibility could not be updated: ' + mediaUpd.error.message;
+  }
+  if (alerts && (alerts.queued || alerts.errors.length)) result.alerts = alerts;
+  return result;
 }
 
 /* Convenience for the console: which moves this actor could make next. */

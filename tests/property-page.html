@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Property Page Wiring — MakanOnRent</title>
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; max-width: 900px; margin: 40px auto; padding: 0 20px; color: #16211C; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: #6B7A73; margin-bottom: 20px; }
+  #summary { padding: 14px 18px; border-radius: 12px; font-weight: 700; margin-bottom: 18px; }
+  .ok   { background: #E7F3EE; border: 1px solid #0E5C44; color: #0E5C44; }
+  .bad  { background: #FBEAE8; border: 1px solid #C0392B; color: #C0392B; }
+  .grp  { margin: 18px 0 6px; font-weight: 800; font-size: 12px; letter-spacing: .6px; text-transform: uppercase; color: #6B7A73; }
+  li { list-style: none; padding: 4px 0; border-bottom: 1px solid #EEE; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .p { color: #0E5C44; } .f { color: #C0392B; font-weight: 700; }
+  /* Visible and on-screen on purpose: the gallery images are
+     loading="lazy", so an off-screen frame would never fetch them and the
+     "did the signed URL actually load" assertions could not be made. */
+  iframe { width: 300px; height: 420px; border: 1px solid #DDD; margin: 4px; vertical-align: top; }
+  #frames { margin-bottom: 24px; }
+</style>
+</head>
+<body>
+
+<h1>Property page wiring — executable tests</h1>
+<p class="sub">
+  Each frame boots the real <code>web/assets/js/property.js</code> + <code>shared.js</code>
+  with only <code>fetch</code> stubbed, so these assert what the shipped page actually does:
+  which endpoint a uuid goes to, that the real listingId reaches the signed media route,
+  that signed URLs render, and that a fixture id still behaves exactly as before.
+</p>
+
+<div id="summary">Running…</div>
+<div id="frames"></div>
+<div id="out"></div>
+
+<script type="module">
+var PUB_ID = '3f1a9c22-4d5e-4b7a-9f10-88c2e7d61a04';
+
+function boot(scenario, id) {
+  return new Promise(function (resolve) {
+    var f = document.createElement('iframe');
+    f.src = 'property-page-harness.html?scenario=' + encodeURIComponent(scenario) +
+            '&id=' + encodeURIComponent(id);
+    f.addEventListener('load', function () {
+      /* property.js renders after its promise chain settles; poll for the
+         rendered result rather than guessing a timeout. */
+      var tries = 0;
+      (function wait() {
+        var d = f.contentDocument;
+        var root = d && d.getElementById('detailRoot');
+        var done = root && root.getAttribute('aria-busy') === 'false';
+        if (done || ++tries > 120) resolve({ doc: d, win: f.contentWindow, root: root });
+        else setTimeout(wait, 25);
+      })();
+    });
+    document.getElementById('frames').appendChild(f);
+  });
+}
+
+/* Gallery images are lazy, so "rendered" and "loaded" are two different
+   moments. Assertions about whether a signed URL actually resolved — and
+   about the delegated error handler having fired — must wait for the
+   second one. Resolves as soon as every image has settled (loaded, or
+   errored and been removed), so a pass costs no fixed delay. */
+function settleImages(ctx, timeoutMs) {
+  /* The gallery ships loading="lazy", and inside a nested browsing
+     context the lazy-load heuristic does not fire here even with the
+     frame fully in view — the images would sit un-fetched forever and
+     neither "the signed URL resolves" nor "a bad one is removed" could
+     be observed. Flipping to eager makes the fetch happen NOW; the src
+     is left exactly as the page built it, so what is being tested is
+     still the page's own signed URL. */
+  Array.prototype.forEach.call(ctx.root.querySelectorAll('img[loading="lazy"]'), function (i) {
+    i.loading = 'eager';
+    i.src = i.src;
+  });
+  var deadline = Date.now() + (timeoutMs || 3000);
+  return new Promise(function (resolve) {
+    (function wait() {
+      var imgs = Array.prototype.slice.call(ctx.root.querySelectorAll('img'));
+      var pending = imgs.filter(function (i) { return !i.complete; });
+      if (!pending.length || Date.now() > deadline) resolve(ctx);
+      else setTimeout(wait, 25);
+    })();
+  });
+}
+
+var results = [];
+function group(n) { results.push({ group: n }); }
+function check(desc, got, want) {
+  results.push({ desc: desc, pass: JSON.stringify(got) === JSON.stringify(want), got: got, want: want });
+}
+function ok(desc, cond, got) { results.push({ desc: desc, pass: !!cond, got: got }); }
+
+/* ── 1. A real uuid takes the server path ─────────────────────────── */
+group('Real published listing (uuid)');
+
+var real = await settleImages(await boot('real', PUB_ID));
+var calls = real.win.__CALLS__;
+
+ok('detail endpoint was called', calls.some(function (u) { return u.indexOf('/api/properties/detail') === 0; }), calls);
+check('detail called with the real uuid',
+      calls.filter(function (u) { return u.indexOf('/api/properties/detail') === 0; })[0],
+      '/api/properties/detail?id=' + PUB_ID);
+ok('the real listingId reached the signed media route',
+   calls.indexOf('/api/properties/media?listingId=' + PUB_ID) > -1, calls);
+ok('fixture was not consulted for a uuid',
+   real.root.textContent.indexOf('Johar Town') === -1);
+
+var html = real.root.innerHTML;
+ok('title rendered from server data', real.root.textContent.indexOf('10 Marla Portion in Valencia Housing Society') > -1);
+ok('rent rendered from server data', real.root.textContent.indexOf('1.65 Lakh') > -1);
+ok('business-code reference shown, not the uuid',
+   real.root.textContent.indexOf('MOR-LHR-260801-4417') > -1 && real.root.textContent.indexOf(PUB_ID) === -1);
+ok('verified badge rendered', real.root.textContent.indexOf('Verified by Manager') > -1);
+ok('bedrooms rendered', real.root.textContent.indexOf('Bedrooms') > -1);
+
+/* ── 2. Signed media actually renders ─────────────────────────────── */
+group('Signed media rendering');
+
+var imgs = real.root.querySelectorAll('img');
+var vids = real.root.querySelectorAll('video');
+ok('an <img> is rendered from a signed URL', imgs.length > 0, imgs.length);
+ok('the img src is the signed URL',
+   imgs.length && imgs[0].getAttribute('src').indexOf('X-Amz-Signature=') > -1,
+   imgs.length ? imgs[0].getAttribute('src') : null);
+ok('a <video> is rendered for kind=video', vids.length > 0, vids.length);
+ok('the video src is the signed URL',
+   vids.length && vids[0].getAttribute('src').indexOf('X-Amz-Signature=') > -1);
+ok('signed image actually loaded (naturalWidth > 0)',
+   imgs.length && imgs[0].complete && imgs[0].naturalWidth > 0,
+   imgs.length ? imgs[0].naturalWidth : null);
+ok('gallery counter shows 2 items', real.root.textContent.indexOf('1 / 2') > -1);
+ok('no permanent R2 public URL anywhere in the DOM',
+   html.indexOf('images.makanonrent') === -1 && html.indexOf('r2.dev') === -1);
+
+/* ── 3. CSP-safe media error handling ─────────────────────────────── */
+group('CSP-safe media errors');
+
+ok('no inline onerror attribute is emitted', html.indexOf('onerror') === -1);
+ok('images carry the delegated fallback hook',
+   imgs.length && imgs[0].hasAttribute('data-media-fallback'));
+
+var broken = await settleImages(await boot('broken-media', PUB_ID));
+/* One extra frame for the delegated 'error' listener to run after the
+   image itself has settled. */
+await new Promise(function (r) { setTimeout(r, 120); });
+var frame = broken.doc.getElementById('galFrame');
+ok('a failed signed image is removed from the DOM',
+   frame && frame.querySelectorAll('img').length === 0,
+   frame ? frame.innerHTML.slice(0, 120) : null);
+ok('the branded glyph remains after removal',
+   frame && frame.querySelector('svg.ph-glyph') !== null);
+
+/* ── 4. Fallback when a published listing has no media ────────────── */
+group('No published media');
+
+var nomedia = await boot('real-nomedia', PUB_ID);
+ok('media endpoint still called', nomedia.win.__CALLS__.indexOf('/api/properties/media?listingId=' + PUB_ID) > -1);
+ok('page still renders the listing', nomedia.root.textContent.indexOf('10 Marla Portion') > -1);
+ok('existing "Photos being added" fallback preserved',
+   nomedia.root.textContent.indexOf('Photos being added') > -1);
+ok('no broken <img> is emitted', nomedia.root.querySelectorAll('img').length === 0);
+
+/* ── 5. Unpublished / unknown must not fall back to the fixture ───── */
+group('Unpublished and unknown');
+
+var unpub = await boot('unpublished', PUB_ID);
+ok('404 shows the not-available state',
+   unpub.root.textContent.indexOf('Property not available') > -1);
+ok('no fixture listing is rendered in its place',
+   unpub.root.textContent.indexOf('Marla') === -1 && unpub.root.querySelectorAll('.spec-tile').length === 0);
+ok('media endpoint not called for an unpublished listing',
+   !unpub.win.__CALLS__.some(function (u) { return u.indexOf('/api/properties/media') === 0; }),
+   unpub.win.__CALLS__);
+
+var down = await boot('server-down', PUB_ID);
+ok('a server failure shows not-available, never demo data',
+   down.root.textContent.indexOf('Property not available') > -1 &&
+   down.root.textContent.indexOf('Valencia') === -1);
+
+/* ── 6. Fixture ids keep working exactly as before ────────────────── */
+group('Fixture regression');
+
+var fx = await boot('fixture', 'L-LHR-1041');
+ok('no detail call for a fixture id',
+   !fx.win.__CALLS__.some(function (u) { return u.indexOf('/api/properties/detail') === 0; }),
+   fx.win.__CALLS__);
+ok('no media call for a fixture id (it has no listingId)',
+   !fx.win.__CALLS__.some(function (u) { return u.indexOf('/api/properties/media') === 0; }),
+   fx.win.__CALLS__);
+ok('fixture record still renders',
+   fx.root.textContent.indexOf('10 Marla Upper Portion, Separate Entrance') > -1);
+ok('fixture Ref still shows its own id', fx.root.textContent.indexOf('L-LHR-1041') > -1);
+ok('fixture contact actions still render (WhatsApp)',
+   fx.root.textContent.indexOf('WhatsApp') > -1);
+var waLink = fx.root.querySelector('a[href^="https://wa.me/"]');
+ok('fixture WhatsApp link intact', !!waLink, waLink ? waLink.getAttribute('href') : null);
+ok('fixture tel link intact', !!fx.root.querySelector('a[href^="tel:"]'));
+ok('fixture mail link intact', !!fx.root.querySelector('a[href^="mailto:"]'));
+
+/* ── 7. Owner contact must not appear for a real listing ──────────── */
+group('Owner privacy on the rendered page');
+
+ok('no tel: link for a server-sourced listing', !real.root.querySelector('a[href^="tel:"]'));
+ok('no mailto: link for a server-sourced listing', !real.root.querySelector('a[href^="mailto:"]'));
+ok('no wa.me link for a server-sourced listing', !real.root.querySelector('a[href^="https://wa.me/"]'));
+ok('no "undefined" leaked into any href', html.indexOf('tel:undefined') === -1 && html.indexOf('null') === -1);
+ok('favourite button still present for a real listing',
+   !!real.root.querySelector('[data-fav]'));
+
+/* ── 8. CSP must permit what the gallery actually does ────────────── */
+group('CSP vs. the signed media path');
+
+var headersText = await fetch('../web/_headers').then(function (r) { return r.text(); });
+var csp = (headersText.match(/Content-Security-Policy:\s*(.+)/) || [])[1] || '';
+function directive(name) {
+  var m = csp.match(new RegExp('(?:^|;)\\s*' + name + '\\s([^;]*)'));
+  return m ? m[1].trim() : null;
+}
+ok('a CSP is defined', !!csp);
+ok('script-src has no unsafe-inline (the reason onerror had to go)',
+   (directive('script-src') || '').indexOf("'unsafe-inline'") === -1, directive('script-src'));
+ok('img-src allows the presigned https image host',
+   (directive('img-src') || '').indexOf('https:') > -1, directive('img-src'));
+/* media-src governs <video>. Unstated, it falls back to default-src
+   'self' and the signed R2 video is blocked while photos still work —
+   a failure that only shows up on a listing that has video. */
+ok('media-src is stated explicitly', directive('media-src') !== null, csp);
+ok('media-src allows the presigned https video host',
+   (directive('media-src') || '').indexOf('https:') > -1, directive('media-src'));
+ok('connect-src allows the same-origin API fetches',
+   (directive('connect-src') || '').indexOf("'self'") > -1, directive('connect-src'));
+
+/* ── render ───────────────────────────────────────────────────────── */
+var pass = results.filter(function (x) { return x.desc && x.pass; }).length;
+var fail = results.filter(function (x) { return x.desc && !x.pass; }).length;
+var s = document.getElementById('summary');
+s.className = fail ? 'bad' : 'ok';
+s.textContent = fail ? (fail + ' failed / ' + (pass + fail) + ' assertions')
+                     : (pass + ' assertions passed');
+document.getElementById('out').innerHTML = results.map(function (x) {
+  if (x.group) return '<div class="grp">' + x.group + '</div>';
+  return '<li class="' + (x.pass ? 'p' : 'f') + '">' + (x.pass ? '✓ ' : '✗ ') + x.desc +
+    (x.pass ? '' : ' — got ' + JSON.stringify(x.got) +
+      (x.want !== undefined ? ', want ' + JSON.stringify(x.want) : '')) + '</li>';
+}).join('');
+window.__RESULT__ = { pass: pass, fail: fail,
+  failures: results.filter(function (x) { return x.desc && !x.pass; })
+    .map(function (x) { return x.desc + ' — got ' + JSON.stringify(x.got); }) };
+</script>
+</body>
+</html>
