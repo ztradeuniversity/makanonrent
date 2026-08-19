@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Suggest Your Address UI — MakanOnRent</title>
+<link rel="stylesheet" href="../web/assets/css/home.css">
+<link rel="stylesheet" href="../web/assets/css/location-search.css">
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; max-width: 980px; margin: 40px auto; padding: 0 20px; color: #16211C; background: #fff; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: #6B7A73; margin-bottom: 20px; }
+  #summary { padding: 14px 18px; border-radius: 12px; font-weight: 700; margin-bottom: 18px; }
+  .ok   { background: #E7F3EE; border: 1px solid #0E5C44; color: #0E5C44; }
+  .bad  { background: #FBEAE8; border: 1px solid #C0392B; color: #C0392B; }
+  .grp  { margin: 18px 0 6px; font-weight: 800; font-size: 12px; letter-spacing: .6px; text-transform: uppercase; color: #6B7A73; }
+  li { list-style: none; padding: 4px 0; border-bottom: 1px solid #EEE; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .p { color: #0E5C44; } .f { color: #C0392B; font-weight: 700; }
+  #stage { border: 1px dashed #DDD; padding: 16px; border-radius: 12px; margin-bottom: 18px; }
+</style>
+</head>
+<body>
+
+<h1>Suggest Your Address (UI) — executable tests</h1>
+<p class="sub">
+  Mounts the real <code>location-search.js</code> component over the real engine and bank.
+  Asserts that the suggestion action is offered only when the search finds nothing, and that
+  the server's verdict — including a refused duplicate — is what the visitor is shown.
+</p>
+
+<div id="summary">Running…</div>
+
+<!-- The markup contract the component mounts over, copied from index.html. -->
+<div id="stage">
+  <div class="loc-wrap">
+    <input id="locInput" class="loc-input" type="text" autocomplete="off"
+           role="combobox" aria-expanded="false" aria-autocomplete="list" placeholder="Search area" />
+    <button class="loc-clear" type="button" hidden aria-label="Clear">×</button>
+    <div class="loc-panel" hidden role="listbox"></div>
+  </div>
+</div>
+
+<div id="out"></div>
+
+<script src="../web/assets/js/config.js"></script>
+<script src="../web/assets/js/shared.js"></script>
+<script src="../web/assets/js/location-engine.js"></script>
+<script src="../web/assets/js/location-bank.js"></script>
+<script src="../web/assets/js/location-search.js"></script>
+
+<script type="module">
+var LOC = window.MOR_LOC, BANK = window.MOR_BANK;
+var CFG = window.MOR_CONFIG;
+
+/* This page drives the REAL engine and bank, which persist to
+   localStorage on this origin — the same keys the other suites and the
+   live site read. Without snapshotting and restoring them, the nodes
+   added below would leak into every later page load and quietly break
+   unrelated tests. Restored on the way out, including after a failure. */
+var STORAGE_KEYS = [CFG.storage.locationBank, CFG.storage.locationOverrides, CFG.storage.locationRecents];
+var SNAPSHOT = {};
+STORAGE_KEYS.forEach(function (k) {
+  SNAPSHOT[k] = localStorage.getItem(k);
+  localStorage.removeItem(k);
+});
+function restoreStorage() {
+  STORAGE_KEYS.forEach(function (k) {
+    if (SNAPSHOT[k] === null) localStorage.removeItem(k);
+    else localStorage.setItem(k, SNAPSHOT[k]);
+  });
+}
+window.addEventListener('error', restoreStorage);
+window.addEventListener('unhandledrejection', restoreStorage);
+
+var results = [];
+function group(n) { results.push({ group: n }); }
+function check(desc, got, want) {
+  results.push({ desc: desc, pass: JSON.stringify(got) === JSON.stringify(want), got: got, want: want });
+}
+function ok(desc, cond, got) { results.push({ desc: desc, pass: !!cond, got: got }); }
+function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+/* ── a known tree to search against ───────────────────────────────── */
+var CITY = LOC.addLocation({ id: 'pk/punjab/lahore', name: 'Lahore', type: 'city', status: 'approved' });
+var MAIN = LOC.addLocation({
+  id: 'pk/punjab/lahore/dha-defence', parentId: 'pk/punjab/lahore',
+  name: 'DHA Defence', type: 'locality', status: 'approved'
+});
+LOC.addLocation({
+  id: 'pk/punjab/lahore/dha-defence/phase-5', parentId: MAIN.id,
+  name: 'Phase 5', type: 'subarea', status: 'approved'
+});
+LOC.addLocation({
+  id: 'pk/punjab/lahore/dha-defence/asif-block', parentId: MAIN.id,
+  name: 'Asif Block', type: 'subarea', status: 'approved', aliases: ['Asif Blk']
+});
+
+var input = document.getElementById('locInput');
+var panel = document.querySelector('.loc-panel');
+var picker = window.MOR_LOC_SEARCH.mount(input, {});
+
+function type(v) {
+  input.value = v;
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  return wait(30);
+}
+
+/* ══ 1. Search first — suggest only when nothing matches ══════════ */
+group('Search before suggest');
+
+await type('Phase');
+ok('a matching sub area is listed', panel.querySelectorAll('.loc-item').length > 0,
+   panel.querySelectorAll('.loc-item').length);
+ok('the suggest action is NOT offered when a match exists',
+   !panel.querySelector('[data-suggest]'));
+
+await type('Asif');
+ok('“Asif” finds the existing block', panel.textContent.indexOf('Asif Block') > -1);
+ok('still no suggest action', !panel.querySelector('[data-suggest]'));
+
+await type('Zzzz Nowhere Block');
+check('no results for an unknown area', panel.querySelectorAll('.loc-item').length, 0);
+ok('the empty state explains what was not found',
+   panel.textContent.indexOf('No location found') > -1, panel.textContent);
+ok('the suggest action IS offered when nothing matches',
+   !!panel.querySelector('[data-suggest]'));
+ok('the action is labelled for a visitor',
+   /Suggest/i.test(panel.querySelector('[data-suggest]').textContent),
+   panel.querySelector('[data-suggest]').textContent);
+
+/* ══ 2. The client refuses a duplicate before the network ═════════ */
+group('Duplicate caught locally');
+
+var calls = [];
+var realFetch = window.fetch;
+window.fetch = function (url, init) {
+  calls.push({ url: String(url), body: init && init.body ? JSON.parse(init.body) : null });
+  return Promise.resolve({
+    ok: true, status: 201,
+    json: function () { return Promise.resolve({ ok: true, status: 'pending' }); }
+  });
+};
+
+var dup = await BANK.suggestSubArea({ name: 'phase   5', parentId: MAIN.id });
+check('an existing sub area is refused', dup.ok, false);
+ok('the message names it and says to select it',
+   /Phase 5/.test(dup.error) && /select it/i.test(dup.error), dup.error);
+check('no request was sent for a known duplicate', calls.length, 0);
+
+var byAlias = await BANK.suggestSubArea({ name: 'ASIF BLK', parentId: MAIN.id });
+check('an alias of an existing sub area is refused', byAlias.ok, false);
+check('still no request sent', calls.length, 0);
+
+var noParent = await BANK.suggestSubArea({ name: 'Somewhere', parentId: 'pk/punjab/lahore' });
+check('a city parent is refused', noParent.ok, false);
+ok('the reason is explained', /main area/i.test(noParent.error), noParent.error);
+
+/* ══ 3. A genuinely new name reaches the server ═══════════════════ */
+group('New suggestion');
+
+var fresh = await BANK.suggestSubArea({ name: '  Badar   Block ', parentId: MAIN.id, note: 'Near the mosque' });
+check('a new sub area is accepted', fresh.ok, true);
+check('exactly one request was sent', calls.length, 1);
+check('it went to the suggest route', calls[0].url, '/api/locations/suggest');
+check('the name was whitespace-normalised before sending', calls[0].body.name, 'Badar Block');
+check('the canonical parent was sent', calls[0].body.parentId, MAIN.id);
+check('the note was sent', calls[0].body.note, 'Near the mosque');
+check('the local node is pending', fresh.node.status, 'pending');
+ok('a pending node is not publicly selectable',
+   LOC.getSubAreas(MAIN.id).every(function (s) { return s.name !== 'Badar Block'; }),
+   LOC.getSubAreas(MAIN.id).map(function (s) { return s.name; }));
+
+/* ══ 4. A server refusal is shown, not swallowed ══════════════════ */
+group('Server verdict reaches the user');
+
+window.fetch = function (url, init) {
+  calls.push({ url: String(url), body: init && init.body ? JSON.parse(init.body) : null });
+  return Promise.resolve({
+    ok: false, status: 409,
+    json: function () {
+      return Promise.resolve({
+        error: '“Green Block” already exists here — please select it instead of suggesting it.',
+        existing: { nodeId: MAIN.id + '/green-block', name: 'Green Block', status: 'approved' }
+      });
+    }
+  });
+};
+
+var refused = await BANK.suggestSubArea({ name: 'Green Block', parentId: MAIN.id });
+check('a server-side duplicate is reported as a failure', refused.ok, false);
+ok('the server message is passed through verbatim',
+   /already exists here/.test(refused.error), refused.error);
+ok('the existing location is handed back', !!refused.existing && refused.existing.name === 'Green Block');
+ok('no local node was created for a refused suggestion',
+   !LOC.getById(MAIN.id + '/green-block'),
+   LOC.getById(MAIN.id + '/green-block'));
+
+/* ══ 5. Offline keeps the visitor's work ══════════════════════════ */
+group('Offline tolerance');
+
+window.fetch = function () { return Promise.reject(new Error('offline')); };
+var off = await BANK.suggestSubArea({ name: 'Sunset Block', parentId: MAIN.id });
+check('an unreachable server does not lose the input', off.ok, true);
+check('it is flagged as offline so the copy can say so', off.offline, true);
+check('the node is still only pending', off.node.status, 'pending');
+ok('it is still not publicly selectable',
+   LOC.getSubAreas(MAIN.id).every(function (s) { return s.name !== 'Sunset Block'; }));
+
+window.fetch = realFetch;
+
+/* ══ 6. The dialog wires the verdict into the form ════════════════ */
+group('Suggest dialog');
+
+await type('Zzzz Nowhere Block');
+panel.querySelector('[data-suggest]').click();
+await wait(60);
+
+var dlg = document.querySelector('.modal.is-open, .modal:not([hidden])');
+ok('the dialog opens from the empty state', !!dlg);
+var form = dlg && dlg.querySelector('form');
+ok('it asks for the sub area name', !!(form && form.querySelector('[data-f="name"]')));
+ok('it asks for the parent main area', !!(form && form.querySelector('[data-f="parent"]')));
+ok('it offers an optional note', !!(form && form.querySelector('[data-f="note"]')));
+ok('the name is prefilled from what was typed',
+   form && form.querySelector('[data-f="name"]').value === 'Zzzz Nowhere Block',
+   form && form.querySelector('[data-f="name"]').value);
+
+/* Submitting without a parent must not reach the network. */
+var sent = 0;
+window.fetch = function () { sent++; return Promise.reject(new Error('should not be called')); };
+form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+await wait(60);
+var msgEl = form.querySelector('.form-msg');
+ok('a missing main area is refused in the form',
+   /main area/i.test(msgEl.textContent), msgEl.textContent);
+check('nothing was sent', sent, 0);
+window.fetch = realFetch;
+
+/* ══ 7. Layout ════════════════════════════════════════════════════ */
+group('Layout');
+
+var de = document.documentElement;
+ok('no horizontal overflow at this width', de.scrollWidth <= de.clientWidth,
+   [de.scrollWidth, de.clientWidth]);
+var panelRect = panel.getBoundingClientRect();
+ok('the results panel stays inside the viewport',
+   panelRect.right <= de.clientWidth + 1 && panelRect.left >= -1,
+   [panelRect.left, panelRect.right, de.clientWidth]);
+
+/* Put this origin's location storage back exactly as it was found. */
+restoreStorage();
+
+/* ── render ───────────────────────────────────────────────────────── */
+var pass = results.filter(function (x) { return x.desc && x.pass; }).length;
+var fail = results.filter(function (x) { return x.desc && !x.pass; }).length;
+var s = document.getElementById('summary');
+s.className = fail ? 'bad' : 'ok';
+s.textContent = fail ? (fail + ' failed / ' + (pass + fail) + ' assertions')
+                     : (pass + ' assertions passed');
+document.getElementById('out').innerHTML = results.map(function (x) {
+  if (x.group) return '<div class="grp">' + x.group + '</div>';
+  return '<li class="' + (x.pass ? 'p' : 'f') + '">' + (x.pass ? '✓ ' : '✗ ') + x.desc +
+    (x.pass ? '' : ' — got ' + JSON.stringify(x.got) +
+      (x.want !== undefined ? ', want ' + JSON.stringify(x.want) : '')) + '</li>';
+}).join('');
+window.__RESULT__ = { pass: pass, fail: fail,
+  failures: results.filter(function (x) { return x.desc && !x.pass; })
+    .map(function (x) { return x.desc + ' — got ' + JSON.stringify(x.got); }) };
+</script>
+</body>
+</html>

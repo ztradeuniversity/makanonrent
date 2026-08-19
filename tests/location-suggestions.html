@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Suggest Your Address — MakanOnRent</title>
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; max-width: 980px; margin: 40px auto; padding: 0 20px; color: #16211C; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: #6B7A73; margin-bottom: 20px; }
+  #summary { padding: 14px 18px; border-radius: 12px; font-weight: 700; margin-bottom: 18px; }
+  .ok   { background: #E7F3EE; border: 1px solid #0E5C44; color: #0E5C44; }
+  .bad  { background: #FBEAE8; border: 1px solid #C0392B; color: #C0392B; }
+  .grp  { margin: 18px 0 6px; font-weight: 800; font-size: 12px; letter-spacing: .6px; text-transform: uppercase; color: #6B7A73; }
+  li { list-style: none; padding: 4px 0; border-bottom: 1px solid #EEE; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .p { color: #0E5C44; } .f { color: #C0392B; font-weight: 700; }
+</style>
+<!-- Redirects the bare specifier so the REAL endpoint sources load unmodified. -->
+<script type="importmap">
+{ "imports": { "@supabase/supabase-js": "./stub-supabase-db.js" } }
+</script>
+</head>
+<body>
+
+<h1>Suggest Your Address — executable tests</h1>
+<p class="sub">
+  Imports <code>functions/api/locations/suggest.js</code>,
+  <code>suggestions.js</code> and <code>index.js</code> directly, against a queryable
+  Supabase fake and a real hashed admin session. The load-bearing assertions are that a
+  suggestion cannot become public without an authorised approval, and that a duplicate is
+  refused rather than quietly overwriting a live location.
+</p>
+
+<div id="summary">Running…</div>
+<div id="out"></div>
+
+<script type="module">
+import { onRequestPost as suggestPost } from '../functions/api/locations/suggest.js';
+import { onRequestGet as queueGet, onRequestPost as reviewPost } from '../functions/api/locations/suggestions.js';
+import { onRequestGet as publicGet } from '../functions/api/locations/index.js';
+import { hashToken, SESSION_COOKIE } from '../functions/utils/session.js';
+import { DB, reset } from './stub-supabase-db.js';
+
+var ENV = { SUPABASE_URL: 'https://stub.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'stub-key' };
+
+var CITY = 'pk/punjab/lahore';
+var MAIN = CITY + '/dha-defence';
+
+/* ── fixtures ─────────────────────────────────────────────────────── */
+function seedTree() {
+  DB.locations.push(
+    { node_id: CITY, parent_node_id: null, name: 'Lahore', slug: 'lahore', type: 'city', status: 'approved', active: true, aliases: [] },
+    { node_id: MAIN, parent_node_id: CITY, name: 'DHA Defence', slug: 'dha-defence', type: 'locality', status: 'approved', active: true, aliases: ['DHA'] },
+    { node_id: MAIN + '/phase-5', parent_node_id: MAIN, name: 'Phase 5', slug: 'phase-5', type: 'subarea', status: 'approved', active: true, aliases: ['Ph 5'] }
+  );
+}
+
+/* A real session row: the token is hashed with the SAME helper the
+   endpoint uses, so requireCapability genuinely resolves it rather than
+   being bypassed. */
+var TOKEN = 'test-session-token';
+async function seedSession(role) {
+  DB.admin_sessions.push({
+    id: 'sess-1', user_id: 'u1',
+    token_hash: await hashToken(TOKEN),
+    expires_at: new Date(Date.now() + 36e5).toISOString(),
+    revoked_at: null,
+    admin_users: { id: 'u1', username: 'ceo', full_name: 'Test CEO', role: role, status: 'active', must_change_password: false }
+  });
+}
+
+/* A plain request object rather than `new Request(...)`: Cookie is a
+   forbidden header name on a real Request, so the browser silently drops
+   it and every authenticated call would look anonymous. A standalone
+   Headers has no such guard. The endpoints only read .url, .method,
+   .headers and .json(), so this is the same surface they see in
+   production — the session is still resolved by the real session.js
+   against the real hash. */
+function ctx(url, opts) {
+  opts = opts || {};
+  var headers = new Headers();
+  if (opts.auth) headers.set('Cookie', SESSION_COOKIE + '=' + TOKEN);
+  var body = opts.body ? JSON.stringify(opts.body) : null;
+  if (body) headers.set('Content-Type', 'application/json');
+  return {
+    env: ENV,
+    request: {
+      url: 'https://makanonrent.com' + url,
+      method: opts.method || 'GET',
+      headers: headers,
+      json: function () {
+        return body ? Promise.resolve(JSON.parse(body)) : Promise.reject(new Error('no body'));
+      }
+    }
+  };
+}
+
+async function call(fn, url, opts) {
+  var res = await fn(ctx(url, opts));
+  var body = await res.json();
+  return { status: res.status, body: body };
+}
+
+function suggest(body) { return call(suggestPost, '/api/locations/suggest', { method: 'POST', body: body }); }
+function queue(auth) { return call(queueGet, '/api/locations/suggestions?status=pending', { auth: auth !== false }); }
+function review(body, auth) {
+  return call(reviewPost, '/api/locations/suggestions', { method: 'POST', body: body, auth: auth !== false });
+}
+function publicBank() { return call(publicGet, '/api/locations'); }
+
+var results = [];
+function group(n) { results.push({ group: n }); }
+function check(desc, got, want) {
+  results.push({ desc: desc, pass: JSON.stringify(got) === JSON.stringify(want), got: got, want: want });
+}
+function ok(desc, cond, got) { results.push({ desc: desc, pass: !!cond, got: got }); }
+
+/* ══ 1. Submitting a suggestion ═══════════════════════════════════ */
+group('Submission');
+
+reset(); seedTree();
+var r = await suggest({ name: 'Asif Block', parentId: MAIN, note: 'Behind the park' });
+check('a new sub area is accepted', r.status, 201);
+check('it is stored as pending', r.body.status, 'pending');
+
+var node = DB.locations.filter(function (l) { return l.node_id === MAIN + '/asif-block'; })[0];
+ok('the node row was created', !!node);
+check('the node is pending, not approved', node && node.status, 'pending');
+check('the node is a sub area', node && node.type, 'subarea');
+check('the node hangs off the canonical main area', node && node.parent_node_id, MAIN);
+check('provenance is recorded', node && node.source, 'suggestion');
+check('an audit row was written', DB.location_suggestions.length, 1);
+check('the audit row is pending', DB.location_suggestions[0].status, 'pending');
+
+reset(); seedTree();
+await suggest({ name: '  asif   Block  ', parentId: MAIN });
+var tidied = DB.locations.filter(function (l) { return l.source === 'suggestion'; })[0];
+check('whitespace is normalised', tidied && tidied.name, 'asif Block');
+ok('the submitter’s own capitalisation is preserved', tidied && tidied.name !== 'Asif Block' && /asif Block/.test(tidied.name), tidied && tidied.name);
+
+reset(); seedTree();
+var withBy = await suggest({ name: 'Gulshan Block', parentId: MAIN, suggestedBy: 'owner@example.com' });
+check('suggestedBy is carried to the node', DB.locations.filter(function (l) { return l.source === 'suggestion'; })[0].suggested_by, 'owner@example.com');
+check('suggestedBy is carried to the audit row', DB.location_suggestions[0].suggested_by, 'owner@example.com');
+
+/* ══ 2. Only a sub area, only under a main area ═══════════════════ */
+group('Structural limits');
+
+reset(); seedTree();
+var toCity = await suggest({ name: 'New Town', parentId: CITY });
+check('a suggestion cannot be attached to a city', toCity.status, 422);
+check('no node is created for it', DB.locations.length, 3);
+
+reset(); seedTree();
+var toSub = await suggest({ name: 'Street 4', parentId: MAIN + '/phase-5' });
+check('a suggestion cannot be attached to a sub area', toSub.status, 422);
+
+reset(); seedTree();
+check('an unknown parent is refused', (await suggest({ name: 'X', parentId: 'pk/nowhere' })).status, 422);
+check('a missing name is refused', (await suggest({ parentId: MAIN })).status, 422);
+check('a punctuation-only name is refused', (await suggest({ name: '!!! ???', parentId: MAIN })).status, 422);
+
+/* ══ 3. Duplicate protection ══════════════════════════════════════ */
+group('Duplicate protection');
+
+reset(); seedTree();
+var dupExact = await suggest({ name: 'Phase 5', parentId: MAIN });
+check('an existing approved sub area is refused', dupExact.status, 409);
+ok('the message tells the user to select it instead', /select it/i.test(dupExact.body.error), dupExact.body.error);
+check('the existing node is named back to the caller', dupExact.body.existing.nodeId, MAIN + '/phase-5');
+check('nothing new was written', DB.locations.length, 3);
+check('no audit row was written', DB.location_suggestions.length, 0);
+
+reset(); seedTree();
+check('a case/whitespace variant is caught', (await suggest({ name: '  phase   5 ', parentId: MAIN })).status, 409);
+
+reset(); seedTree();
+var byAlias = await suggest({ name: 'Ph 5', parentId: MAIN });
+check('an alias of an existing sub area is caught', byAlias.status, 409);
+
+reset(); seedTree();
+await suggest({ name: 'Asif Block', parentId: MAIN });
+var twice = await suggest({ name: 'asif block', parentId: MAIN });
+check('the same suggestion twice is refused', twice.status, 409);
+ok('the second submitter is told it is awaiting review', /waiting for review/i.test(twice.body.error), twice.body.error);
+check('the queue did not grow a duplicate row', DB.location_suggestions.length, 1);
+
+/* A rejected name must not block a later, legitimate suggestion. */
+reset(); seedTree();
+DB.locations.push({ node_id: MAIN + '/old-name', parent_node_id: MAIN, name: 'Old Name', slug: 'old-name', type: 'subarea', status: 'rejected', active: true, aliases: [] });
+check('a previously rejected name can be suggested again', (await suggest({ name: 'Old Name', parentId: MAIN })).status, 201);
+
+/* ══ 4. Nothing is public before approval ═════════════════════════ */
+group('Public invisibility');
+
+reset(); seedTree();
+await suggest({ name: 'Asif Block', parentId: MAIN });
+var bank = await publicBank();
+var entry = bank.body.bank.entries.filter(function (e) { return e.nodeId === MAIN; })[0];
+ok('the main area is published', !!entry);
+check('an approved sub area is public', entry.subs, ['Phase 5']);
+ok('a pending suggestion is NOT public', entry.subs.indexOf('Asif Block') === -1, entry.subs);
+
+/* ══ 5. Only an authorised admin may review ═══════════════════════ */
+group('Authorisation');
+
+reset(); seedTree();
+await suggest({ name: 'Asif Block', parentId: MAIN });
+var sid = DB.location_suggestions[0].id;
+
+var anon = await queue(false);
+check('the queue rejects an anonymous read', anon.status, 401);
+var anonReview = await review({ action: 'approve', id: sid }, false);
+check('approval rejects an anonymous caller', anonReview.status, 401);
+check('the node is untouched by an anonymous attempt',
+      DB.locations.filter(function (l) { return l.node_id === MAIN + '/asif-block'; })[0].status, 'pending');
+
+reset(); seedTree(); await seedSession('manager');
+await suggest({ name: 'Asif Block', parentId: MAIN });
+var sidM = DB.location_suggestions[0].id;
+var mgrQueue = await queue();
+check('a manager cannot read the queue', mgrQueue.status, 403);
+var mgrReview = await review({ action: 'approve', id: sidM });
+check('a manager cannot approve', mgrReview.status, 403);
+check('the node stays pending after a forbidden attempt',
+      DB.locations.filter(function (l) { return l.node_id === MAIN + '/asif-block'; })[0].status, 'pending');
+
+/* ══ 6. The review queue ══════════════════════════════════════════ */
+group('Review queue');
+
+reset(); seedTree(); await seedSession('ceo');
+await suggest({ name: 'Asif Block', parentId: MAIN, note: 'Behind the park', suggestedBy: 'owner@example.com' });
+var q = await queue();
+check('the CEO can read the queue', q.status, 200);
+check('the suggestion is listed', q.body.suggestions.length, 1);
+var s0 = q.body.suggestions[0];
+check('name', s0.name, 'Asif Block');
+check('city is resolved for the reviewer', s0.cityName, 'Lahore');
+check('main area is resolved for the reviewer', s0.mainName, 'DHA Defence');
+check('the note is shown', s0.note, 'Behind the park');
+check('the submitter reference is shown', s0.suggestedBy, 'owner@example.com');
+check('status', s0.status, 'pending');
+ok('a date is present', !!s0.createdAt);
+ok('the node id is addressable', s0.nodeId === MAIN + '/asif-block', s0.nodeId);
+
+/* ══ 7. Approval ══════════════════════════════════════════════════ */
+group('Approval');
+
+reset(); seedTree(); await seedSession('ceo');
+await suggest({ name: 'Asif Block', parentId: MAIN });
+var sidA = DB.location_suggestions[0].id;
+var appr = await review({ action: 'approve', id: sidA });
+check('approval succeeds', appr.status, 200);
+check('it reports the approved status', appr.body.status, 'approved');
+
+var approved = DB.locations.filter(function (l) { return l.node_id === MAIN + '/asif-block'; })[0];
+check('the node is now approved', approved.status, 'approved');
+check('the node id is unchanged', approved.node_id, MAIN + '/asif-block');
+check('the canonical main area is unchanged', approved.parent_node_id, MAIN);
+check('the type is still a sub area', approved.type, 'subarea');
+check('no second node was created', DB.locations.filter(function (l) { return l.name === 'Asif Block'; }).length, 1);
+check('the main area was not duplicated', DB.locations.filter(function (l) { return l.type === 'locality'; }).length, 1);
+check('no alias was invented', (approved.aliases || []).length, 0);
+
+var audit = DB.location_suggestions[0];
+check('the audit row is approved', audit.status, 'approved');
+check('the reviewer is recorded', audit.reviewed_by, 'Test CEO');
+ok('the review time is recorded', !!audit.reviewed_at);
+
+var bank2 = await publicBank();
+var entry2 = bank2.body.bank.entries.filter(function (e) { return e.nodeId === MAIN; })[0];
+ok('the approved sub area is now public', entry2.subs.indexOf('Asif Block') > -1, entry2.subs);
+ok('the previously approved sibling is still public', entry2.subs.indexOf('Phase 5') > -1, entry2.subs);
+
+var again = await review({ action: 'approve', id: sidA });
+check('approving twice is refused', again.status, 409);
+
+/* ══ 8. Rejection ═════════════════════════════════════════════════ */
+group('Rejection');
+
+reset(); seedTree(); await seedSession('ceo');
+await suggest({ name: 'Bogus Place', parentId: MAIN });
+var sidR = DB.location_suggestions[0].id;
+var rej = await review({ action: 'reject', id: sidR });
+check('rejection succeeds', rej.status, 200);
+check('the node is rejected', DB.locations.filter(function (l) { return l.node_id === MAIN + '/bogus-place'; })[0].status, 'rejected');
+check('the audit row is rejected', DB.location_suggestions[0].status, 'rejected');
+
+var bank3 = await publicBank();
+var entry3 = bank3.body.bank.entries.filter(function (e) { return e.nodeId === MAIN; })[0];
+ok('a rejected suggestion is not public', entry3.subs.indexOf('Bogus Place') === -1, entry3.subs);
+ok('a rejected suggestion is not in the pending queue',
+   (await queue()).body.suggestions.length === 0);
+
+/* ══ 9. The tree can change between suggestion and review ═════════ */
+group('Stale approvals');
+
+reset(); seedTree(); await seedSession('ceo');
+await suggest({ name: 'Asif Block', parentId: MAIN });
+var sidS = DB.location_suggestions[0].id;
+/* Someone published a real sub area with the same name in the meantime. */
+DB.locations.push({ node_id: MAIN + '/asif-block-2', parent_node_id: MAIN, name: 'Asif Block', slug: 'asif-block-2', type: 'subarea', status: 'approved', active: true, aliases: [] });
+var clash = await review({ action: 'approve', id: sidS });
+check('approving into a name that went live meanwhile is refused', clash.status, 409);
+ok('the reviewer is told to reject instead', /reject this suggestion/i.test(clash.body.error), clash.body.error);
+check('the suggestion is left pending', DB.locations.filter(function (l) { return l.node_id === MAIN + '/asif-block'; })[0].status, 'pending');
+
+reset(); seedTree(); await seedSession('ceo');
+await suggest({ name: 'Asif Block', parentId: MAIN });
+var sidP = DB.location_suggestions[0].id;
+/* The parent stopped being a main area. */
+DB.locations.filter(function (l) { return l.node_id === MAIN; })[0].type = 'city';
+var badParent = await review({ action: 'approve', id: sidP });
+check('approving under a non-main-area parent is refused', badParent.status, 409);
+check('the node stays pending', DB.locations.filter(function (l) { return l.node_id === MAIN + '/asif-block'; })[0].status, 'pending');
+
+reset(); seedTree(); await seedSession('ceo');
+check('an unknown suggestion id is a 404', (await review({ action: 'approve', id: 'nope' })).status, 404);
+check('an invalid action is refused', (await review({ action: 'delete', id: 'x' })).status, 422);
+
+/* ── render ───────────────────────────────────────────────────────── */
+var pass = results.filter(function (x) { return x.desc && x.pass; }).length;
+var fail = results.filter(function (x) { return x.desc && !x.pass; }).length;
+var s = document.getElementById('summary');
+s.className = fail ? 'bad' : 'ok';
+s.textContent = fail ? (fail + ' failed / ' + (pass + fail) + ' assertions')
+                     : (pass + ' assertions passed');
+document.getElementById('out').innerHTML = results.map(function (x) {
+  if (x.group) return '<div class="grp">' + x.group + '</div>';
+  return '<li class="' + (x.pass ? 'p' : 'f') + '">' + (x.pass ? '✓ ' : '✗ ') + x.desc +
+    (x.pass ? '' : ' — got ' + JSON.stringify(x.got) +
+      (x.want !== undefined ? ', want ' + JSON.stringify(x.want) : '')) + '</li>';
+}).join('');
+window.__RESULT__ = { pass: pass, fail: fail,
+  failures: results.filter(function (x) { return x.desc && !x.pass; })
+    .map(function (x) { return x.desc + ' — got ' + JSON.stringify(x.got); }) };
+</script>
+</body>
+</html>

@@ -22,6 +22,13 @@
       api: {
         presign: '/api/uploads/presign',
         submitProperty: '/api/properties/submit',
+        /* Owner identity — Google sign-in through Supabase Auth. These are
+           redirects and cookie-backed reads; the browser never holds a
+           token and there is no key in this file to hold. */
+        ownerLogin: '/api/owner/login',
+        ownerMe: '/api/owner/me',
+        ownerLogout: '/api/owner/logout',
+        myProperties: '/api/properties/mine',
         notifyProperty: '/api/properties/notify',
         /* Controlled media read — returns short-lived signed URLs, and only
            for media whose listing is published. */
@@ -31,7 +38,15 @@
         propertyDetail: '/api/properties/detail',
         locations: '/api/locations',
         locationsPublish: '/api/locations/publish',
+        /* Web Push. pushKey returns the VAPID PUBLIC key only — the
+           private half never leaves the server (functions/utils/push.js). */
+        pushKey: '/api/push/key',
+        pushSubscribe: '/api/push/subscribe',
+        adminBroadcasts: '/api/admin/broadcasts',
         locationsSuggest: '/api/locations/suggest',
+        /* Admin review queue for user suggestions — the only route that
+           can make a suggested location public. Capability-gated. */
+        locationsSuggestions: '/api/locations/suggestions',
         locationsCities: '/api/locations/cities',
         /* Admin console (docs/adr/0001-admin-management-rbac.md).
            Every one of these is authenticated server-side by an HttpOnly
@@ -55,6 +70,9 @@
         adminReports: '/api/admin/reports',
         adminResetLocations: '/api/admin/reset-locations'
       },
+      /* Root-scoped on purpose: a worker's scope is its own directory, so
+         only /sw.js can control the whole site. */
+      serviceWorker: '/sw.js',
       locationManagerPage: 'location-manager.html',
       adminLoginPage: 'admin-login.html',
       adminPage: 'admin.html',
@@ -80,6 +98,18 @@
       favourites: 'mor:favourites',
       /* localStorage — grid | list preference. */
       viewMode: 'mor:viewMode',
+      /* localStorage — timestamp of the last install-CTA dismissal, so the
+         offer is snoozed rather than repeated on every page load. */
+      installDismissed: 'mor:installDismissed',
+      /* localStorage — Web Push (assets/js/push.js). visitorId is a random
+         UUID this browser makes for itself: it is not derived from the
+         device or the person, and exists so push preferences survive a
+         subscription rotation. pushInterests is a CAPPED rolling window
+         (10 searches, 20 property ids), never a browsing history. */
+      visitorId: 'mor:visitorId',
+      pushInterests: 'mor:pushInterests',
+      pushPrefs: 'mor:pushPrefs',
+      pushAsked: 'mor:pushAsked',
       /* sessionStorage — result set to return to from a details page. */
       lastResultsUrl: 'mor:lastResultsUrl',
       /* localStorage — in-progress submission, so a dropped connection

@@ -6,6 +6,14 @@
 <title>Submit Your Property — MakanOnRent</title>
 <meta name="description" content="List your property for rent on MakanOnRent. Ten short steps, free to submit, reviewed by our team." />
 <meta name="theme-color" content="#0A1A14" />
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="icon" href="assets/img/favicon-16.png" sizes="16x16" type="image/png">
+<link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="MakanOnRent" />
 <link rel="stylesheet" href="assets/css/home.css">
 <link rel="stylesheet" href="assets/css/listing.css">
 <link rel="stylesheet" href="assets/css/wizard.css">
@@ -89,7 +97,7 @@
           <label for="wCity">City</label>
           <div class="control">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-5.6-7-11a7 7 0 1 1 14 0c0 5.4-7 11-7 11z"/><circle cx="12" cy="10" r="2.6"/></svg>
-            <select id="wCity"><option value="">Select city</option></select>
+            <select id="wCity" data-premium><option value="">Select city</option></select>
             <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
           </div>
         </div>
@@ -99,7 +107,7 @@
           <label for="wMainLoc">Main Location</label>
           <div class="control">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-5.6-7-11a7 7 0 1 1 14 0c0 5.4-7 11-7 11z"/><circle cx="12" cy="10" r="2.6"/></svg>
-            <select id="wMainLoc" disabled><option value="">Select a city first</option></select>
+            <select id="wMainLoc" data-premium disabled><option value="">Select a city first</option></select>
             <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
           </div>
         </div>
@@ -109,7 +117,7 @@
           <label for="wSubLoc">Sub Location</label>
           <div class="control">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-5.6-7-11a7 7 0 1 1 14 0c0 5.4-7 11-7 11z"/><circle cx="12" cy="10" r="2.6"/></svg>
-            <select id="wSubLoc" disabled><option value="">Select a main location first</option></select>
+            <select id="wSubLoc" data-premium disabled><option value="">Select a main location first</option></select>
             <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
           </div>
           <p class="err" id="errLoc"></p>
@@ -407,11 +415,14 @@
       </div>
       <div class="note" style="text-align:left;margin-bottom:20px;">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>
-        <span>You can track this property's review status from My Properties after login.</span>
+        <span>Track this property's review status any time from My Properties.</span>
       </div>
+      <!-- Real destination: dashboard.html reads the signed-in owner's own
+           properties from the API. This previously promised a page that
+           was linked from nowhere and fed by a fixture. -->
       <div class="done-actions">
-        <a class="btn-ghost" href="index.html">Back to Home</a>
-        <a class="btn-gold" href="submit.html">Submit Another</a>
+        <a class="btn-ghost" href="submit.html">Submit Another</a>
+        <a class="btn-gold" href="dashboard.html">View My Properties</a>
       </div>
     </section>
 
@@ -438,7 +449,14 @@
 <script src="assets/js/location-sample-subareas.js"></script>
 <script src="assets/js/location-bank.js"></script>
 <script src="assets/js/shared.js"></script>
+<script src="assets/js/owner-session.js"></script>
+<script src="assets/js/push.js"></script>
 <script src="assets/js/location-search.js"></script>
+<!-- Same type-to-filter dropdown the homepage search uses. The wizard
+     already reads its City / Main / Sub options from MOR_LOC, so this adds
+     the search behaviour without introducing a second location source. -->
+<script src="assets/js/premium-select.js"></script>
 <script src="assets/js/wizard.js"></script>
+<script src="assets/js/pwa.js"></script>
 </body>
 </html>

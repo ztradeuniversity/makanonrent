@@ -71,19 +71,56 @@
     if (el) el.textContent = msg || '';
   }
 
-  /* ── STEP 1 · Google (frontend hook only) ───────────────── */
-  $('googleBtn').addEventListener('click', function () {
-    /* Real OAuth replaces this block; the wizard only needs to know
-       that a session exists before it lets the owner continue. */
+  /* ── STEP 1 · Google sign-in ──────────────────────────────
+     Real authentication. The button leaves the site for Google (via
+     Supabase Auth) and the owner returns with a session cookie; the
+     signed-in state below is read back FROM THE SERVER, never asserted
+     locally. It previously set state.signedIn = true on click, which
+     unlocked the wizard without authenticating anyone. */
+  var SIGNED_IN_HTML =
+    '<div class="signed">' +
+      '<span class="s-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>' +
+      '<div><b>Signed in as {email}</b><span>You can continue now.</span></div>' +
+    '</div>';
+
+  function showSignedIn(owner) {
     state.signedIn = true;
-    $('authSlot').innerHTML =
-      '<div class="signed">' +
-        '<span class="s-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></span>' +
-        '<div><b>Signed in</b><span>You can continue now.</span></div>' +
-      '</div>';
+    state.ownerEmail = owner.email || '';
+    if (!state.ownerName && owner.name) state.ownerName = owner.name;
+    $('authSlot').innerHTML = SIGNED_IN_HTML.replace('{email}', UI.esc(owner.email || ''));
     refreshNav();
     saveDraft();
+  }
+
+  function showSignInError(msg) {
+    var note = doc.createElement('p');
+    note.className = 'wz-err';
+    note.textContent = msg;
+    $('authSlot').appendChild(note);
+  }
+
+  $('googleBtn').addEventListener('click', function () {
+    var S = win.MOR_OWNER_SESSION;
+    if (!S) { showSignInError('Sign-in is unavailable right now. Please try again shortly.'); return; }
+    this.disabled = true;
+    /* Come back to this page so the owner resumes where they left off —
+       the draft is already saved on this device. */
+    S.signIn(win.location.pathname);
   });
+
+  /* On load: ask the server whether this browser already has a session,
+     and report a cancelled or failed attempt honestly rather than
+     leaving the owner on a button that appears to do nothing. */
+  (function initAuth() {
+    var S = win.MOR_OWNER_SESSION;
+    if (!S) return;
+    var flag = S.consumeSigninFlag();
+    S.load(true).then(function (me) {
+      if (me && me.signedIn) { showSignedIn(me.owner); return; }
+      if (flag === 'cancelled') showSignInError('Sign-in was cancelled. You can try again.');
+      else if (flag === 'failed') showSignInError('Sign-in did not complete. Please try again.');
+    });
+  })();
 
   /* ── STEP 2 · category + type ───────────────────────────── */
   var CAT = [
@@ -620,8 +657,16 @@
       if (d.state[k] !== undefined) state[k] = d.state[k];
     });
 
-    /* Sessions never survive a reload — the owner signs in again. */
+    /* A saved draft can never grant a session — it is data this device
+       wrote, not proof of anything. It is cleared here and then re-asked
+       of the server, so resuming a draft neither fakes a sign-in nor
+       throws away a real one. */
     state.signedIn = false;
+    if (win.MOR_OWNER_SESSION) {
+      win.MOR_OWNER_SESSION.load().then(function (me) {
+        if (me && me.signedIn) showSignedIn(me.owner);
+      });
+    }
 
     renderTypes(); renderTags();
     if (state.city) {

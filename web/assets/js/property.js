@@ -304,6 +304,10 @@
      renders the record's own media exactly as before. */
   resolveRecord().then(function (rec) {
     if (!rec) { notFound(); return; }
+    /* Opening a real listing is the other interest signal push matching
+       uses. Only real listing ids are recorded — a fixture id means
+       nothing to the server. */
+    if (win.MOR_PUSH && rec.listingId) win.MOR_PUSH.rememberViewed(rec.listingId);
     return loadPublishedMedia(rec.listingId || null).then(function (items) {
       render(rec, items);
     });

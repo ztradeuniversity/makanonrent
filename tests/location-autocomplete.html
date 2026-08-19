@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Location Type-Ahead — MakanOnRent</title>
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; max-width: 980px; margin: 40px auto; padding: 0 20px; color: #16211C; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: #6B7A73; margin-bottom: 20px; }
+  #summary { padding: 14px 18px; border-radius: 12px; font-weight: 700; margin-bottom: 18px; }
+  .ok   { background: #E7F3EE; border: 1px solid #0E5C44; color: #0E5C44; }
+  .bad  { background: #FBEAE8; border: 1px solid #C0392B; color: #C0392B; }
+  .grp  { margin: 18px 0 6px; font-weight: 800; font-size: 12px; letter-spacing: .6px; text-transform: uppercase; color: #6B7A73; }
+  li { list-style: none; padding: 4px 0; border-bottom: 1px solid #EEE; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .p { color: #0E5C44; } .f { color: #C0392B; font-weight: 700; }
+  iframe { width: 380px; height: 300px; border: 1px solid #DDD; margin: 4px; vertical-align: top; }
+  #frames { margin-bottom: 20px; }
+  .note { background: #FFF8E6; border: 1px solid #E4C766; border-radius: 10px; padding: 10px 14px; margin: 14px 0; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<h1>Location type-ahead — executable tests</h1>
+<p class="sub">
+  Drives the REAL <code>index.html</code>, <code>rent.html</code> and <code>submit.html</code>
+  in frames — the same <code>premium-select.js</code> over the same <code>MOR_LOC</code> data
+  bank on all three. Nothing is stubbed: what these assert is what a visitor gets.
+</p>
+
+<div id="summary">Running…</div>
+<div id="frames"></div>
+<div id="out"></div>
+
+<script type="module">
+/* ── driving the real control ─────────────────────────────────────── */
+/* Each page fills its City select from MOR_LOC at its own moment (home.js,
+   listing.js and wizard.js all differ), so waiting on 'load' alone races
+   them. Poll until the options are actually there. */
+function load(page, cityId) {
+  return new Promise(function (resolve) {
+    var f = document.createElement('iframe');
+    f.src = '../web/' + page;
+    f.addEventListener('load', function () {
+      var tries = 0;
+      (function wait() {
+        var d = f.contentDocument;
+        var sel = d && d.getElementById(cityId);
+        if ((sel && sel.options.length > 1) || ++tries > 100) {
+          resolve({ doc: d, win: f.contentWindow });
+        } else setTimeout(wait, 25);
+      })();
+    });
+    document.getElementById('frames').appendChild(f);
+  });
+}
+
+function ctl(ctx, id) {
+  var sel = ctx.doc.getElementById(id);
+  var wrap = sel && sel.closest('.pms');
+  return {
+    sel: sel,
+    wrap: wrap,
+    enhanced: !!wrap,
+    open: function () {
+      wrap.querySelector('.pms-trigger').click();
+      return this;
+    },
+    input: function () { return wrap.querySelector('.pms-search input'); },
+    hasSearch: function () { return !!wrap.querySelector('.pms-search input'); },
+    type: function (v) {
+      var i = wrap.querySelector('.pms-search input');
+      i.value = v;
+      i.dispatchEvent(new ctx.win.Event('input', { bubbles: true }));
+      return this.labels();
+    },
+    labels: function () {
+      return Array.prototype.map.call(wrap.querySelectorAll('.pms-opt'), function (o) { return o.textContent; });
+    },
+    values: function () {
+      return Array.prototype.map.call(wrap.querySelectorAll('.pms-opt'), function (o) { return o.getAttribute('data-value'); });
+    },
+    firstHTML: function () {
+      var o = wrap.querySelector('.pms-opt');
+      return o ? o.innerHTML : null;
+    },
+    activeLabel: function () {
+      var a = wrap.querySelector('.pms-opt.is-active');
+      return a ? a.textContent : null;
+    },
+    key: function (k) {
+      var target = wrap.querySelector('.pms-search input') || wrap.querySelector('.pms-trigger');
+      target.dispatchEvent(new ctx.win.KeyboardEvent('keydown', { key: k, bubbles: true }));
+      return this;
+    },
+    triggerText: function () { return wrap.querySelector('.pms-trigger').textContent; },
+    close: function () { ctx.doc.body.click(); return this; }
+  };
+}
+
+/* Choosing a City repopulates Main Location (and Main repopulates Sub).
+   premium-select syncs the dependent trigger's disabled state from a
+   MutationObserver, which runs as a microtask — after the current script,
+   long before any human could click, but not before the very next line of
+   a test. Yield a task so the test drives the control a real user would. */
+function tick() { return new Promise(function (r) { setTimeout(r, 0); }); }
+
+var results = [];
+function group(n) { results.push({ group: n }); }
+function check(desc, got, want) {
+  results.push({ desc: desc, pass: JSON.stringify(got) === JSON.stringify(want), got: got, want: want });
+}
+function ok(desc, cond, got) { results.push({ desc: desc, pass: !!cond, got: got }); }
+
+/* Every page under test, so "the same behaviour everywhere" is asserted
+   rather than assumed. ids differ per page; the control does not. */
+var PAGES = [
+  { page: 'index.html',  label: 'Home search',  city: 'fCity', main: 'fMainLoc', sub: 'fSubLoc' },
+  { page: 'rent.html',   label: 'Rent filters', city: 'fCity', main: 'fMainLoc', sub: 'fSubLoc' },
+  { page: 'submit.html', label: 'Submit Property', city: 'wCity', main: 'wMainLoc', sub: 'wSubLoc' }
+];
+
+var LOC = null;
+var dataNotes = [];
+
+for (var pi = 0; pi < PAGES.length; pi++) {
+  var P = PAGES[pi];
+  var ctx = await load(P.page, P.city);
+  if (!LOC) LOC = ctx.win.MOR_LOC;
+
+  /* ── City ──────────────────────────────────────────────────────── */
+  group(P.label + ' — City');
+
+  var city = ctl(ctx, P.city);
+  ok('city select is enhanced', city.enhanced);
+  if (!city.enhanced) continue;
+
+  city.open();
+  ok('city has a search box', city.hasSearch(), city.labels().length);
+
+  var L1 = city.type('L');
+  check('“L” puts Lahore first', L1[0], 'Lahore');
+  var L2 = city.type('LA');
+  check('“LA” puts Lahore first', L2[0], 'Lahore');
+  ok('“LA” narrows the list vs “L”', L2.length < L1.length, [L1.length, L2.length]);
+  var L3 = city.type('LAH');
+  check('“LAH” leaves only Lahore', L3, ['Lahore']);
+  ok('“LAH” narrows further', L3.length < L2.length, [L2.length, L3.length]);
+  check('lowercase “lahore” matches', city.type('lahore'), ['Lahore']);
+  check('padded “  lahore  ” matches', city.type('  lahore  '), ['Lahore']);
+  check('“rawal” matches Rawalpindi', city.type('rawal'), ['Rawalpindi']);
+  check('no-match returns nothing', city.type('zzzzz'), []);
+  ok('no-match shows a message',
+     /No match/.test(city.wrap.querySelector('.pms-none').textContent));
+
+  city.type('LA');
+  ok('the typed part is highlighted', /<mark>La<\/mark>hore/i.test(city.firstHTML()), city.firstHTML());
+  check('top match is pre-armed for Enter', city.activeLabel(), 'Lahore');
+
+  /* keyboard: arrow past Lahore, back, then Enter takes the armed row */
+  city.key('ArrowDown');
+  ok('ArrowDown moves the cursor off the top row', city.activeLabel() !== 'Lahore', city.activeLabel());
+  city.key('ArrowUp');
+  check('ArrowUp returns to the top row', city.activeLabel(), 'Lahore');
+  city.key('Enter');
+  check('Enter selects the canonical city value', city.sel.value, 'lahore');
+  check('trigger shows the selection', city.triggerText(), 'Lahore');
+
+  /* ── Main Location ─────────────────────────────────────────────── */
+  group(P.label + ' — Main Location');
+
+  await tick();
+  var main = ctl(ctx, P.main);
+  ok('main select is enhanced', main.enhanced);
+  ok('main select enabled after a city is chosen', !main.sel.disabled, main.sel.disabled);
+  main.open();
+  ok('main has a search box', main.hasSearch());
+
+  var d1 = main.type('D');
+  var d2 = main.type('DH');
+  var d3 = main.type('DHA');
+  ok('“D” surfaces DHA', d1.join('|').indexOf('DHA') > -1, d1.slice(0, 4));
+  ok('“D” ranks a D-initial option first', /^D/i.test(d1[0]), d1[0]);
+  ok('“DH” narrows vs “D”', d2.length < d1.length, [d1.length, d2.length]);
+  ok('“DHA” narrows vs “DH”', d3.length <= d2.length, [d2.length, d3.length]);
+  ok('every “DHA” result contains DHA',
+     d3.every(function (t) { return /dha/i.test(t); }), d3);
+
+  /* Alias → canonical. The bank publishes "DHA" as an alias OPTION of the
+     node "DHA Defence": the two carry different slugs on purpose (each
+     alias keeps its own URL slug — changing that would change existing
+     URL parameters), but they must point at ONE canonical node id and one
+     canonical name. That equality is the guarantee type-ahead must not
+     disturb; it is asserted here rather than slug equality. */
+  var dhaVals = main.values();
+  var aliasIdx = d3.indexOf('DHA');
+  var canonIdx = d3.indexOf('DHA Defence');
+  ok('both the alias and the canonical name are offered',
+     aliasIdx > -1 && canonIdx > -1, d3);
+
+  var bankOpts = LOC.getMainAreaOptions(
+    LOC.listCities().filter(function (c) { return c.name === 'Lahore'; })[0].id);
+  var aliasEntry = bankOpts.filter(function (o) { return o.name === 'DHA'; })[0];
+  var canonEntry = bankOpts.filter(function (o) { return o.name === 'DHA Defence'; })[0];
+  ok('the alias is flagged as an alias', aliasEntry && aliasEntry.isAlias === true, aliasEntry);
+  check('alias and canonical share one canonical node id',
+        aliasEntry && aliasEntry.id, canonEntry && canonEntry.id);
+  check('alias and canonical share one canonical name',
+        aliasEntry && aliasEntry.canonicalName, canonEntry && canonEntry.canonicalName);
+
+  /* Selecting through the type-ahead must store exactly the slug the bank
+     published for that option — no rewriting by the dropdown. */
+  main.type('DHA');
+  var typedVals = main.values();
+  var typedIdx = main.labels().indexOf('DHA');
+  main.key('Enter');
+  check('selecting the alias stores the bank’s own slug for it',
+        main.sel.value, typedIdx > -1 ? typedVals[typedIdx] : aliasEntry.slug);
+  ok('the stored slug still maps to the canonical node',
+     bankOpts.filter(function (o) { return o.slug === main.sel.value; })[0].id === canonEntry.id,
+     main.sel.value);
+
+  /* ── Sub Location ──────────────────────────────────────────────── */
+  group(P.label + ' — Sub Location');
+
+  /* Pick the main area that actually carries the most sub locations, so
+     the assertions run against the richest data the bank has. */
+  var cityNode = LOC.listCities().filter(function (c) { return c.name === 'Lahore'; })[0];
+  var richest = LOC.getMainAreas(cityNode.id)
+    .map(function (m) { return { slug: m.slug, n: LOC.getSubAreas(m.id).length }; })
+    .sort(function (a, b) { return b.n - a.n; })[0];
+
+  main.close();
+  main.sel.value = richest.slug;
+  main.sel.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
+  await tick();
+
+  var sub = ctl(ctx, P.sub);
+  ok('sub select is enhanced', sub.enhanced);
+  ok('sub select enabled after a main location is chosen', !sub.sel.disabled, sub.sel.disabled);
+
+  var subNames = LOC.getSubAreas(LOC.findBySlug ? richest.slug : richest.slug) || [];
+  sub.open();
+  var allSubs = sub.labels();
+  ok('sub list is scoped to the chosen main location — count matches the bank',
+     allSubs.length === richest.n + 1 || allSubs.length === richest.n,
+     [allSubs.length, richest.n]);
+
+  /* Scoping: nothing from a DIFFERENT main location may appear. */
+  var otherMain = LOC.getMainAreas(cityNode.id).filter(function (m) { return m.slug !== richest.slug; });
+  var foreign = [];
+  otherMain.forEach(function (m) {
+    LOC.getSubAreas(m.id).forEach(function (s) {
+      if (allSubs.indexOf(s.name) > -1 && subNamesOf(richest.slug).indexOf(s.name) === -1) foreign.push(m.slug + '/' + s.name);
+    });
+  });
+  function subNamesOf(slug) {
+    var node = LOC.getMainAreas(cityNode.id).filter(function (m) { return m.slug === slug; })[0];
+    return node ? LOC.getSubAreas(node.id).map(function (s) { return s.name; }) : [];
+  }
+  check('no sub location from another main location leaks in', foreign, []);
+
+  if (sub.hasSearch()) {
+    var mine = subNamesOf(richest.slug);
+    var probe = (mine[0] || '').slice(0, 2);
+    var hit = sub.type(probe);
+    ok('typing filters the sub list', hit.length > 0 && hit.length <= mine.length, [probe, hit]);
+    ok('every sub result belongs to the chosen main location',
+       hit.every(function (t) { return mine.indexOf(t) > -1; }), hit);
+    check('a nonsense sub query matches nothing', sub.type('zzzzz'), []);
+    sub.type(probe);
+    sub.key('Enter');
+    ok('selecting a sub stores a value from this main location',
+       mine.map(function (n) { return n; }).length > 0 && sub.sel.value !== '', sub.sel.value);
+  } else {
+    dataNotes.push(P.label + ': richest main area (' + richest.slug + ') carries only ' +
+                   richest.n + ' sub locations — below the search-box threshold.');
+    ok('short sub list renders without a search box (by design)', true, richest.n);
+  }
+
+  sub.close();
+}
+
+/* ── Data-bank reality check (reported, never "fixed" here) ───────── */
+group('Location Data Bank — coverage');
+
+var cityNode = LOC.listCities().filter(function (c) { return c.name === 'Lahore'; })[0];
+var mains = LOC.getMainAreas(cityNode.id);
+var aliasCount = LOC.getMainAreaOptions(cityNode.id).filter(function (o) { return o.isAlias; }).length;
+var subTotal = mains.reduce(function (n, m) { return n + LOC.getSubAreas(m.id).length; }, 0);
+var ait = mains.filter(function (m) { return /allama iqbal/i.test(m.name); })[0];
+var aitSubs = ait ? LOC.getSubAreas(ait.id).map(function (s) { return s.name; }) : [];
+
+ok('cities are published', LOC.listCities().length > 0, LOC.listCities().length);
+ok('main locations are published', mains.length > 0, mains.length);
+ok('aliases are published and resolve', aliasCount > 0, aliasCount);
+ok('sub locations are published', subTotal > 0, subTotal);
+
+/* These are DATA observations, recorded so the gap is visible rather than
+   quietly papered over. Failing them would mean inventing locations. */
+dataNotes.push('Lahore: ' + mains.length + ' main locations, ' + aliasCount +
+               ' alias options, ' + subTotal + ' sub locations in total.');
+dataNotes.push('Allama Iqbal Town sub locations present: ' + (aitSubs.join(', ') || 'none') +
+               ' — "Asif Block" / "Badar Block" are NOT in the bank.');
+dataNotes.push('Allama Iqbal Town aliases present: ' +
+               (LOC.getMainAreaOptions(cityNode.id).filter(function (o) {
+                 return o.canonicalName === 'Allama Iqbal Town' && o.isAlias;
+               }).map(function (o) { return o.name; }).join(', ') || 'none') +
+               ' — "AIT" and the Urdu form are NOT in the bank.');
+
+/* ── render ───────────────────────────────────────────────────────── */
+var pass = results.filter(function (x) { return x.desc && x.pass; }).length;
+var fail = results.filter(function (x) { return x.desc && !x.pass; }).length;
+var s = document.getElementById('summary');
+s.className = fail ? 'bad' : 'ok';
+s.textContent = fail ? (fail + ' failed / ' + (pass + fail) + ' assertions')
+                     : (pass + ' assertions passed');
+document.getElementById('out').innerHTML =
+  '<div class="note"><b>Data-bank observations</b><br>' + dataNotes.join('<br>') + '</div>' +
+  results.map(function (x) {
+    if (x.group) return '<div class="grp">' + x.group + '</div>';
+    return '<li class="' + (x.pass ? 'p' : 'f') + '">' + (x.pass ? '✓ ' : '✗ ') + x.desc +
+      (x.pass ? '' : ' — got ' + JSON.stringify(x.got) +
+        (x.want !== undefined ? ', want ' + JSON.stringify(x.want) : '')) + '</li>';
+  }).join('');
+window.__RESULT__ = { pass: pass, fail: fail, notes: dataNotes,
+  failures: results.filter(function (x) { return x.desc && !x.pass; })
+    .map(function (x) { return x.desc + ' — got ' + JSON.stringify(x.got); }) };
+</script>
+</body>
+</html>

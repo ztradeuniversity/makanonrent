@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Admin console harness</title>
+</head>
+<body>
+<!-- The markup and the scripts are pulled from the REAL web/admin.html at
+     runtime rather than copied here, so this harness cannot drift away
+     from the page it is supposed to be testing. Only fetch is stubbed:
+     admin-core.js, admin-console.js and the whole Location Data Bank run
+     exactly as they do in production. -->
+<script>
+window.__POSTS__ = [];
+
+(function () {
+  var ME = {
+    user: { id: 'ceo-test', username: 'ceo', fullName: 'Test CEO', role: 'ceo' },
+    capabilities: [
+      'users.create.assistant_ceo', 'users.create.manager', 'users.list',
+      'users.toggle_status', 'users.reset_password',
+      'areas.assign', 'areas.list', 'locations.manage',
+      'tasks.assign', 'tasks.list.any', 'tasks.list.own',
+      'properties.add', 'properties.edit.assigned', 'properties.verify',
+      'properties.approve', 'properties.archive', 'properties.restore',
+      'properties.view.any', 'monitor.read', 'audit.read', 'comments.create',
+      'settings.read', 'settings.write'
+    ],
+    areas: null
+  };
+
+  var USERS = [
+    { id: 'mgr-1', username: 'mgr1', fullName: 'Manager One', role: 'manager',
+      status: 'active', manageable: true, lastLoginAt: null },
+    { id: 'aceo-1', username: 'aceo1', fullName: 'Assistant One', role: 'assistant_ceo',
+      status: 'active', manageable: true, lastLoginAt: null }
+  ];
+
+  function reply(body, status) {
+    return Promise.resolve({
+      ok: status === undefined || status < 400,
+      status: status || 200,
+      json: function () { return Promise.resolve(body); }
+    });
+  }
+
+  var realFetch = window.fetch.bind(window);
+
+  window.fetch = function (url, init) {
+    var u = String(url);
+    var method = (init && init.method) || 'GET';
+    var body = null;
+    try { body = init && init.body ? JSON.parse(init.body) : null; } catch (e) {}
+
+    if (method === 'POST') window.__POSTS__.push({ url: u, body: body });
+
+    if (u.indexOf('/api/admin/me') === 0) return reply(ME);
+    if (u.indexOf('/api/admin/users') === 0) return reply({ users: USERS });
+    if (u.indexOf('/api/admin/assignments') === 0) {
+      return method === 'POST' ? reply({ ok: true, assignmentId: 'a-' + window.__POSTS__.length }, 201)
+                               : reply({ assignments: [] });
+    }
+    if (u.indexOf('/api/admin/notifications') === 0) return reply({ unread: 0, notifications: [] });
+    if (u.indexOf('/api/admin/tasks') === 0) {
+      return method === 'POST' ? reply({ ok: true }, 201)
+        : reply({ date: new Date().toISOString().slice(0, 10),
+                  summary: { total: 0, completed: 0, pending: 0, completionPct: 0 }, tasks: [] });
+    }
+    if (u.indexOf('/api/admin/performance') === 0) return reply({ managers: [] });
+    if (u.indexOf('/api/locations/cities') === 0) return reply({ cities: [] });
+    if (u.indexOf('/api/locations') === 0) return reply({ bank: { version: 1, entries: [] } });
+
+    /* Everything else — the local asset files the page needs — is real. */
+    return realFetch(url, init);
+  };
+})();
+</script>
+
+<script type="module">
+/* Rewrites admin.html's relative asset paths for this directory, keeps
+   the load order the page declares, and forces in-order execution
+   (dynamically inserted scripts are async by default). */
+var html = await fetch('../web/admin.html').then(function (r) { return r.text(); });
+
+var doc = new DOMParser().parseFromString(html, 'text/html');
+
+Array.prototype.forEach.call(doc.querySelectorAll('link[rel=stylesheet]'), function (l) {
+  var link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = '../web/' + l.getAttribute('href');
+  document.head.appendChild(link);
+});
+
+var scripts = Array.prototype.map.call(doc.querySelectorAll('body script[src]'), function (s) {
+  return '../web/' + s.getAttribute('src');
+});
+Array.prototype.forEach.call(doc.querySelectorAll('body script'), function (s) { s.remove(); });
+
+document.body.insertAdjacentHTML('beforeend', doc.body.innerHTML);
+
+for (var i = 0; i < scripts.length; i++) {
+  await new Promise(function (resolve, reject) {
+    var el = document.createElement('script');
+    el.src = scripts[i];
+    el.async = false;
+    el.onload = resolve;
+    el.onerror = function () { reject(new Error('failed to load ' + el.src)); };
+    document.body.appendChild(el);
+  });
+}
+
+/* The console boots on its own; the team tab is what builds the picker. */
+window.__HARNESS_READY__ = true;
+setTimeout(function () {
+  var tab = document.querySelector('[data-tab="team"]');
+  if (tab) tab.click();
+}, 60);
+</script>
+</body>
+</html>

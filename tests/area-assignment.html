@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Area Assignment — MakanOnRent</title>
+<link rel="stylesheet" href="../web/assets/css/home.css">
+<link rel="stylesheet" href="../web/assets/css/admin.css">
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; max-width: 1000px; margin: 40px auto; padding: 0 20px; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: #6B7A73; margin-bottom: 20px; }
+  #summary { padding: 14px 18px; border-radius: 12px; font-weight: 700; margin-bottom: 18px; }
+  .ok   { background: #E7F3EE; border: 1px solid #0E5C44; color: #0E5C44; }
+  .bad  { background: #FBEAE8; border: 1px solid #C0392B; color: #C0392B; }
+  .grp  { margin: 18px 0 6px; font-weight: 800; font-size: 12px; letter-spacing: .6px; text-transform: uppercase; color: #6B7A73; }
+  li { list-style: none; padding: 4px 0; border-bottom: 1px solid #EEE; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .p { color: #0E5C44; } .f { color: #C0392B; font-weight: 700; }
+  iframe { width: 100%; height: 460px; border: 1px solid #DDD; border-radius: 10px; }
+  #stage { margin-bottom: 18px; }
+</style>
+<script type="importmap">
+{ "imports": { "@supabase/supabase-js": "./stub-supabase-db.js" } }
+</script>
+</head>
+<body>
+
+<h1>Area assignment — executable tests</h1>
+<p class="sub">
+  Boots the real <code>admin.html</code> team panel against a stubbed admin API, and runs the
+  real <code>assignments.js</code> and <code>rbac.js</code> against a queryable database fake.
+  The load-bearing assertions: every assignable value comes from the Location Data Bank, a
+  hand-typed node id can no longer be sent, and an assignment actually produces manager scope.
+</p>
+
+<div id="summary">Running…</div>
+<div id="stage"></div>
+<div id="out"></div>
+
+<script type="module">
+import { onRequestGet as assignGet, onRequestPost as assignPost } from '../functions/api/admin/assignments.js';
+import { onRequestGet as approvalsGet } from '../functions/api/admin/approvals.js';
+import { onRequestGet as propertiesGet } from '../functions/api/admin/properties.js';
+import { getScopeNodeIds, isWithinScope } from '../functions/utils/rbac.js';
+import { hashToken, SESSION_COOKIE } from '../functions/utils/session.js';
+import { DB, reset } from './stub-supabase-db.js';
+
+var results = [];
+function group(n) { results.push({ group: n }); }
+function check(desc, got, want) {
+  results.push({ desc: desc, pass: JSON.stringify(got) === JSON.stringify(want), got: got, want: want });
+}
+function ok(desc, cond, got) { results.push({ desc: desc, pass: !!cond, got: got }); }
+function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+var ENV = { SUPABASE_URL: 'https://stub.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'k', SITE_URL: 'https://makanonrent.com' };
+var CITY = 'lahore', MAIN = 'lahore/johar-town', OTHER_MAIN = 'lahore/dha-defence';
+
+function ctx(url, opts) {
+  opts = opts || {};
+  var headers = new Headers();
+  if (opts.auth) headers.set('Cookie', SESSION_COOKIE + '=tok-' + opts.auth);
+  var b = opts.body ? JSON.stringify(opts.body) : null;
+  if (b) headers.set('Content-Type', 'application/json');
+  return {
+    env: ENV,
+    request: {
+      url: 'https://makanonrent.com' + url, method: opts.method || 'GET', headers: headers,
+      json: function () { return b ? Promise.resolve(JSON.parse(b)) : Promise.reject(new Error('no body')); }
+    }
+  };
+}
+async function call(fn, url, opts) {
+  var res = await fn(ctx(url, opts));
+  return { status: res.status, body: await res.json() };
+}
+
+async function seedUser(id, role, name) {
+  DB.admin_users = DB.admin_users || [];
+  DB.admin_users.push({ id: id, username: id, full_name: name, role: role, status: 'active' });
+  DB.admin_sessions.push({
+    id: 'sess-' + id, user_id: id, token_hash: await hashToken('tok-' + id),
+    expires_at: new Date(Date.now() + 36e5).toISOString(), revoked_at: null,
+    admin_users: { id: id, username: id, full_name: name, role: role, status: 'active', must_change_password: false }
+  });
+}
+function seedLocations() {
+  DB.locations.push(
+    { node_id: CITY, parent_node_id: null, name: 'Lahore', slug: 'lahore', type: 'city', status: 'approved', active: true },
+    { node_id: MAIN, parent_node_id: CITY, name: 'Johar Town', slug: 'johar-town', type: 'locality', status: 'approved', active: true },
+    { node_id: MAIN + '/block-a', parent_node_id: MAIN, name: 'Block A', slug: 'block-a', type: 'subarea', status: 'approved', active: true },
+    { node_id: MAIN + '/block-b', parent_node_id: MAIN, name: 'Block B', slug: 'block-b', type: 'subarea', status: 'approved', active: true },
+    { node_id: OTHER_MAIN, parent_node_id: CITY, name: 'DHA Defence', slug: 'dha-defence', type: 'locality', status: 'approved', active: true }
+  );
+}
+
+/* ══ 1. The picker UI ═════════════════════════════════════════════ */
+group('Area picker UI');
+
+/* The real admin.html, with only the admin API stubbed. Everything the
+   picker reads — cities, main locations, sub locations — comes from the
+   Location Data Bank scripts the page itself loads. */
+var CFGKEYS = ['mor:locationBank', 'mor:locationOverrides', 'mor:locationRecents'];
+var SNAP = {};
+CFGKEYS.forEach(function (k) { SNAP[k] = localStorage.getItem(k); localStorage.removeItem(k); });
+function restore() {
+  CFGKEYS.forEach(function (k) {
+    if (SNAP[k] === null) localStorage.removeItem(k); else localStorage.setItem(k, SNAP[k]);
+  });
+}
+window.addEventListener('error', restore);
+
+var frame = document.createElement('iframe');
+frame.src = 'area-assignment-harness.html';
+document.getElementById('stage').appendChild(frame);
+await new Promise(function (res) { frame.addEventListener('load', res); });
+
+var W = frame.contentWindow, D = frame.contentDocument;
+/* Wait for the console to boot and the team panel to build the picker. */
+for (var t = 0; t < 120 && !(D.getElementById('adAssignCity') || {}).options; t++) await wait(50);
+for (var t2 = 0; t2 < 120; t2++) {
+  if (D.getElementById('adAssignCity').options.length > 1) break;
+  await wait(50);
+}
+
+var citySel = D.getElementById('adAssignCity');
+var mainSel = D.getElementById('adAssignMain');
+var subWrap = D.getElementById('adAssignSubWrap');
+var subsBox = D.getElementById('adAssignSubs');
+var assignBtn = D.getElementById('adAssignArea');
+
+ok('the free-text node path input is gone', !D.getElementById('adAssignNode'));
+ok('a City select exists', !!citySel);
+ok('a Main Location select exists', !!mainSel);
+ok('a Sub Location group exists', !!subsBox);
+ok('cities are populated from the Location Data Bank', citySel.options.length > 1, citySel.options.length);
+ok('Lahore is offered', Array.prototype.some.call(citySel.options, function (o) { return o.textContent === 'Lahore'; }));
+ok('Main Location starts disabled', mainSel.disabled);
+ok('Sub Locations start hidden', subWrap.hidden);
+ok('Assign is disabled with nothing chosen', assignBtn.disabled);
+
+/* City → Main cascade. */
+var lahore = Array.prototype.filter.call(citySel.options, function (o) { return o.textContent === 'Lahore'; })[0];
+citySel.value = lahore.value;
+citySel.dispatchEvent(new W.Event('change', { bubbles: true }));
+await wait(60);
+ok('choosing a city enables Main Location', !mainSel.disabled);
+ok('main locations are populated', mainSel.options.length > 1, mainSel.options.length);
+
+/* Main → Sub cascade. */
+var mainWithSubs = null;
+for (var m = 1; m < mainSel.options.length; m++) {
+  if (W.MOR_LOC.getSubAreas(mainSel.options[m].value).length > 1) { mainWithSubs = mainSel.options[m]; break; }
+}
+ok('at least one main location has sub locations', !!mainWithSubs);
+mainSel.value = mainWithSubs.value;
+mainSel.dispatchEvent(new W.Event('change', { bubbles: true }));
+await wait(60);
+
+ok('sub locations become visible', !subWrap.hidden);
+var boxes = subsBox.querySelectorAll('input[type=checkbox]');
+ok('sub locations are listed as checkboxes', boxes.length > 1, boxes.length);
+ok('every sub value is a real bank node id',
+   Array.prototype.every.call(boxes, function (b) { return !!W.MOR_LOC.getById(b.value); }));
+ok('every sub node is a child of the chosen main location',
+   Array.prototype.every.call(boxes, function (b) { return b.value.indexOf(mainWithSubs.value + '/') === 0; }));
+
+/* Scope preview + multi-select. */
+var scopeEl = D.getElementById('adAssignScope');
+ok('with no sub ticked, the whole main location is offered',
+   /whole main location/i.test(scopeEl.textContent), scopeEl.textContent);
+
+boxes[0].checked = true;
+subsBox.dispatchEvent(new W.Event('change', { bubbles: true }));
+await wait(30);
+ok('ticking one sub switches to a single sub assignment',
+   /1 sub location/i.test(scopeEl.textContent), scopeEl.textContent);
+
+boxes[1].checked = true;
+subsBox.dispatchEvent(new W.Event('change', { bubbles: true }));
+await wait(30);
+ok('MULTIPLE sub locations can be selected together',
+   /2 sub locations/i.test(scopeEl.textContent), scopeEl.textContent);
+ok('Assign is enabled once a member and areas are chosen', !assignBtn.disabled);
+
+D.getElementById('adAssignSubAll').click();
+await wait(30);
+ok('Select all ticks every listed sub',
+   Array.prototype.every.call(subsBox.querySelectorAll('input'), function (b) { return b.checked; }));
+D.getElementById('adAssignSubNone').click();
+await wait(30);
+ok('Clear unticks every sub',
+   Array.prototype.every.call(subsBox.querySelectorAll('input'), function (b) { return !b.checked; }));
+
+/* Filter. */
+var search = D.getElementById('adAssignSubSearch');
+var firstName = subsBox.querySelector('.ad-sub span').textContent;
+search.value = firstName;
+search.dispatchEvent(new W.Event('input', { bubbles: true }));
+await wait(40);
+ok('the filter narrows the sub list',
+   subsBox.querySelectorAll('input').length < boxes.length ||
+   subsBox.querySelectorAll('input').length === 1, subsBox.querySelectorAll('input').length);
+search.value = '';
+search.dispatchEvent(new W.Event('input', { bubbles: true }));
+await wait(40);
+
+/* What the page actually POSTs. */
+group('What the picker sends');
+D.getElementById('adAssignSubAll').click();
+await wait(20);
+var expected = Array.prototype.map.call(subsBox.querySelectorAll('input'), function (b) { return b.value; });
+W.__POSTS__.length = 0;
+assignBtn.click();
+for (var w = 0; w < 80 && W.__POSTS__.length < expected.length; w++) await wait(25);
+
+var posts = W.__POSTS__.filter(function (p) { return p.url.indexOf('/api/admin/assignments') === 0 && p.body.action === 'assign'; });
+check('one request per selected sub location', posts.length, expected.length);
+check('each carries a bank node id', posts.map(function (p) { return p.body.nodeId; }).sort(), expected.slice().sort());
+ok('every posted nodeId resolves in the bank',
+   posts.every(function (p) { return !!W.MOR_LOC.getById(p.body.nodeId); }));
+ok('a userId is always sent', posts.every(function (p) { return !!p.body.userId; }));
+
+/* Mobile. */
+group('Layout');
+var de = D.documentElement;
+ok('no horizontal overflow in the panel', de.scrollWidth <= de.clientWidth + 1, [de.scrollWidth, de.clientWidth]);
+
+restore();
+
+/* ══ 2. The assignments API ═══════════════════════════════════════ */
+group('Assignments API');
+
+reset(); seedLocations(); await seedUser('ceo1', 'ceo', 'Chief'); await seedUser('mgr1', 'manager', 'Manager One');
+
+var a1 = await call(assignPost, '/api/admin/assignments',
+  { method: 'POST', auth: 'ceo1', body: { action: 'assign', userId: 'mgr1', nodeId: MAIN + '/block-a' } });
+check('the CEO can assign a sub location', a1.status, 201);
+check('the row is stored active', DB.admin_area_assignments[0].active, true);
+check('the tier is derived from the path, not trusted', DB.admin_area_assignments[0].scope_level, 'sub');
+
+var a2 = await call(assignPost, '/api/admin/assignments',
+  { method: 'POST', auth: 'ceo1', body: { action: 'assign', userId: 'mgr1', nodeId: MAIN + '/block-b' } });
+check('a second sub location can be assigned to the same manager', a2.status, 201);
+check('both are stored', DB.admin_area_assignments.length, 2);
+
+var bogus = await call(assignPost, '/api/admin/assignments',
+  { method: 'POST', auth: 'ceo1', body: { action: 'assign', userId: 'mgr1', nodeId: 'lahore/typo-town' } });
+check('a node that is not in the bank is refused', bogus.status, 404);
+check('nothing was stored for it', DB.admin_area_assignments.length, 2);
+
+var tooDeep = await call(assignPost, '/api/admin/assignments',
+  { method: 'POST', auth: 'ceo1', body: { action: 'assign', userId: 'mgr1', nodeId: 'a/b/c/d' } });
+check('a path deeper than City/Main/Sub is refused', tooDeep.status, 422);
+
+var listed = await call(assignGet, '/api/admin/assignments', { auth: 'ceo1' });
+check('assignments are listed back', listed.body.assignments.length, 2);
+
+/* ══ 3. Manager scope ═════════════════════════════════════════════ */
+group('Manager scope');
+
+var mgrScope = await getScopeNodeIds(ENV, { id: 'mgr1', role: 'manager' });
+check('the manager scope is the two assigned subs', mgrScope.sort(), [MAIN + '/block-a', MAIN + '/block-b']);
+ok('a property in an assigned sub is in scope', isWithinScope(mgrScope, MAIN + '/block-a'));
+ok('a property in the other main location is NOT', !isWithinScope(mgrScope, OTHER_MAIN));
+ok('a property recorded only at main level is NOT in a sub-level scope',
+   !isWithinScope(mgrScope, MAIN));
+ok('a property with no area_node_id is never in scope', !isWithinScope(mgrScope, null));
+
+var ceoScope = await getScopeNodeIds(ENV, { id: 'ceo1', role: 'ceo' });
+check('the CEO has global scope', ceoScope, null);
+ok('the CEO sees everything', isWithinScope(ceoScope, OTHER_MAIN) && isWithinScope(ceoScope, null) === true);
+
+await seedUser('mgr2', 'manager', 'Manager Two');
+var noneScope = await getScopeNodeIds(ENV, { id: 'mgr2', role: 'manager' });
+check('an unassigned manager has an empty scope', noneScope, []);
+ok('an unassigned manager sees nothing', !isWithinScope(noneScope, MAIN + '/block-a'));
+
+/* Scope actually filters the approvals queue. */
+DB.admin_settings = [{ key: 'approval_chain', value: 'manager_only' }, { key: 'auto_publish', value: false }];
+DB.listings.push({
+  id: '3f1a9c22-4d5e-4b7a-9f10-88c2e7d61a04', status: 'intake', approval_state: null,
+  rent_amount_minor: 9500000, created_at: new Date().toISOString(), archived_at: null,
+  units: { id: 'u1', properties: { id: 'p1', business_code: 'MOR-1', city_name: 'Lahore',
+    area_name: 'Block A', area_node_id: MAIN + '/block-a', added_by_admin_id: null } }
+});
+DB.listings.push({
+  id: '9c0b7e41-2a33-4c88-b5d1-77aa10ff2e63', status: 'intake', approval_state: null,
+  rent_amount_minor: 8000000, created_at: new Date().toISOString(), archived_at: null,
+  units: { id: 'u2', properties: { id: 'p2', business_code: 'MOR-2', city_name: 'Lahore',
+    area_name: 'DHA', area_node_id: OTHER_MAIN, added_by_admin_id: null } }
+});
+
+var qMgr = await call(approvalsGet, '/api/admin/approvals?queue=1', { auth: 'mgr1' });
+check('the assigned manager sees only their area', qMgr.body.listings.length, 1);
+check('and it is the right property', qMgr.body.listings[0].property.areaNodeId, MAIN + '/block-a');
+
+/* The CEO's approval QUEUE is empty under a manager_only chain, and that
+   is correct — they are not a stage in it. Oversight is the properties
+   endpoint, which is unscoped for a CEO, so that is what is asserted. */
+var qCeoQueue = await call(approvalsGet, '/api/admin/approvals?queue=1', { auth: 'ceo1' });
+check('the CEO has no queue under a manager_only chain', qCeoQueue.body.listings.length, 0);
+
+var ceoProps = await call(propertiesGet, '/api/admin/properties', { auth: 'ceo1' });
+check('the CEO oversees every property regardless of area', ceoProps.body.properties.length, 2);
+var mgrProps = await call(propertiesGet, '/api/admin/properties', { auth: 'mgr1' });
+check('a manager only oversees their assigned area', mgrProps.body.properties.length, 1);
+check('and it is their own', mgrProps.body.properties[0].areaNodeId, MAIN + '/block-a');
+
+var qNone = await call(approvalsGet, '/api/admin/approvals?queue=1', { auth: 'mgr2' });
+check('the unassigned manager still sees nothing', qNone.body.listings.length, 0);
+
+/* ══ 4. Nobody may widen their own scope ══════════════════════════ */
+group('Scope cannot be widened');
+
+reset(); seedLocations();
+await seedUser('ceo1', 'ceo', 'Chief');
+await seedUser('aceo', 'assistant_ceo', 'Assistant');
+await seedUser('mgr1', 'manager', 'Manager One');
+
+var mgrTry = await call(assignPost, '/api/admin/assignments',
+  { method: 'POST', auth: 'mgr1', body: { action: 'assign', userId: 'mgr1', nodeId: MAIN } });
+check('a manager cannot assign areas at all', mgrTry.status, 403);
+
+await call(assignPost, '/api/admin/assignments',
+  { method: 'POST', auth: 'ceo1', body: { action: 'assign', userId: 'aceo', nodeId: MAIN } });
+var aceoOut = await call(assignPost, '/api/admin/assignments',
+  { method: 'POST', auth: 'aceo', body: { action: 'assign', userId: 'mgr1', nodeId: OTHER_MAIN } });
+check('an Assistant CEO cannot delegate territory they do not hold', aceoOut.status, 403);
+
+var aceoIn = await call(assignPost, '/api/admin/assignments',
+  { method: 'POST', auth: 'aceo', body: { action: 'assign', userId: 'mgr1', nodeId: MAIN + '/block-a' } });
+check('an Assistant CEO CAN delegate inside their own territory', aceoIn.status, 201);
+
+var aceoUp = await call(assignPost, '/api/admin/assignments',
+  { method: 'POST', auth: 'aceo', body: { action: 'assign', userId: 'ceo1', nodeId: MAIN } });
+check('an Assistant CEO cannot assign areas to the CEO', aceoUp.status, 403);
+
+/* ══ 5. Revoke ════════════════════════════════════════════════════ */
+group('Revoke');
+
+var toRevoke = DB.admin_area_assignments.filter(function (r) { return r.user_id === 'mgr1'; })[0];
+var rev = await call(assignPost, '/api/admin/assignments',
+  { method: 'POST', auth: 'ceo1', body: { action: 'revoke', assignmentId: toRevoke.id } });
+check('the CEO can revoke', rev.status, 200);
+check('the row is deactivated, not deleted', DB.admin_area_assignments.filter(function (r) { return r.id === toRevoke.id; })[0].active, false);
+ok('a revoked assignment is stamped', !!DB.admin_area_assignments.filter(function (r) { return r.id === toRevoke.id; })[0].revoked_at);
+
+var scopeAfter = await getScopeNodeIds(ENV, { id: 'mgr1', role: 'manager' });
+ok('scope shrinks after a revoke', scopeAfter.indexOf(MAIN + '/block-a') === -1, scopeAfter);
+
+/* ── render ───────────────────────────────────────────────────────── */
+var pass = results.filter(function (x) { return x.desc && x.pass; }).length;
+var fail = results.filter(function (x) { return x.desc && !x.pass; }).length;
+var s = document.getElementById('summary');
+s.className = fail ? 'bad' : 'ok';
+s.textContent = fail ? (fail + ' failed / ' + (pass + fail) + ' assertions') : (pass + ' assertions passed');
+document.getElementById('out').innerHTML = results.map(function (x) {
+  if (x.group) return '<div class="grp">' + x.group + '</div>';
+  return '<li class="' + (x.pass ? 'p' : 'f') + '">' + (x.pass ? '✓ ' : '✗ ') + x.desc +
+    (x.pass ? '' : ' — got ' + JSON.stringify(x.got) +
+      (x.want !== undefined ? ', want ' + JSON.stringify(x.want) : '')) + '</li>';
+}).join('');
+window.__RESULT__ = { pass: pass, fail: fail,
+  failures: results.filter(function (x) { return x.desc && !x.pass; })
+    .map(function (x) { return x.desc + ' — got ' + JSON.stringify(x.got); }) };
+</script>
+</body>
+</html>

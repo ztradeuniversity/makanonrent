@@ -212,14 +212,30 @@
         if (!name) { msg.textContent = 'Please enter a sub area name.'; msg.className = 'form-msg is-error'; nameEl.focus(); return; }
         if (!parentNode) { msg.textContent = 'Please search and pick the main area it belongs to.'; msg.className = 'form-msg is-error'; return; }
 
-        var res = (win.MOR_BANK && win.MOR_BANK.suggestSubArea)
+        var pending = (win.MOR_BANK && win.MOR_BANK.suggestSubArea)
           ? win.MOR_BANK.suggestSubArea({ name: name, parentId: parentNode.id, note: noteEl.value.trim() })
-          : { ok: false, error: 'Suggestions are unavailable right now.' };
+          : Promise.resolve({ ok: false, error: 'Suggestions are unavailable right now.' });
 
-        if (!res.ok) { msg.textContent = res.error; msg.className = 'form-msg is-error'; return; }
-        msg.textContent = 'Thanks — submitted for review.';
-        msg.className = 'form-msg is-ok';
-        setTimeout(dlg.close, 1200);
+        var submitBtn = form.querySelector('button[type="submit"]');
+        if (submitBtn) submitBtn.disabled = true;
+        msg.textContent = 'Checking…';
+        msg.className = 'form-msg';
+
+        pending.then(function (res) {
+          if (submitBtn) submitBtn.disabled = false;
+          if (!res.ok) {
+            /* Includes the duplicate case: the copy already names the
+               existing area and tells them to select it. */
+            msg.textContent = res.error;
+            msg.className = 'form-msg is-error';
+            return;
+          }
+          msg.textContent = res.offline
+            ? 'Saved on this device — it will be sent for review when you are back online.'
+            : 'Thanks — submitted for review.';
+          msg.className = 'form-msg is-ok';
+          setTimeout(dlg.close, 1400);
+        });
       });
 
       return {

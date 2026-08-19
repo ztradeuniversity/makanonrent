@@ -12,6 +12,7 @@
    not a convention anyone can quietly forget — it is enforced. */
 import { getServiceClient } from './supabase.js';
 import { dispatchAlertsForListing } from './alert-match.js';
+import { dispatchPushForListing } from './push-match.js';
 
 /* The eight operational states from the brief. */
 export var STATES = [
@@ -268,8 +269,16 @@ export async function transition(env, opts) {
      succeeded. Anything that goes wrong is reported alongside the result
      and the queued row is retried by the worker. */
   var alerts = null;
+  var pushed = null;
   if (toState === 'published') {
     alerts = await dispatchAlertsForListing(env, db, listingId);
+    /* Browser push rides the SAME event and the SAME matcher — a visitor
+       who allowed notifications hears about a property at the moment it
+       goes live, on the identical criteria that would have emailed a
+       Notify Me subscriber. Like the email path it never throws, and
+       unlike it there is no queue: a push is a single request per
+       subscriber, so it is delivered here rather than drained later. */
+    pushed = await dispatchPushForListing(env, db, listingId);
   }
 
   var result = { ok: true, from: fromState, to: toState, before: before, after: after };
@@ -278,6 +287,7 @@ export async function transition(env, opts) {
     result.warning = 'State changed but media visibility could not be updated: ' + mediaUpd.error.message;
   }
   if (alerts && (alerts.queued || alerts.errors.length)) result.alerts = alerts;
+  if (pushed && (pushed.sent || pushed.errors.length)) result.push = pushed;
   return result;
 }
 

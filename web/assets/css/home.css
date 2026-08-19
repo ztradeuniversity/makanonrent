@@ -567,6 +567,122 @@ img, svg { display: block; max-width: 100%; }
   .chip { padding: 8px 14px; font-size: 13px; }
 }
 
+/* ── Install CTA (pwa.js) ──────────────────────────────────────────
+   A single compact bar, not a modal: it never covers the search, never
+   blocks a tap, and leaves with one press of ×. Pinned to the bottom
+   where a thumb already is, and inset so it reads as a card rather than
+   a system banner. */
+.pwa-bar {
+  position: fixed; z-index: 60;
+  left: 50%; bottom: 18px; transform: translate(-50%, 130%);
+  display: flex; align-items: center; gap: 12px;
+  width: min(440px, calc(100vw - 28px));
+  padding: 10px 12px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--line); border-radius: 16px;
+  box-shadow: 0 18px 44px rgba(11, 61, 46, .22);
+  opacity: 0;
+  /* Untouchable until it is actually visible, so a bar that is mid-entry
+     — or that never got revealed — can never swallow a tap meant for the
+     page underneath it. */
+  pointer-events: none;
+  transition: transform .32s var(--ease), opacity .32s var(--ease);
+}
+.pwa-bar.is-in { transform: translate(-50%, 0); opacity: 1; pointer-events: auto; }
+.pwa-mark {
+  width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0;
+  background: linear-gradient(145deg, var(--gold) 0%, #A8842F 100%);
+  display: grid; place-items: center; color: #0A1A14;
+}
+.pwa-mark svg { width: 19px; height: 19px; }
+.pwa-copy { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; flex: 1; }
+.pwa-copy b { font-size: 13.5px; font-weight: 800; }
+.pwa-copy span { font-size: 11.5px; color: var(--muted); }
+.pwa-go {
+  flex-shrink: 0; height: 36px; padding: 0 16px; border: 0; border-radius: 10px;
+  background: linear-gradient(145deg, var(--green-lift), var(--green));
+  color: #fff; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.pwa-go:disabled { opacity: .6; cursor: default; }
+/* iOS cannot be handed a one-tap install, so it gets the actual gesture
+   spelled out instead of a button that would do nothing. */
+.pwa-hint {
+  flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11.5px; color: var(--muted); max-width: 46%;
+}
+.pwa-hint svg { width: 14px; height: 14px; color: var(--green-lift); }
+.pwa-hint b { color: var(--text); font-weight: 700; }
+.pwa-x {
+  flex-shrink: 0; width: 28px; height: 28px; padding: 0;
+  border: 0; border-radius: 8px; background: transparent;
+  color: var(--muted); cursor: pointer; display: grid; place-items: center;
+}
+.pwa-x:hover { background: var(--paper); color: var(--text); }
+.pwa-x svg { width: 15px; height: 15px; }
+@media (max-width: 420px) {
+  .pwa-bar { gap: 9px; padding: 9px 10px; bottom: 12px; }
+  .pwa-copy b { font-size: 13px; }
+  .pwa-copy span { font-size: 11px; }
+  .pwa-go { padding: 0 13px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pwa-bar { transition: opacity .2s linear; transform: translate(-50%, 0); }
+}
+
+/* ── Notification consent prompt (push.js) ─────────────────────────
+   Same bar language as the install CTA so the two never look like two
+   different products, but with the two consent choices inline — the
+   visitor decides what they are agreeing to before the browser's own
+   dialog ever appears. */
+.push-bar {
+  position: fixed; z-index: 61;
+  left: 50%; bottom: 18px; transform: translate(-50%, 130%);
+  display: flex; align-items: flex-start; gap: 12px;
+  width: min(480px, calc(100vw - 28px));
+  padding: 12px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--line); border-radius: 16px;
+  box-shadow: 0 18px 44px rgba(11, 61, 46, .22);
+  opacity: 0; pointer-events: none;
+  transition: transform .32s var(--ease), opacity .32s var(--ease);
+}
+.push-bar.is-in { transform: translate(-50%, 0); opacity: 1; pointer-events: auto; }
+.push-mark {
+  width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0;
+  background: linear-gradient(145deg, var(--green-lift), var(--green));
+  display: grid; place-items: center; color: var(--gold);
+}
+.push-mark svg { width: 19px; height: 19px; }
+.push-copy { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.push-copy b { font-size: 13px; font-weight: 800; line-height: 1.3; }
+.push-opt {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11.5px; font-weight: 600; color: var(--muted); cursor: pointer;
+}
+.push-opt input { accent-color: var(--green); width: 13px; height: 13px; }
+.push-go {
+  flex-shrink: 0; align-self: center; height: 36px; padding: 0 14px;
+  border: 0; border-radius: 10px;
+  background: linear-gradient(145deg, var(--gold) 0%, #A8842F 100%);
+  color: #0A1A14; font: inherit; font-size: 12.5px; font-weight: 800; cursor: pointer;
+}
+.push-go:disabled { opacity: .65; cursor: default; }
+.push-x {
+  flex-shrink: 0; width: 26px; height: 26px; padding: 0;
+  border: 0; border-radius: 8px; background: transparent;
+  color: var(--muted); cursor: pointer; display: grid; place-items: center;
+}
+.push-x:hover { background: var(--paper); color: var(--text); }
+.push-x svg { width: 14px; height: 14px; }
+@media (max-width: 420px) {
+  .push-bar { gap: 9px; padding: 10px; bottom: 12px; flex-wrap: wrap; }
+  .push-go { width: 100%; order: 3; margin-top: 2px; }
+  .push-copy b { font-size: 12.5px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .push-bar { transition: opacity .2s linear; transform: translate(-50%, 0); }
+}
+
 /* ── Premium custom dropdown (Home Search only, premium-select.js) ── */
 .pms { position: relative; flex: 1; min-width: 0; height: 100%; }
 .pms-trigger {
@@ -614,8 +730,19 @@ img, svg { display: block; max-width: 100%; }
   line-height: 1.38; overflow-wrap: anywhere; word-break: break-word;
 }
 .pms-opt:hover { background: var(--gold-soft); color: #8A6D22; }
+/* Keyboard cursor. Same surface as :hover so arrowing and pointing look
+   identical — the row Enter would take is the row the mouse would take. */
+.pms-opt.is-active { background: var(--gold-soft); color: #8A6D22; }
 .pms-opt.is-selected { background: rgba(18, 90, 68, .1); color: var(--green); font-weight: 750; }
 .pms-opt.is-disabled { color: #A3ADA7; cursor: not-allowed; }
+/* What the typing matched. Weight and colour only — no background block,
+   which would fight the row's own hover/active fill. */
+.pms-opt mark {
+  background: none; color: var(--green); font-weight: 800;
+  text-decoration: underline; text-decoration-color: var(--gold);
+  text-underline-offset: 2px;
+}
+.pms-opt:hover mark, .pms-opt.is-active mark { color: #8A6D22; }
 /* Touch targets and legibility win over compactness on small screens, so
    the smaller desktop sizing above is not carried down to mobile. */
 @media (max-width: 640px) {

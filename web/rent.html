@@ -6,6 +6,14 @@
 <title>Properties for Rent — MakanOnRent</title>
 <meta name="description" content="Browse verified properties for rent across Pakistan. Rent, advance and verification status shown up front." />
 <meta name="theme-color" content="#0A1A14" />
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="assets/img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="icon" href="assets/img/favicon-16.png" sizes="16x16" type="image/png">
+<link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="MakanOnRent" />
 <link rel="stylesheet" href="assets/css/home.css">
 <link rel="stylesheet" href="assets/css/listing.css">
 <link rel="stylesheet" href="assets/css/location-search.css">
@@ -39,19 +47,19 @@
     <form class="filter-row" id="filterForm" novalidate>
       <div class="control">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-5.6-7-11a7 7 0 1 1 14 0c0 5.4-7 11-7 11z"/><circle cx="12" cy="10" r="2.6"/></svg>
-        <select id="fCity" aria-label="City"><option value="">All cities</option></select>
+        <select id="fCity" aria-label="City" data-premium><option value="">All cities</option></select>
         <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
       </div>
 
       <div class="control">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-5.6-7-11a7 7 0 1 1 14 0c0 5.4-7 11-7 11z"/><circle cx="12" cy="10" r="2.6"/></svg>
-        <select id="fMainLoc" aria-label="Main Location" disabled><option value="">Select a city first</option></select>
+        <select id="fMainLoc" aria-label="Main Location" data-premium disabled><option value="">Select a city first</option></select>
         <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
       </div>
 
       <div class="control">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-7-5.6-7-11a7 7 0 1 1 14 0c0 5.4-7 11-7 11z"/><circle cx="12" cy="10" r="2.6"/></svg>
-        <select id="fSubLoc" aria-label="Sub Location" disabled><option value="">Select a main location first</option></select>
+        <select id="fSubLoc" aria-label="Sub Location" data-premium disabled><option value="">Select a main location first</option></select>
         <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
       </div>
 
@@ -138,7 +146,13 @@
 <script src="assets/js/location-bank.js"></script>
 <script src="assets/js/property-data.js"></script>
 <script src="assets/js/shared.js"></script>
+<script src="assets/js/push.js"></script>
 <script src="assets/js/location-search.js"></script>
+<!-- Same type-to-filter dropdown the homepage search uses, over the same
+     MOR_LOC data — the filter bar's City / Main / Sub selects were the
+     only location controls still falling back to the native popup. -->
+<script src="assets/js/premium-select.js"></script>
 <script src="assets/js/listing.js"></script>
+<script src="assets/js/pwa.js"></script>
 </body>
 </html>

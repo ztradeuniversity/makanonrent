@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Web Push — MakanOnRent</title>
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; max-width: 980px; margin: 40px auto; padding: 0 20px; color: #16211C; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: #6B7A73; margin-bottom: 20px; }
+  #summary { padding: 14px 18px; border-radius: 12px; font-weight: 700; margin-bottom: 18px; }
+  .ok   { background: #E7F3EE; border: 1px solid #0E5C44; color: #0E5C44; }
+  .bad  { background: #FBEAE8; border: 1px solid #C0392B; color: #C0392B; }
+  .grp  { margin: 18px 0 6px; font-weight: 800; font-size: 12px; letter-spacing: .6px; text-transform: uppercase; color: #6B7A73; }
+  li { list-style: none; padding: 4px 0; border-bottom: 1px solid #EEE; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .p { color: #0E5C44; } .f { color: #C0392B; font-weight: 700; }
+  .note { background: #FFF8E6; border: 1px solid #E4C766; border-radius: 10px; padding: 10px 14px; margin: 14px 0; font-size: 13px; }
+</style>
+<script type="importmap">
+{ "imports": { "@supabase/supabase-js": "./stub-supabase-db.js" } }
+</script>
+</head>
+<body>
+
+<h1>Web Push — executable tests</h1>
+<p class="sub">
+  Runs the real <code>functions/utils/push.js</code> crypto, the real subscribe endpoint,
+  the real match dispatcher and the real broadcast endpoint. The encryption is verified by
+  decrypting it back with an independent implementation of the receiver's half, so the
+  key schedule is checked rather than assumed.
+</p>
+
+<div id="summary">Running…</div>
+<div id="out"></div>
+
+<script type="module">
+import { encryptPayload, vapidHeader, sendPush, b64urlToBytes, bytesToB64url } from '../functions/utils/push.js';
+import { onRequestPost as subscribePost } from '../functions/api/push/subscribe.js';
+import { onRequestGet as keyGet } from '../functions/api/push/key.js';
+import { dispatchPushForListing, subscriptionWants, notificationFor } from '../functions/utils/push-match.js';
+import { onRequestGet as bcGet, onRequestPost as bcPost } from '../functions/api/admin/broadcasts.js';
+import { hashToken, SESSION_COOKIE } from '../functions/utils/session.js';
+import { DB, reset } from './stub-supabase-db.js';
+
+var results = [];
+function group(n) { results.push({ group: n }); }
+function check(desc, got, want) {
+  results.push({ desc: desc, pass: JSON.stringify(got) === JSON.stringify(want), got: got, want: want });
+}
+function ok(desc, cond, got) { results.push({ desc: desc, pass: !!cond, got: got }); }
+var notes = [];
+
+/* ══════════════════════════════════════════════════════════════════
+   1. VAPID + payload encryption
+
+   A real P-256 keypair is generated here to stand in for a browser
+   subscription, and the ciphertext is decrypted with an INDEPENDENT
+   implementation of the receiver side below. That is what makes this a
+   test of the key schedule (the RFC 8291 info strings, the salt/PRK
+   order, the record padding) rather than a round-trip through the same
+   possible mistake twice.
+   ══════════════════════════════════════════════════════════════════ */
+group('Payload encryption (RFC 8291 / 8188)');
+
+function concatBytes(list) {
+  var len = 0, i;
+  for (i = 0; i < list.length; i++) len += list[i].length;
+  var out = new Uint8Array(len), off = 0;
+  for (i = 0; i < list.length; i++) { out.set(list[i], off); off += list[i].length; }
+  return out;
+}
+function utf8(s) { return new TextEncoder().encode(s); }
+
+async function hmacRaw(keyBytes, data) {
+  var k = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return new Uint8Array(await crypto.subtle.sign('HMAC', k, data));
+}
+async function hkdfRaw(salt, ikm, info, len) {
+  var prk = await hmacRaw(salt, ikm);
+  var okm = await hmacRaw(prk, concatBytes([info, new Uint8Array([1])]));
+  return okm.slice(0, len);
+}
+
+/* The user agent's half of RFC 8291, written from the spec independently
+   of functions/utils/push.js. */
+async function decryptAsBrowser(body, uaKeys, authSecret) {
+  var salt = body.slice(0, 16);
+  var idlen = body[20];
+  var asPublic = body.slice(21, 21 + idlen);
+  var ciphertext = body.slice(21 + idlen);
+
+  var uaPublicRaw = new Uint8Array(await crypto.subtle.exportKey('raw', uaKeys.publicKey));
+  var asKey = await crypto.subtle.importKey('raw', asPublic, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  var shared = new Uint8Array(await crypto.subtle.deriveBits(
+    { name: 'ECDH', public: asKey }, uaKeys.privateKey, 256));
+
+  var keyInfo = concatBytes([utf8('WebPush: info'), new Uint8Array([0]), uaPublicRaw, asPublic]);
+  var ikm = await hkdfRaw(authSecret, shared, keyInfo, 32);
+  var cek = await hkdfRaw(salt, ikm, concatBytes([utf8('Content-Encoding: aes128gcm'), new Uint8Array([0])]), 16);
+  var nonce = await hkdfRaw(salt, ikm, concatBytes([utf8('Content-Encoding: nonce'), new Uint8Array([0])]), 12);
+
+  var aes = await crypto.subtle.importKey('raw', cek, { name: 'AES-GCM' }, false, ['decrypt']);
+  var plain = new Uint8Array(await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: nonce, tagLength: 128 }, aes, ciphertext));
+
+  /* Strip the padding delimiter the sender appended. */
+  var end = plain.length;
+  while (end > 0 && plain[end - 1] === 0) end--;
+  var delim = plain[end - 1];
+  return { text: new TextDecoder().decode(plain.slice(0, end - 1)), delimiter: delim };
+}
+
+var uaKeys = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+var uaPublicB64 = bytesToB64url(new Uint8Array(await crypto.subtle.exportKey('raw', uaKeys.publicKey)));
+var authSecret = crypto.getRandomValues(new Uint8Array(16));
+var authB64 = bytesToB64url(authSecret);
+
+var MESSAGE = JSON.stringify({ kind: 'property', title: 'New property available', body: '3 Bedroom Portion in Allama Iqbal Town' });
+var body = await encryptPayload(MESSAGE, uaPublicB64, authB64);
+
+ok('the body is long enough to hold a header and a tag', body.length > 21 + 65 + 16, body.length);
+check('key id length byte is 65 (an uncompressed P-256 point)', body[20], 65);
+/* rs must be at least the actual record (the ciphertext, which already
+   includes the padding delimiter and the 16-byte tag). The header before
+   it is salt(16) + rs(4) + idlen(1) + keyid(65) = 86 bytes, and is NOT
+   part of the record. */
+var rs = (body[16] << 24) | (body[17] << 16) | (body[18] << 8) | body[19];
+var recordLen = body.length - 21 - body[20];
+ok('the record size covers the whole record', rs >= recordLen, [rs, recordLen]);
+
+var decoded = await decryptAsBrowser(body, uaKeys, authSecret);
+check('the browser decrypts exactly what was sent', decoded.text, MESSAGE);
+check('the record is marked as the last one (0x02)', decoded.delimiter, 2);
+
+/* Two sends of the SAME message must not produce the same bytes: the salt
+   and the sender keypair are per-message, and reusing either would leak. */
+var body2 = await encryptPayload(MESSAGE, uaPublicB64, authB64);
+ok('two encryptions of one message differ', bytesToB64url(body) !== bytesToB64url(body2));
+ok('the salt is fresh each time',
+   bytesToB64url(body.slice(0, 16)) !== bytesToB64url(body2.slice(0, 16)));
+ok('the sender key is fresh each time',
+   bytesToB64url(body.slice(21, 86)) !== bytesToB64url(body2.slice(21, 86)));
+var decoded2 = await decryptAsBrowser(body2, uaKeys, authSecret);
+check('the second body still decrypts correctly', decoded2.text, MESSAGE);
+
+/* A different subscription must not be able to read it. */
+var otherKeys = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+var leaked = false;
+try { await decryptAsBrowser(body, otherKeys, authSecret); leaked = true; } catch (e) {}
+ok('another subscription cannot decrypt it', !leaked);
+
+var wrongAuth = crypto.getRandomValues(new Uint8Array(16));
+var leaked2 = false;
+try { await decryptAsBrowser(body, uaKeys, wrongAuth); leaked2 = true; } catch (e) {}
+ok('the auth secret is required to decrypt', !leaked2);
+
+var badKey = false;
+try { await encryptPayload('x', bytesToB64url(new Uint8Array(10)), authB64); } catch (e) { badKey = true; }
+ok('a malformed subscription key is rejected', badKey);
+var badAuth = false;
+try { await encryptPayload('x', uaPublicB64, bytesToB64url(new Uint8Array(8))); } catch (e) { badAuth = true; }
+ok('a wrong-length auth secret is rejected', badAuth);
+
+/* ══ 2. VAPID header ══════════════════════════════════════════════ */
+group('VAPID (RFC 8292)');
+
+var vapidPair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+var vapidPubRaw = new Uint8Array(await crypto.subtle.exportKey('raw', vapidPair.publicKey));
+var vapidJwk = await crypto.subtle.exportKey('jwk', vapidPair.privateKey);
+
+var PUSH_ENV = {
+  SUPABASE_URL: 'https://stub.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'stub-key',
+  SITE_URL: 'https://makanonrent.com',
+  VAPID_PUBLIC_KEY: bytesToB64url(vapidPubRaw),
+  VAPID_PRIVATE_KEY: vapidJwk.d,
+  VAPID_SUBJECT: 'mailto:alerts@makanonrent.com'
+};
+
+var header = await vapidHeader(PUSH_ENV, 'https://fcm.googleapis.com/fcm/send/abc123');
+ok('the scheme is vapid', header.indexOf('vapid t=') === 0, header.slice(0, 20));
+ok('the public key is advertised', header.indexOf(', k=' + PUSH_ENV.VAPID_PUBLIC_KEY) > -1);
+ok('the private key is NOT in the header', header.indexOf(PUSH_ENV.VAPID_PRIVATE_KEY) === -1);
+
+var jwt = header.slice('vapid t='.length).split(', k=')[0];
+var parts = jwt.split('.');
+check('the JWT has three parts', parts.length, 3);
+var jwtHeader = JSON.parse(new TextDecoder().decode(b64urlToBytes(parts[0])));
+check('alg is ES256', jwtHeader.alg, 'ES256');
+var claims = JSON.parse(new TextDecoder().decode(b64urlToBytes(parts[1])));
+check('aud is the push service ORIGIN, not the full endpoint', claims.aud, 'https://fcm.googleapis.com');
+check('sub is the configured contact', claims.sub, 'mailto:alerts@makanonrent.com');
+ok('exp is in the future', claims.exp > Math.floor(Date.now() / 1000), claims.exp);
+ok('exp is within the 24h the RFC allows',
+   claims.exp < Math.floor(Date.now() / 1000) + 24 * 3600, claims.exp);
+
+/* The signature must actually verify under the public key — a malformed
+   ES256 signature is accepted by nothing and would fail only in prod. */
+var sigBytes = b64urlToBytes(parts[2]);
+check('the signature is a raw r||s pair (64 bytes)', sigBytes.length, 64);
+var verified = await crypto.subtle.verify(
+  { name: 'ECDSA', hash: 'SHA-256' }, vapidPair.publicKey, sigBytes, utf8(parts[0] + '.' + parts[1]));
+ok('the signature verifies under the VAPID public key', verified);
+
+var otherEndpointHeader = await vapidHeader(PUSH_ENV, 'https://updates.push.services.mozilla.com/wpush/v2/xyz');
+var otherClaims = JSON.parse(new TextDecoder().decode(b64urlToBytes(
+  otherEndpointHeader.slice('vapid t='.length).split(', k=')[0].split('.')[1])));
+check('a different push service gets its own audience', otherClaims.aud, 'https://updates.push.services.mozilla.com');
+
+/* ══ 3. sendPush transport behaviour ══════════════════════════════ */
+group('Delivery outcomes');
+
+var SUB = { endpoint: 'https://fcm.googleapis.com/fcm/send/abc', p256dh: uaPublicB64, auth: authB64 };
+var realFetch = window.fetch;
+var lastReq = null;
+function stubFetch(status) {
+  window.fetch = function (url, init) {
+    lastReq = { url: String(url), init: init };
+    return Promise.resolve({ status: status, ok: status >= 200 && status < 300 });
+  };
+}
+
+stubFetch(201);
+var sent = await sendPush(PUSH_ENV, SUB, { title: 'x' });
+check('a 201 is a success', sent.ok, true);
+check('it posts to the subscription endpoint', lastReq.url, SUB.endpoint);
+check('the content encoding is aes128gcm', lastReq.init.headers['Content-Encoding'], 'aes128gcm');
+ok('an Authorization header is attached', /^vapid t=/.test(lastReq.init.headers.Authorization));
+ok('a TTL is set', !!lastReq.init.headers.TTL);
+ok('the body is bytes, not JSON text', lastReq.init.body instanceof Uint8Array);
+
+stubFetch(410);
+var goneRes = await sendPush(PUSH_ENV, SUB, { title: 'x' });
+check('410 Gone is reported as gone', goneRes.gone, true);
+check('410 is not a success', goneRes.ok, false);
+stubFetch(404);
+check('404 is reported as gone', (await sendPush(PUSH_ENV, SUB, { title: 'x' })).gone, true);
+stubFetch(500);
+var errRes = await sendPush(PUSH_ENV, SUB, { title: 'x' });
+check('500 is a failure but not gone', [errRes.ok, errRes.gone], [false, false]);
+
+window.fetch = function () { return Promise.reject(new Error('network down')); };
+var netRes = await sendPush(PUSH_ENV, SUB, { title: 'x' });
+check('a network failure never throws', netRes.ok, false);
+window.fetch = realFetch;
+
+/* ══ 4. Subscribe endpoint ════════════════════════════════════════ */
+group('Subscription storage');
+
+function ctx(url, opts) {
+  opts = opts || {};
+  var headers = new Headers();
+  if (opts.auth) headers.set('Cookie', SESSION_COOKIE + '=test-token');
+  var b = opts.body ? JSON.stringify(opts.body) : null;
+  if (b) headers.set('Content-Type', 'application/json');
+  return {
+    env: opts.env || PUSH_ENV,
+    request: {
+      url: 'https://makanonrent.com' + url, method: opts.method || 'GET', headers: headers,
+      json: function () { return b ? Promise.resolve(JSON.parse(b)) : Promise.reject(new Error('no body')); }
+    }
+  };
+}
+async function call(fn, url, opts) {
+  var res = await fn(ctx(url, opts));
+  return { status: res.status, body: await res.json() };
+}
+function subscribe(payload, env) {
+  return call(subscribePost, '/api/push/subscribe', { method: 'POST', body: payload, env: env });
+}
+
+var GOOD = {
+  visitorId: 'visitor-1',
+  subscription: { endpoint: 'https://fcm.googleapis.com/fcm/send/aaa', keys: { p256dh: uaPublicB64, auth: authB64 } },
+  propertyInterest: true, siteUpdates: true,
+  interests: { searches: [{ city: 'lahore', beds: '3' }], viewed: [] }
+};
+
+reset();
+var s1 = await subscribe(GOOD);
+check('a valid subscription is stored', s1.status, 201);
+check('one row exists', DB.push_subscriptions.length, 1);
+check('property interest is recorded', DB.push_subscriptions[0].property_interest_enabled, true);
+check('site updates are recorded', DB.push_subscriptions[0].site_updates_enabled, true);
+ok('no user agent or IP is stored',
+   !('user_agent' in DB.push_subscriptions[0]) && !('ip' in DB.push_subscriptions[0]),
+   Object.keys(DB.push_subscriptions[0]));
+
+/* Duplicate prevention — the whole point of the unique endpoint. */
+await subscribe(GOOD);
+await subscribe(GOOD);
+check('re-subscribing the same browser does not add rows', DB.push_subscriptions.length, 1);
+
+reset();
+await subscribe(GOOD);
+await subscribe(Object.assign({}, GOOD, {
+  subscription: { endpoint: 'https://fcm.googleapis.com/fcm/send/bbb', keys: { p256dh: uaPublicB64, auth: authB64 } }
+}));
+check('a genuinely different browser is a second row', DB.push_subscriptions.length, 2);
+
+reset();
+check('a missing endpoint is refused', (await subscribe({ visitorId: 'v', subscription: {} })).status, 422);
+check('a non-https endpoint is refused',
+      (await subscribe({ visitorId: 'v', subscription: { endpoint: 'http://x.test/a', keys: { p256dh: 'a', auth: 'b' } } })).status, 422);
+check('missing keys are refused',
+      (await subscribe({ visitorId: 'v', subscription: { endpoint: 'https://x.test/a' } })).status, 422);
+check('a missing visitorId is refused',
+      (await subscribe({ subscription: GOOD.subscription })).status, 422);
+check('nothing was stored for any refusal', DB.push_subscriptions.length, 0);
+
+/* Bounded interests, enforced server-side. */
+reset();
+var manySearches = [];
+for (var i = 0; i < 25; i++) manySearches.push({ city: 'lahore', beds: String(i) });
+var manyViewed = [];
+for (var j = 0; j < 40; j++) manyViewed.push('3f1a9c22-4d5e-4b7a-9f10-88c2e7d61a' + ('0' + j).slice(-2));
+await subscribe(Object.assign({}, GOOD, { interests: { searches: manySearches, viewed: manyViewed } }));
+var storedInterests = DB.push_subscriptions[0].interests;
+check('searches are capped at 10', storedInterests.searches.length, 10);
+check('viewed properties are capped at 20', storedInterests.viewed.length, 20);
+
+reset();
+await subscribe(Object.assign({}, GOOD, {
+  interests: { searches: [{ city: 'lahore', evil: 'x', cookie: 'y' }], viewed: ['not-a-uuid', 'javascript:alert(1)'] }
+}));
+var cleaned = DB.push_subscriptions[0].interests;
+check('unknown criteria keys are dropped', Object.keys(cleaned.searches[0]), ['city']);
+check('non-uuid viewed entries are dropped', cleaned.viewed, []);
+
+/* Revocation. */
+reset();
+await subscribe(GOOD);
+var rev = await subscribe({ visitorId: 'visitor-1', subscription: GOOD.subscription, revoke: true });
+check('revoking succeeds', rev.status, 200);
+ok('the row is stamped revoked', !!DB.push_subscriptions[0].revoked_at);
+check('both consents are cleared', [
+  DB.push_subscriptions[0].property_interest_enabled,
+  DB.push_subscriptions[0].site_updates_enabled], [false, false]);
+check('the row is kept for the send ledger', DB.push_subscriptions.length, 1);
+
+await subscribe(GOOD);
+check('re-subscribing clears the revocation', DB.push_subscriptions[0].revoked_at, null);
+
+/* Endpoint rotation must carry consent across. */
+reset();
+await subscribe(GOOD);
+await subscribe({
+  visitorId: 'rotated',
+  subscription: { endpoint: 'https://fcm.googleapis.com/fcm/send/rotated', keys: { p256dh: uaPublicB64, auth: authB64 } },
+  previousEndpoint: GOOD.subscription.endpoint
+});
+var rotated = DB.push_subscriptions.filter(function (s) { return s.endpoint.indexOf('rotated') > -1; })[0];
+var old = DB.push_subscriptions.filter(function (s) { return s.endpoint === GOOD.subscription.endpoint; })[0];
+check('consent survives a rotation', [rotated.property_interest_enabled, rotated.site_updates_enabled], [true, true]);
+check('the visitor id survives a rotation', rotated.visitor_id, 'visitor-1');
+ok('the interests survive a rotation', rotated.interests.searches.length === 1, rotated.interests);
+ok('the old endpoint is revoked', !!old.revoked_at);
+
+/* ══ 5. The VAPID key endpoint ════════════════════════════════════ */
+group('Public key endpoint');
+
+var keyRes = await call(keyGet, '/api/push/key');
+check('the public key is served', keyRes.status, 200);
+check('it is the public key', keyRes.body.key, PUSH_ENV.VAPID_PUBLIC_KEY);
+ok('the private key is not in the response',
+   JSON.stringify(keyRes.body).indexOf(PUSH_ENV.VAPID_PRIVATE_KEY) === -1);
+
+var unconfigured = await call(keyGet, '/api/push/key', {
+  env: { SUPABASE_URL: 'x', SUPABASE_SERVICE_ROLE_KEY: 'y' }
+});
+check('an unconfigured deployment answers 503', unconfigured.status, 503);
+
+/* ══ 6. Property matching ═════════════════════════════════════════ */
+group('Property-interest matching');
+
+var LISTING_ID = '3f1a9c22-4d5e-4b7a-9f10-88c2e7d61a04';
+function seedPublishedListing() {
+  DB.listings.push({
+    id: LISTING_ID, lifecycle_state: 'published',
+    rent_amount_minor: 9500000, features: ['gas_meter'],
+    units: {
+      beds: 3, car_porch: true, size_value: 5, size_unit: 'marla',
+      properties: {
+        city_slug: 'lahore', area_slug: 'allama-iqbal-town',
+        area_node_id: 'lahore/allama-iqbal-town', category: 'homes',
+        property_type: 'portion', business_code: 'MOR-LHR-1'
+      }
+    }
+  });
+}
+function seedSub(over) {
+  var row = Object.assign({
+    id: 'sub-' + (DB.push_subscriptions.length + 1),
+    visitor_id: 'v', endpoint: 'https://fcm.googleapis.com/fcm/send/s' + (DB.push_subscriptions.length + 1),
+    p256dh: uaPublicB64, auth: authB64,
+    property_interest_enabled: true, site_updates_enabled: false,
+    interests: { searches: [{ city: 'lahore', beds: '3' }], viewed: [] },
+    revoked_at: null
+  }, over || {});
+  DB.push_subscriptions.push(row);
+  return row;
+}
+
+var row = { citySlug: 'lahore', areaSlug: 'allama-iqbal-town', beds: 3, rentMinor: 9500000,
+            propertyType: 'portion', category: 'homes', id: LISTING_ID, areaNodeId: 'lahore/allama-iqbal-town' };
+ok('a matching search wants it', subscriptionWants({ interests: { searches: [{ city: 'lahore', beds: '3' }] } }, row));
+ok('a non-matching city does not', !subscriptionWants({ interests: { searches: [{ city: 'karachi' }] } }, row));
+ok('too many bedrooms requested does not', !subscriptionWants({ interests: { searches: [{ beds: '5' }] } }, row));
+ok('an EMPTY interest profile is not a wildcard',
+   !subscriptionWants({ interests: { searches: [] } }, row));
+ok('any one of several searches matching is enough',
+   subscriptionWants({ interests: { searches: [{ city: 'karachi' }, { city: 'lahore' }] } }, row));
+
+var note = notificationFor(row, 'https://makanonrent.com');
+check('the title states what happened', note.title, 'New property available');
+check('the body describes the property', note.body, '3 Bedroom Portion in Allama Iqbal Town');
+check('the click target is the property page', note.url,
+      'https://makanonrent.com/property.html?id=' + LISTING_ID);
+
+/* Full dispatch, with the network stubbed at the transport boundary. */
+function stubDelivery(status) {
+  var calls = [];
+  window.fetch = function (url) {
+    calls.push(String(url));
+    return Promise.resolve({ status: status, ok: status >= 200 && status < 300 });
+  };
+  return calls;
+}
+function db() { return { from: function (t) { return makeClient(t); } }; }
+var makeClient = null;
+var supa = await import('./stub-supabase-db.js');
+var clientFactory = supa.createClient();
+
+reset(); seedPublishedListing();
+var wanted = seedSub();
+var unwanted = seedSub({ interests: { searches: [{ city: 'karachi' }] } });
+var optedOut = seedSub({ property_interest_enabled: false });
+var revoked = seedSub({ revoked_at: new Date().toISOString() });
+var noProfile = seedSub({ interests: { searches: [] } });
+
+var calls = stubDelivery(201);
+var out = await dispatchPushForListing(PUSH_ENV, clientFactory, LISTING_ID);
+check('only the matching, opted-in, live subscriber is sent to', out.sent, 1);
+check('exactly one push request was made', calls.length, 1);
+check('it went to the matching subscriber', calls[0], wanted.endpoint);
+ok('the opted-out subscriber was never considered',
+   calls.indexOf(optedOut.endpoint) === -1);
+ok('the revoked subscriber was never considered',
+   calls.indexOf(revoked.endpoint) === -1);
+ok('the non-matching subscriber got nothing', calls.indexOf(unwanted.endpoint) === -1);
+ok('the empty-profile subscriber got nothing', calls.indexOf(noProfile.endpoint) === -1);
+check('a send ledger row was written', DB.push_sends.length, 1);
+
+/* Duplicate suppression on a second publication of the same listing. */
+var calls2 = stubDelivery(201);
+var again = await dispatchPushForListing(PUSH_ENV, clientFactory, LISTING_ID);
+check('re-publishing sends nothing to the same browser', calls2.length, 0);
+check('it is counted as skipped, not sent', [again.sent, again.skipped], [0, 1]);
+
+/* An unpublished listing must produce nothing at all. */
+reset();
+DB.listings.push({ id: LISTING_ID, lifecycle_state: 'pending_review', rent_amount_minor: 1, features: [],
+  units: { beds: 3, properties: { city_slug: 'lahore' } } });
+seedSub();
+var calls3 = stubDelivery(201);
+var unpub = await dispatchPushForListing(PUSH_ENV, clientFactory, LISTING_ID);
+check('an unpublished listing notifies nobody', [unpub.sent, calls3.length], [0, 0]);
+
+/* A dead subscription is revoked rather than retried for ever. */
+reset(); seedPublishedListing();
+var dying = seedSub();
+stubDelivery(410);
+var goneOut = await dispatchPushForListing(PUSH_ENV, clientFactory, LISTING_ID);
+check('a 410 is counted as a revocation', goneOut.revoked, 1);
+ok('the subscription is stamped revoked',
+   !!DB.push_subscriptions.filter(function (s) { return s.id === dying.id; })[0].revoked_at);
+
+/* Push disabled on the deployment. */
+reset(); seedPublishedListing(); seedSub();
+var calls4 = stubDelivery(201);
+var noVapid = await dispatchPushForListing(
+  { SUPABASE_URL: 'x', SUPABASE_SERVICE_ROLE_KEY: 'y' }, clientFactory, LISTING_ID);
+check('no VAPID configured means no attempt', [noVapid.sent, calls4.length], [0, 0]);
+window.fetch = realFetch;
+
+/* ══ 7. Broadcasts ════════════════════════════════════════════════ */
+group('Site-wide broadcasts');
+
+async function seedSession(role) {
+  DB.admin_sessions.push({
+    id: 'sess-1', user_id: 'u1', token_hash: await hashToken('test-token'),
+    expires_at: new Date(Date.now() + 36e5).toISOString(), revoked_at: null,
+    admin_users: { id: 'u1', username: 'ceo', full_name: 'Test CEO', role: role, status: 'active', must_change_password: false }
+  });
+}
+function broadcast(payload, auth) {
+  return call(bcPost, '/api/admin/broadcasts', { method: 'POST', body: payload, auth: auth !== false });
+}
+
+reset();
+check('an anonymous broadcast is refused',
+      (await broadcast({ title: 'x', body: 'y', send: true }, false)).status, 401);
+check('nothing was created', DB.push_broadcasts.length, 0);
+
+reset(); await seedSession('manager');
+check('a manager cannot broadcast', (await broadcast({ title: 'x', body: 'y', send: true })).status, 403);
+check('a manager cannot read the list',
+      (await call(bcGet, '/api/admin/broadcasts', { auth: true })).status, 403);
+check('still nothing created', DB.push_broadcasts.length, 0);
+
+reset(); await seedSession('ceo');
+var draft = await broadcast({ title: 'New city launched', body: 'Faisalabad is live.' });
+check('a draft is created', draft.status, 201);
+check('a draft is not sent', draft.body.status, 'draft');
+check('sent_at stays empty for a draft', DB.push_broadcasts[0].sent_at, undefined);
+check('the author is recorded', DB.push_broadcasts[0].created_by, 'u1');
+
+check('an empty title is refused', (await broadcast({ title: '', body: 'y' })).status, 422);
+check('an empty message is refused', (await broadcast({ title: 'x', body: '' })).status, 422);
+check('an external link is refused',
+      (await broadcast({ title: 'x', body: 'y', url: 'https://evil.test/steal' })).status, 422);
+var pathOk = await broadcast({ title: 'x', body: 'y', url: '/rent.html' });
+check('a site path is accepted', pathOk.status, 201);
+check('it is stored absolute', DB.push_broadcasts[1].url, 'https://makanonrent.com/rent.html');
+
+reset(); await seedSession('ceo');
+var wants = { id: 'b1', visitor_id: 'v', endpoint: 'https://fcm.googleapis.com/fcm/send/b1',
+  p256dh: uaPublicB64, auth: authB64, property_interest_enabled: false,
+  site_updates_enabled: true, interests: {}, revoked_at: null };
+var refuses = { id: 'b2', visitor_id: 'v', endpoint: 'https://fcm.googleapis.com/fcm/send/b2',
+  p256dh: uaPublicB64, auth: authB64, property_interest_enabled: true,
+  site_updates_enabled: false, interests: {}, revoked_at: null };
+var goneSub = { id: 'b3', visitor_id: 'v', endpoint: 'https://fcm.googleapis.com/fcm/send/b3',
+  p256dh: uaPublicB64, auth: authB64, property_interest_enabled: true,
+  site_updates_enabled: true, interests: {}, revoked_at: new Date().toISOString() };
+DB.push_subscriptions.push(wants, refuses, goneSub);
+
+var bcalls = stubDelivery(201);
+var sentBc = await broadcast({ title: 'New city launched', body: 'Faisalabad is live.', url: '/rent.html', send: true });
+check('the broadcast sends', sentBc.status, 200);
+check('only the site-updates subscriber receives it', sentBc.body.sent, 1);
+check('exactly one request was made', bcalls.length, 1);
+check('it went to the opted-in browser', bcalls[0], wants.endpoint);
+ok('the property-only subscriber is not in the audience', bcalls.indexOf(refuses.endpoint) === -1);
+ok('the revoked subscriber is not in the audience', bcalls.indexOf(goneSub.endpoint) === -1);
+check('the record is marked sent', DB.push_broadcasts[0].status, 'sent');
+ok('sent_at is stamped', !!DB.push_broadcasts[0].sent_at);
+check('the sent count is recorded', DB.push_broadcasts[0].sent_count, 1);
+window.fetch = realFetch;
+
+var list = await call(bcGet, '/api/admin/broadcasts', { auth: true });
+check('the CEO can read the history', list.status, 200);
+check('the sent broadcast is listed', list.body.broadcasts.length, 1);
+check('the audience size is reported', list.body.audienceSize, 1);
+
+/* ══ 8. No secret may reach the browser ═══════════════════════════ */
+group('Secret containment');
+
+var clientFiles = ['config.js', 'push.js', 'pwa.js', 'shared.js'];
+for (var f = 0; f < clientFiles.length; f++) {
+  var src = await fetch('../web/assets/js/' + clientFiles[f]).then(function (r) { return r.text(); });
+  ok(clientFiles[f] + ' contains no VAPID private key',
+     src.indexOf('VAPID_PRIVATE') === -1 && src.indexOf(PUSH_ENV.VAPID_PRIVATE_KEY) === -1);
+  ok(clientFiles[f] + ' contains no service-role or API key',
+     !/SERVICE_ROLE|RESEND_API_KEY|R2_SECRET|EMAIL_WORKER_TOKEN/.test(src));
+}
+var swSrc = await fetch('../web/sw.js').then(function (r) { return r.text(); });
+ok('the service worker holds no secrets',
+   !/VAPID_PRIVATE|SERVICE_ROLE|RESEND_API_KEY|R2_SECRET/.test(swSrc));
+ok('the service worker handles push', /addEventListener\('push'/.test(swSrc));
+ok('the service worker handles notification clicks', /notificationclick/.test(swSrc));
+ok('push handling does not touch the caches',
+   swSrc.indexOf("addEventListener('push'") < swSrc.indexOf("addEventListener('fetch'"),
+   'push handler is declared separately from the fetch handler');
+
+/* ── render ───────────────────────────────────────────────────────── */
+notes.push('Live delivery to a real push service (FCM/Mozilla) cannot be exercised here: this browser has service workers disabled, and no push endpoint is reachable. Encryption is verified by decrypting with an independent receiver implementation, and the VAPID signature is verified with WebCrypto.');
+
+var pass = results.filter(function (x) { return x.desc && x.pass; }).length;
+var fail = results.filter(function (x) { return x.desc && !x.pass; }).length;
+var s = document.getElementById('summary');
+s.className = fail ? 'bad' : 'ok';
+s.textContent = fail ? (fail + ' failed / ' + (pass + fail) + ' assertions')
+                     : (pass + ' assertions passed');
+document.getElementById('out').innerHTML =
+  '<div class="note">' + notes.join('<br>') + '</div>' +
+  results.map(function (x) {
+    if (x.group) return '<div class="grp">' + x.group + '</div>';
+    return '<li class="' + (x.pass ? 'p' : 'f') + '">' + (x.pass ? '✓ ' : '✗ ') + x.desc +
+      (x.pass ? '' : ' — got ' + JSON.stringify(x.got) +
+        (x.want !== undefined ? ', want ' + JSON.stringify(x.want) : '')) + '</li>';
+  }).join('');
+window.__RESULT__ = { pass: pass, fail: fail, notes: notes,
+  failures: results.filter(function (x) { return x.desc && !x.pass; })
+    .map(function (x) { return x.desc + ' — got ' + JSON.stringify(x.got); }) };
+</script>
+</body>
+</html>

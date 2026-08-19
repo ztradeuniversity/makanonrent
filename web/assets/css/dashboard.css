@@ -259,3 +259,14 @@
   .stat b { font-size: 17px; }
   .stat span { font-size: 9.5px; letter-spacing: .3px; }
 }
+
+/* ── owner notice ────────────────────────────────────────────
+   Shown when an owner presses an action that has no owner-side API
+   yet (availability, archive, restore). It states what actually
+   happens instead of silently doing nothing. */
+.dash-notice {
+  margin: 0 0 14px; padding: 11px 14px;
+  background: var(--gold-soft); border: 1px solid var(--gold-line);
+  border-radius: var(--radius);
+  font-size: 13px; font-weight: 650; color: var(--text);
+}

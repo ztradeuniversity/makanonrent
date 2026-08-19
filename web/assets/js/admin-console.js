@@ -555,6 +555,14 @@
       $('adAssignUser').innerHTML = opts || '<option value="">No eligible accounts</option>';
       $('adTaskUser').innerHTML = opts || '<option value="">No eligible accounts</option>';
 
+      /* Built once — the cascade's listeners must not be bound again every
+         time the panel is reopened, or one click would fire N assigns. */
+      if (!areaPickerReady) {
+        areaPickerReady = true;
+        await initAreaPicker();
+      }
+      refreshAssignScope();
+
       await loadAssignments();
     } catch (e) {
       $('adUserList').innerHTML = '<div class="ad-empty">' + esc(e.message) + '</div>';
@@ -630,21 +638,170 @@
     }
   }
 
-  $('adAssignArea').addEventListener('click', async function () {
-    var userId = $('adAssignUser').value;
-    var nodeId = $('adAssignNode').value.trim();
-    if (!userId || !nodeId) {
-      A.msg($('adAssignMsg'), 'Choose a team member and enter an area path.', 'is-error');
+  /* ── area picker: City → Main → Sub, from the Location Data Bank ──
+     LOC/BANK are the same engine location-manager.html drives, loaded on
+     this page for exactly this purpose. Nothing here holds its own list
+     of places, and no node id can be typed by hand — every value below
+     comes from a node that exists in the bank, which is what makes the
+     resulting assignment resolvable by rbac.getScopeNodeIds. */
+  var LOC = win.MOR_LOC, BANK = win.MOR_BANK;
+  var areaPickerReady = false;
+
+  function assignEls() {
+    return {
+      city: $('adAssignCity'), main: $('adAssignMain'),
+      subWrap: $('adAssignSubWrap'), subs: $('adAssignSubs'),
+      search: $('adAssignSubSearch'), scope: $('adAssignScope'),
+      btn: $('adAssignArea')
+    };
+  }
+
+  function fillSelect(sel, items, placeholder) {
+    sel.innerHTML = '<option value="">' + placeholder + '</option>' +
+      items.map(function (n) {
+        return '<option value="' + esc(n.id) + '">' + esc(n.name) + '</option>';
+      }).join('');
+  }
+
+  /* What pressing Assign will actually do, stated before it happens.
+     Sub selections win; with none, the Main Location is assigned; with no
+     Main, the whole city. All three are depths the assignments API
+     already accepts — levelFromNodeId derives the tier from the path. */
+  function selectedNodes() {
+    var el = assignEls();
+    var checked = Array.prototype.filter.call(
+      el.subs.querySelectorAll('input[type=checkbox]'), function (c) { return c.checked; });
+    if (checked.length) {
+      return checked.map(function (c) {
+        return { id: c.value, name: c.getAttribute('data-name'), level: 'sub' };
+      });
+    }
+    if (el.main.value) {
+      return [{ id: el.main.value, name: el.main.selectedOptions[0].textContent, level: 'main' }];
+    }
+    if (el.city.value) {
+      return [{ id: el.city.value, name: el.city.selectedOptions[0].textContent, level: 'city' }];
+    }
+    return [];
+  }
+
+  function refreshAssignScope() {
+    var el = assignEls();
+    var nodes = selectedNodes();
+    var who = $('adAssignUser').value;
+    el.btn.disabled = !who || !nodes.length;
+
+    if (!nodes.length) { el.scope.textContent = ''; return; }
+    if (nodes[0].level === 'sub') {
+      el.scope.textContent = nodes.length === 1
+        ? 'Will assign 1 sub location: ' + nodes[0].name
+        : 'Will assign ' + nodes.length + ' sub locations.';
+    } else if (nodes[0].level === 'main') {
+      el.scope.textContent = 'Will assign the whole main location “' + nodes[0].name +
+        '” (covers every sub location inside it).';
+    } else {
+      el.scope.textContent = 'Will assign the whole city “' + nodes[0].name + '”.';
+    }
+  }
+
+  function renderSubs() {
+    var el = assignEls();
+    var mainId = el.main.value;
+    if (!mainId) { el.subWrap.hidden = true; el.subs.innerHTML = ''; refreshAssignScope(); return; }
+
+    var q = (el.search.value || '').trim().toLowerCase();
+    var list = LOC.getSubAreas(mainId).filter(function (s) {
+      return !q || s.name.toLowerCase().indexOf(q) > -1;
+    });
+
+    el.subWrap.hidden = false;
+    el.subs.innerHTML = list.length
+      ? list.map(function (s) {
+          return '<label class="ad-sub"><input type="checkbox" value="' + esc(s.id) +
+            '" data-name="' + esc(s.name) + '" /><span>' + esc(s.name) + '</span></label>';
+        }).join('')
+      : '<div class="ad-empty">' + (q ? 'No sub location matches that.'
+          : 'This main location has no sub locations yet — assigning it covers the whole area.') + '</div>';
+    refreshAssignScope();
+  }
+
+  async function initAreaPicker() {
+    var el = assignEls();
+    if (!LOC || !BANK) {
+      el.scope.textContent = 'The location engine did not load; area assignment is unavailable.';
       return;
     }
-    try {
-      await A.post(API.adminAssignments, { action: 'assign', userId: userId, nodeId: nodeId });
-      A.msg($('adAssignMsg'), 'Area assigned.', 'is-ok');
-      $('adAssignNode').value = '';
-      await loadAssignments();
-    } catch (e) {
-      A.msg($('adAssignMsg'), e.message, 'is-error');
+    /* Local bank first so the picker is usable instantly, then the
+       published server bank merged over it — same order every other page
+       uses. Both are best-effort: the fixture alone still yields a
+       working cascade. */
+    try { BANK.hydrate(); } catch (e) {}
+    try { await BANK.pullCitiesFromApi(); } catch (e) {}
+    try { await BANK.pullFromApi(); } catch (e) {}
+
+    fillSelect(el.city, LOC.listCities(), 'Select city');
+
+    el.city.addEventListener('change', function () {
+      var mains = this.value ? LOC.getMainAreas(this.value) : [];
+      el.main.disabled = !mains.length;
+      fillSelect(el.main, mains,
+        this.value ? (mains.length ? 'Whole city' : 'No main locations published') : 'Select a city first');
+      renderSubs();
+    });
+    el.main.addEventListener('change', renderSubs);
+    el.search.addEventListener('input', renderSubs);
+    el.subs.addEventListener('change', refreshAssignScope);
+    $('adAssignUser').addEventListener('change', refreshAssignScope);
+
+    $('adAssignSubAll').addEventListener('click', function () {
+      el.subs.querySelectorAll('input[type=checkbox]').forEach(function (c) { c.checked = true; });
+      refreshAssignScope();
+    });
+    $('adAssignSubNone').addEventListener('click', function () {
+      el.subs.querySelectorAll('input[type=checkbox]').forEach(function (c) { c.checked = false; });
+      refreshAssignScope();
+    });
+  }
+
+  $('adAssignArea').addEventListener('click', async function () {
+    var userId = $('adAssignUser').value;
+    var nodes = selectedNodes();
+    if (!userId || !nodes.length) {
+      A.msg($('adAssignMsg'), 'Choose a team member and a location.', 'is-error');
+      return;
     }
+
+    this.disabled = true;
+    A.msg($('adAssignMsg'), 'Assigning…');
+
+    /* One call per node, through the existing endpoint — the API assigns a
+       single area per request and enforces "one active manager per area"
+       in the database. Each is reported independently so a clash on one
+       sub location never hides the ones that did succeed. */
+    var done = 0, taken = [], failed = [];
+    for (var i = 0; i < nodes.length; i++) {
+      try {
+        await A.post(API.adminAssignments, { action: 'assign', userId: userId, nodeId: nodes[i].id });
+        done++;
+      } catch (e) {
+        if (e.status === 409) taken.push(nodes[i].name);
+        else failed.push(nodes[i].name + ' (' + e.message + ')');
+      }
+    }
+
+    var parts = [];
+    if (done) parts.push(done + (done === 1 ? ' area assigned' : ' areas assigned'));
+    if (taken.length) parts.push('already has a manager: ' + taken.join(', '));
+    if (failed.length) parts.push('failed: ' + failed.join('; '));
+    A.msg($('adAssignMsg'), parts.join(' · ') || 'Nothing to assign.',
+      failed.length || (!done && taken.length) ? 'is-error' : 'is-ok');
+
+    if (done) {
+      assignEls().subs.querySelectorAll('input[type=checkbox]').forEach(function (c) { c.checked = false; });
+      refreshAssignScope();
+    }
+    this.disabled = false;
+    await loadAssignments();
   });
 
   $('adAssignmentList').addEventListener('click', async function (e) {

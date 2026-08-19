@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Owner Identity — MakanOnRent</title>
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; max-width: 1000px; margin: 40px auto; padding: 0 20px; color: #16211C; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: #6B7A73; margin-bottom: 20px; }
+  #summary { padding: 14px 18px; border-radius: 12px; font-weight: 700; margin-bottom: 18px; }
+  .ok   { background: #E7F3EE; border: 1px solid #0E5C44; color: #0E5C44; }
+  .bad  { background: #FBEAE8; border: 1px solid #C0392B; color: #C0392B; }
+  .grp  { margin: 18px 0 6px; font-weight: 800; font-size: 12px; letter-spacing: .6px; text-transform: uppercase; color: #6B7A73; }
+  li { list-style: none; padding: 4px 0; border-bottom: 1px solid #EEE; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .p { color: #0E5C44; } .f { color: #C0392B; font-weight: 700; }
+  .note { background: #FFF8E6; border: 1px solid #E4C766; border-radius: 10px; padding: 10px 14px; margin: 14px 0; font-size: 13px; }
+</style>
+<script type="importmap">
+{ "imports": { "@supabase/supabase-js": "./stub-supabase-db.js" } }
+</script>
+</head>
+<body>
+
+<h1>Owner identity &amp; My Properties — executable tests</h1>
+<p class="sub">
+  Runs the real owner-auth utility, the real sign-in callback, the real
+  <code>/api/properties/mine</code> and the real submit endpoint against a queryable database
+  fake and a stubbed Supabase Auth. The assertion that matters most: one owner can never
+  see another owner's property.
+</p>
+
+<div id="summary">Running…</div>
+<div id="out"></div>
+
+<script type="module">
+import { resolveOwner, contactForOwner, OWNER_COOKIE, VERIFIER_COOKIE,
+         createPkce, authorizeUrl, verifierCookie, sessionCookie } from '../functions/utils/owner-auth.js';
+import { onRequestGet as loginGet } from '../functions/api/owner/login.js';
+import { onRequestGet as callbackGet } from '../functions/api/owner/callback.js';
+import { onRequestGet as meGet } from '../functions/api/owner/me.js';
+import { onRequestGet as mineGet } from '../functions/api/properties/mine.js';
+import { onRequestPost as submitPost } from '../functions/api/properties/submit.js';
+import { DB, reset } from './stub-supabase-db.js';
+
+var results = [];
+function group(n) { results.push({ group: n }); }
+function check(desc, got, want) {
+  results.push({ desc: desc, pass: JSON.stringify(got) === JSON.stringify(want), got: got, want: want });
+}
+function ok(desc, cond, got) { results.push({ desc: desc, pass: !!cond, got: got }); }
+var notes = [];
+
+var ENV = {
+  SUPABASE_URL: 'https://stub.supabase.co',
+  SUPABASE_ANON_KEY: 'anon-key',
+  SUPABASE_SERVICE_ROLE_KEY: 'service-key',
+  SITE_URL: 'https://makanonrent.com'
+};
+
+/* ── a stubbed Supabase Auth (GoTrue) ─────────────────────────────── */
+var AUTH = {
+  users: {},          /* access_token → user (an expired token is deleted) */
+  byId: {},           /* auth user id → user; a refresh token stays valid
+                         even after its access token has expired, so this
+                         registry is what makes the refresh path testable */
+  codes: {},          /* auth_code → { verifier, user } */
+  refreshed: 0,
+  loggedOut: 0
+};
+function makeUser(id, email, name, verified) {
+  return {
+    id: id, email: email,
+    email_confirmed_at: verified === false ? null : '2026-01-01T00:00:00Z',
+    user_metadata: { full_name: name, email_verified: verified !== false }
+  };
+}
+
+var realFetch = window.fetch.bind(window);
+window.fetch = function (url, init) {
+  var u = String(url);
+  if (u.indexOf('https://stub.supabase.co/auth/v1/') !== 0) return realFetch(url, init);
+
+  var body = null;
+  try { body = init && init.body ? JSON.parse(init.body) : null; } catch (e) {}
+  function reply(o, status) {
+    return Promise.resolve({ ok: (status || 200) < 400, status: status || 200,
+      json: function () { return Promise.resolve(o); } });
+  }
+
+  if (u.indexOf('/auth/v1/token?grant_type=pkce') > -1) {
+    var entry = AUTH.codes[body && body.auth_code];
+    if (!entry || entry.verifier !== (body && body.code_verifier)) {
+      return reply({ error: 'invalid_grant', error_description: 'bad code or verifier' }, 400);
+    }
+    var at = 'at-' + entry.user.id;
+    AUTH.users[at] = entry.user;
+    AUTH.byId[entry.user.id] = entry.user;
+    return reply({ access_token: at, refresh_token: 'rt-' + entry.user.id, user: entry.user });
+  }
+  if (u.indexOf('/auth/v1/token?grant_type=refresh_token') > -1) {
+    AUTH.refreshed++;
+    var uid = String(body.refresh_token).replace('rt-', '');
+    var found = AUTH.byId[uid] || null;
+    if (!found) return reply({ error: 'invalid' }, 400);
+    var nat = 'at2-' + uid;
+    AUTH.users[nat] = found;
+    return reply({ access_token: nat, refresh_token: 'rt-' + uid, user: found });
+  }
+  if (u.indexOf('/auth/v1/user') > -1) {
+    var hdr = (init && init.headers && (init.headers.Authorization || init.headers.authorization)) || '';
+    var token = String(hdr).replace('Bearer ', '');
+    var user = AUTH.users[token];
+    return user ? reply(user) : reply({ error: 'unauthorized' }, 401);
+  }
+  if (u.indexOf('/auth/v1/logout') > -1) { AUTH.loggedOut++; return reply({}, 204); }
+  return reply({}, 404);
+};
+
+/* ── request helpers ──────────────────────────────────────────────── */
+function ctx(url, opts) {
+  opts = opts || {};
+  var headers = new Headers();
+  if (opts.cookie) headers.set('Cookie', opts.cookie);
+  var b = opts.body ? JSON.stringify(opts.body) : null;
+  if (b) headers.set('Content-Type', 'application/json');
+  return {
+    env: opts.env || ENV,
+    request: {
+      url: 'https://makanonrent.com' + url, method: opts.method || 'GET', headers: headers,
+      json: function () { return b ? Promise.resolve(JSON.parse(b)) : Promise.reject(new Error('no body')); }
+    }
+  };
+}
+async function call(fn, url, opts) {
+  var res = await fn(ctx(url, opts));
+  var body = null;
+  try { body = await res.json(); } catch (e) {}
+  return { status: res.status, body: body, headers: res.headers };
+}
+
+/* Drives a full sign-in and returns the session cookie value.
+
+   Set-Cookie is a forbidden response header for script in a browser: the
+   Fetch spec strips it from any Response the page can read, including one
+   this page constructed. That is an environment limit, not a behaviour
+   difference — in the Workers runtime the header is set normally. So the
+   PKCE verifier is generated here with the same exported helper the
+   endpoint uses, and the session cookie is built with the same exported
+   sessionCookie(); the flags on both are asserted directly against those
+   helpers further down. Everything else — the redirect, the exchange,
+   the identity resolution, the contact binding — is the real code. */
+async function signIn(user) {
+  var start = await call(loginGet, '/api/owner/login?next=/dashboard.html');
+
+  var pkce = await createPkce();
+  var code = 'code-' + user.id + '-' + (++signInSeq);
+  AUTH.codes[code] = { verifier: pkce.verifier, user: user };
+
+  var cb = await call(callbackGet, '/api/owner/callback?code=' + code, {
+    cookie: VERIFIER_COOKIE + '=' + pkce.verifier +
+            '; mor_owner_next=' + encodeURIComponent('/dashboard.html')
+  });
+
+  var location = cb.headers.get('Location') || '';
+  var succeeded = location.indexOf('signin=ok') > -1;
+  return {
+    start: start, callback: cb, verifier: pkce.verifier, succeeded: succeeded,
+    cookie: succeeded
+      ? sessionCookie({ access_token: 'at-' + user.id, refresh_token: 'rt-' + user.id }).split(';')[0]
+      : null
+  };
+}
+var signInSeq = 0;
+
+/* ══ 1. Sign-in flow ══════════════════════════════════════════════ */
+group('Google sign-in (PKCE via Supabase Auth)');
+
+reset();
+var OWNER_A = makeUser('auth-a', 'ownera@gmail.com', 'Owner A');
+var flow = await signIn(OWNER_A);
+
+check('login redirects', flow.start.status, 302);
+var loc = flow.start.headers.get('Location');
+ok('it redirects to Supabase Auth authorize', loc.indexOf('https://stub.supabase.co/auth/v1/authorize') === 0, loc);
+ok('the provider is google', loc.indexOf('provider=google') > -1);
+ok('a PKCE challenge is sent', loc.indexOf('code_challenge=') > -1);
+ok('the challenge method is s256', loc.indexOf('code_challenge_method=s256') > -1);
+ok('the code VERIFIER is never sent upstream', loc.indexOf(flow.verifier) === -1);
+
+/* Cookie flags asserted on the helpers that produce them. */
+var vc = verifierCookie('test-verifier');
+ok('the verifier cookie is HttpOnly, Secure and short-lived',
+   vc.indexOf(VERIFIER_COOKIE) === 0 && /HttpOnly/i.test(vc) && /Secure/i.test(vc) && /Max-Age=600/.test(vc), vc);
+var sc = sessionCookie({ access_token: 'a', refresh_token: 'r' });
+ok('the session cookie is HttpOnly, Secure and SameSite=Lax',
+   sc.indexOf(OWNER_COOKIE) === 0 && /HttpOnly/i.test(sc) && /Secure/i.test(sc) && /SameSite=Lax/i.test(sc), sc);
+ok('the session cookie is not readable as plain text',
+   sc.indexOf('access_token') === -1 && sc.indexOf('"a"') === -1);
+
+check('the callback redirects back', flow.callback.status, 302);
+ok('it lands on the requested page', flow.callback.headers.get('Location').indexOf('/dashboard.html') === 0,
+   flow.callback.headers.get('Location'));
+ok('the sign-in completed', flow.succeeded, flow.callback.headers.get('Location'));
+
+/* A code redeemed without the matching verifier must fail. */
+AUTH.codes['stolen'] = { verifier: 'the-real-verifier', user: OWNER_A };
+var stolen = await call(callbackGet, '/api/owner/callback?code=stolen',
+  { cookie: VERIFIER_COOKIE + '=a-different-verifier' });
+ok('a stolen code cannot be redeemed without the verifier',
+   (stolen.headers.get('Location') || '').indexOf('signin=failed') > -1,
+   stolen.headers.get('Location'));
+
+var noVerifier = await call(callbackGet, '/api/owner/callback?code=stolen');
+ok('a callback with no verifier cookie fails',
+   (noVerifier.headers.get('Location') || '').indexOf('signin=failed') > -1);
+
+var cancelled = await call(callbackGet, '/api/owner/callback?error=access_denied');
+ok('a cancelled sign-in is reported, not crashed',
+   (cancelled.headers.get('Location') || '').indexOf('signin=cancelled') > -1);
+
+/* A real owner identity now exists, bound to the existing contact table. */
+check('exactly one contact was created', DB.contacts.length, 1);
+check('it carries the verified Google address', DB.contacts[0].email, 'ownera@gmail.com');
+check('the address is marked verified', DB.contacts[0].email_verified, true);
+check('it is linked to the auth identity', DB.contacts[0].auth_user_id, 'auth-a');
+check('no phone is invented at sign-in', DB.contacts[0].phone_e164, null);
+ok('no owner table was created beside contacts',
+   DB.owner_users === undefined && DB.owner_sessions === undefined);
+
+/* ══ 2. The identity is readable server-side ══════════════════════ */
+group('Verified identity server-side');
+
+var me = await call(meGet, '/api/owner/me', { cookie: flow.cookie });
+check('me reports signed in', me.body.signedIn, true);
+check('the verified email is available', me.body.owner.email, 'ownera@gmail.com');
+ok('no token is ever returned to the browser',
+   JSON.stringify(me.body).indexOf('at-') === -1 && JSON.stringify(me.body).indexOf('rt-') === -1,
+   JSON.stringify(me.body));
+ok('the auth user id is not exposed', JSON.stringify(me.body).indexOf('auth-a') === -1);
+
+var anon = await call(meGet, '/api/owner/me');
+check('an anonymous visitor is simply not signed in', [anon.status, anon.body.signedIn], [200, false]);
+
+var forged = await call(meGet, '/api/owner/me', { cookie: OWNER_COOKIE + '=' + btoa('{"a":"made-up"}') });
+check('a forged cookie does not authenticate', forged.body.signedIn, false);
+
+/* An unverified address must never become an identity. */
+reset();
+var UNVERIFIED = makeUser('auth-x', 'unverified@example.com', 'X', false);
+var badFlow = await signIn(UNVERIFIED);
+ok('an unverified email cannot sign in', !badFlow.succeeded, badFlow.callback.headers.get('Location'));
+check('no contact is created for it', DB.contacts.length, 0);
+
+/* ══ 3. Submission is bound to the signed-in owner ════════════════ */
+group('Property ↔ owner binding');
+
+reset();
+DB.locations.push({ node_id: 'lahore', parent_node_id: null, name: 'Lahore', slug: 'lahore', type: 'city', status: 'approved', active: true });
+DB.locations.push({ node_id: 'lahore/johar-town', parent_node_id: 'lahore', name: 'Johar Town', slug: 'johar-town', type: 'locality', status: 'approved', active: true });
+
+var aFlow = await signIn(OWNER_A);
+var payload = {
+  draftId: 'draft-test-1',
+  property: {
+    category: 'homes', type: 'house', city: 'lahore', cityName: 'Lahore',
+    area: 'johar-town', areaName: 'Johar Town', size: 5, sizeUnit: 'marla',
+    beds: 3, baths: 3, parking: 1, rent: 95000, advance: 190000, currency: 'PKR'
+  },
+  owner: { name: 'Owner A', whatsapp: '03001234567', phone: '03001234567', email: 'typo@wrong.com' },
+  media: []
+};
+var sub = await call(submitPost, '/api/properties/submit',
+  { method: 'POST', body: payload, cookie: aFlow.cookie });
+check('the submission succeeds', sub.status, 201);
+
+check('no second contact was created for the same owner', DB.contacts.length, 1);
+check('the contact is still the Google identity', DB.contacts[0].auth_user_id, 'auth-a');
+check('the verified address was NOT overwritten by the typed one',
+      DB.contacts[0].email, 'ownera@gmail.com');
+check('the phone from the form was recorded', DB.contacts[0].phone_e164, '+923001234567');
+check('one ownership claim exists', DB.property_ownership_claims.length, 1);
+check('the claim points at this owner profile',
+      DB.property_ownership_claims[0].owner_profile_id, DB.owner_profiles[0].id);
+check('the owner profile belongs to the signed-in contact',
+      DB.owner_profiles[0].contact_id, DB.contacts[0].id);
+
+/* ══ 4. My Properties ═════════════════════════════════════════════ */
+group('My Properties');
+
+/* Give the listing a state a reviewer would have produced. */
+DB.listings[0].lifecycle_state = 'pending_review';
+DB.listings[0].approval_state = 'pending_manager';
+
+var mine = await call(mineGet, '/api/properties/mine', { cookie: aFlow.cookie });
+check('the owner sees their property', mine.body.properties.length, 1);
+var row = mine.body.properties[0];
+ok('a reference is shown', !!row.reference, row.reference);
+ok('a title is composed', /Marla House/.test(row.title), row.title);
+check('city', row.city, 'Lahore');
+check('main location', row.mainLocation, 'Johar Town');
+ok('a submitted date is present', !!row.submittedAt);
+check('the lifecycle state is shown', row.lifecycleState, 'pending_review');
+ok('the lifecycle state is labelled for a human', !!row.lifecycleLabel, row.lifecycleLabel);
+check('the approval stage is shown', row.approvalLabel, 'With the area manager');
+check('publication status is stated', row.published, false);
+check('it is grouped as pending review', row.status, 'pending_review');
+
+ok('no staff identity leaks into the owner view',
+   JSON.stringify(mine.body).indexOf('added_by_admin') === -1 &&
+   JSON.stringify(mine.body).indexOf('actor') === -1);
+
+/* Rejection reason surfaces. */
+DB.listings[0].lifecycle_state = 'rejected';
+DB.listing_status_history = [
+  { listing_id: DB.listings[0].id, to_state: 'rejected', reason: 'Photos do not match the address.', at: '2026-08-01T00:00:00Z' }
+];
+var rejected = await call(mineGet, '/api/properties/mine', { cookie: aFlow.cookie });
+check('a rejected listing is grouped as rejected', rejected.body.properties[0].status, 'rejected');
+check('the reason the reviewer gave is shown',
+      rejected.body.properties[0].reason, 'Photos do not match the address.');
+
+/* Published. */
+DB.listings[0].lifecycle_state = 'published';
+var live = await call(mineGet, '/api/properties/mine', { cookie: aFlow.cookie });
+check('a published listing is grouped as live', live.body.properties[0].status, 'live');
+check('publication is stated', live.body.properties[0].published, true);
+
+/* ══ 5. Owner isolation — the assertion that matters ══════════════ */
+group('Owner isolation');
+
+var OWNER_B = makeUser('auth-b', 'ownerb@gmail.com', 'Owner B');
+var bFlow = await signIn(OWNER_B);
+
+var bMine = await call(mineGet, '/api/properties/mine', { cookie: bFlow.cookie });
+check('a different owner sees NOTHING of the first owner', bMine.body.properties.length, 0);
+ok('the other owner’s reference never appears',
+   JSON.stringify(bMine.body).indexOf(sub.body.ref) === -1, JSON.stringify(bMine.body));
+
+/* B submits their own; each still sees only their own. */
+var bSub = await call(submitPost, '/api/properties/submit', {
+  method: 'POST', cookie: bFlow.cookie,
+  body: Object.assign({}, payload, {
+    owner: { name: 'Owner B', whatsapp: '03009999999', phone: '03009999999', email: 'ownerb@gmail.com' }
+  })
+});
+check('owner B can submit', bSub.status, 201);
+check('owner B now sees exactly one', (await call(mineGet, '/api/properties/mine', { cookie: bFlow.cookie })).body.properties.length, 1);
+check('owner A still sees exactly one', (await call(mineGet, '/api/properties/mine', { cookie: aFlow.cookie })).body.properties.length, 1);
+var aRef = (await call(mineGet, '/api/properties/mine', { cookie: aFlow.cookie })).body.properties[0].reference;
+var bRef = (await call(mineGet, '/api/properties/mine', { cookie: bFlow.cookie })).body.properties[0].reference;
+ok('and they are different properties', aRef !== bRef, [aRef, bRef]);
+
+/* Unauthenticated and forged access. */
+var noAuth = await call(mineGet, '/api/properties/mine');
+check('unauthenticated access is refused', noAuth.status, 401);
+ok('nothing is returned with it', !noAuth.body.properties);
+
+var forgedMine = await call(mineGet, '/api/properties/mine',
+  { cookie: OWNER_COOKIE + '=' + btoa('{"a":"forged","r":"forged"}') });
+check('a forged session is refused', forgedMine.status, 401);
+
+/* There is no parameter to forge — the endpoint takes no owner input. */
+var injected = await call(mineGet, '/api/properties/mine?ownerId=' + DB.owner_profiles[0].id +
+  '&contactId=' + DB.contacts[0].id + '&email=ownera@gmail.com', { cookie: bFlow.cookie });
+check('owner identity cannot be supplied by the caller', injected.body.properties.length, 1);
+check('and it is still owner B’s own', injected.body.properties[0].reference, bRef);
+
+/* ══ 6. Sign out and back in ══════════════════════════════════════ */
+group('Session lifecycle');
+
+var again = await call(mineGet, '/api/properties/mine', { cookie: aFlow.cookie });
+check('signing in again preserves ownership', again.body.properties[0].reference, aRef);
+check('and still no duplicate contact', DB.contacts.filter(function (c) { return c.auth_user_id === 'auth-a'; }).length, 1);
+
+/* An expired access token is refreshed rather than logging the owner out. */
+var before = AUTH.refreshed;
+delete AUTH.users['at-auth-a'];
+var afterExpiry = await call(mineGet, '/api/properties/mine', { cookie: aFlow.cookie });
+ok('an expired access token is refreshed transparently', AUTH.refreshed > before, AUTH.refreshed);
+check('and the owner still sees their property', afterExpiry.body.properties.length, 1);
+
+/* ══ 7. The anonymous submit path is untouched ════════════════════ */
+group('Existing submit flow intact');
+
+reset();
+DB.locations.push({ node_id: 'lahore', parent_node_id: null, name: 'Lahore', slug: 'lahore', type: 'city', status: 'approved', active: true });
+DB.locations.push({ node_id: 'lahore/johar-town', parent_node_id: 'lahore', name: 'Johar Town', slug: 'johar-town', type: 'locality', status: 'approved', active: true });
+
+var anonSub = await call(submitPost, '/api/properties/submit', { method: 'POST', body: payload });
+check('a submission with no session still succeeds', anonSub.status, 201);
+check('it is keyed on the phone, exactly as before', DB.contacts[0].phone_e164, '+923001234567');
+check('and carries no auth identity', DB.contacts[0].auth_user_id, undefined);
+check('the property is still recorded', DB.properties.length, 1);
+check('the listing still starts unpublished', DB.listings[0].status, 'intake');
+
+var anonAgain = await call(submitPost, '/api/properties/submit', { method: 'POST', body: payload });
+check('a second anonymous submission reuses the same contact', DB.contacts.length, 1);
+check('and creates a second property', DB.properties.length, 2);
+
+/* ══ 8. Admin login is unaffected ═════════════════════════════════ */
+group('Admin authentication untouched');
+
+var adminSrc = await realFetch('../functions/utils/session.js').then(function (r) { return r.text(); });
+ok('the admin session module does not import owner auth', adminSrc.indexOf('owner-auth') === -1);
+var ownerSrc = await realFetch('../functions/utils/owner-auth.js').then(function (r) { return r.text(); });
+/* Matched against real usage, not any mention: these files DISCUSS the
+   admin system in comments precisely to record that they stay out of it. */
+function code(src) { return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, ''); }
+var ownerCode = code(ownerSrc);
+ok('owner auth never queries admin_sessions', ownerCode.indexOf('admin_sessions') === -1);
+ok('owner auth never queries admin_users', ownerCode.indexOf('admin_users') === -1);
+ok('owner auth never imports the admin session module', ownerCode.indexOf('session.js') === -1);
+ok('the two use different cookies',
+   code(adminSrc).indexOf('mor_admin_session') > -1 && ownerCode.indexOf('mor_owner_session') > -1);
+ok('owner auth stores no password and no credential hash',
+   !/password/i.test(ownerCode) && !/hashPassword|password_hash/.test(ownerCode));
+
+var mineSrc = await realFetch('../functions/api/properties/mine.js').then(function (r) { return r.text(); });
+ok('My Properties never resolves an admin session', mineSrc.indexOf('resolveSession') === -1);
+
+/* ══ 9. No secret reaches the browser ═════════════════════════════ */
+group('Client-side secrets');
+
+var clientFiles = ['config.js', 'owner-session.js', 'dashboard.js', 'wizard.js'];
+for (var i = 0; i < clientFiles.length; i++) {
+  var src = await realFetch('../web/assets/js/' + clientFiles[i]).then(function (r) { return r.text(); });
+  ok(clientFiles[i] + ' holds no Supabase key',
+     !/SUPABASE_ANON_KEY|SUPABASE_SERVICE_ROLE|supabase\.co/i.test(src));
+  ok(clientFiles[i] + ' holds no access or refresh token',
+     !/access_token|refresh_token/.test(src));
+}
+var dashSrc = await realFetch('../web/dashboard.html').then(function (r) { return r.text(); });
+/* The filename survives in a comment explaining WHY it is gone; what
+   matters is that no script tag loads it. */
+ok('the dashboard no longer loads the owner fixture',
+   !/<script[^>]*owner-data\.js/.test(dashSrc));
+ok('the dashboard loads the owner session module',
+   /<script[^>]*owner-session\.js/.test(dashSrc));
+var dashJs = await realFetch('../web/assets/js/dashboard.js').then(function (r) { return r.text(); });
+ok('the dashboard reads the owner API', dashJs.indexOf('myProperties') > -1);
+/* \b so MOR_OWNER_SESSION (the real session module) is not mistaken for
+   MOR_OWNER (the removed fixture global). */
+ok('the dashboard has no fixture fallback', !/\bMOR_OWNER\b/.test(dashJs));
+var submitSrc = await realFetch('../web/submit.html').then(function (r) { return r.text(); });
+ok('the success screen links to My Properties', /href="dashboard\.html"/.test(submitSrc));
+
+/* ── render ───────────────────────────────────────────────────────── */
+notes.push('Supabase Auth is stubbed here (no live GoTrue is reachable from this environment). The PKCE exchange, token refresh, verified-email gate and cookie handling are exercised against that stub; the remaining live step is configuring the Google provider in the Supabase dashboard.');
+
+var pass = results.filter(function (x) { return x.desc && x.pass; }).length;
+var fail = results.filter(function (x) { return x.desc && !x.pass; }).length;
+var s = document.getElementById('summary');
+s.className = fail ? 'bad' : 'ok';
+s.textContent = fail ? (fail + ' failed / ' + (pass + fail) + ' assertions') : (pass + ' assertions passed');
+document.getElementById('out').innerHTML =
+  '<div class="note">' + notes.join('<br>') + '</div>' +
+  results.map(function (x) {
+    if (x.group) return '<div class="grp">' + x.group + '</div>';
+    return '<li class="' + (x.pass ? 'p' : 'f') + '">' + (x.pass ? '✓ ' : '✗ ') + x.desc +
+      (x.pass ? '' : ' — got ' + JSON.stringify(x.got) +
+        (x.want !== undefined ? ', want ' + JSON.stringify(x.want) : '')) + '</li>';
+  }).join('');
+window.__RESULT__ = { pass: pass, fail: fail, notes: notes,
+  failures: results.filter(function (x) { return x.desc && !x.pass; })
+    .map(function (x) { return x.desc + ' — got ' + JSON.stringify(x.got); }) };
+</script>
+</body>
+</html>

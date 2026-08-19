@@ -28,3 +28,21 @@
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: geolocation=(), microphone=(), camera=()
+
+# The service worker must never be served from a stale cache: the browser
+# revalidates it on every navigation, and a cached copy is exactly how a
+# site ends up pinned to retired code it can no longer replace. The
+# Service-Worker-Allowed header lets /sw.js claim the whole origin.
+/sw.js
+  Cache-Control: public, max-age=0, must-revalidate
+  Service-Worker-Allowed: /
+
+# Served with the right type so the browser parses it as a manifest;
+# short-lived so an icon or name change is picked up the same day.
+/manifest.webmanifest
+  Content-Type: application/manifest+json
+  Cache-Control: public, max-age=3600
+
+# Icons are content-stable and referenced by fixed names.
+/assets/img/*
+  Cache-Control: public, max-age=604800

@@ -537,27 +537,77 @@
      Enforced here as well as in the UI: the parent must resolve to a
      Main Area, and the created node is always SUB_AREA_TYPE with
      status 'pending'. Nothing goes live without admin approval. */
+  function normName(v) {
+    return String(v == null ? '' : v).replace(/[\s ]+/g, ' ').trim().toLowerCase();
+  }
+
+  /* Returns a PROMISE of { ok, node?, error?, existing? }.
+
+     It used to create the local node and fire the request off with an
+     empty .catch(), always answering ok — so a duplicate was accepted to
+     the user's face while the server refused it, and a pending node was
+     left behind locally either way. The server's verdict is the answer
+     now, and the local node is only created once that verdict is good. */
   function suggestSubArea(input) {
     var parent = LOC.getById(input.parentId);
-    if (!parent) return { ok: false, error: 'Choose the main area it belongs to.' };
+    if (!parent) return Promise.resolve({ ok: false, error: 'Choose the main area it belongs to.' });
     if (LOC.MAIN_AREA_TYPES.indexOf(parent.type) === -1) {
-      return { ok: false, error: 'Suggestions can only be added inside a main area.' };
+      return Promise.resolve({ ok: false, error: 'Suggestions can only be added inside a main area.' });
     }
-    var node = LOC.submitLocation({
-      name: input.name, parentId: parent.id, type: LOC.SUB_AREA_TYPE,
-      note: input.note || '', suggestedBy: input.suggestedBy || null
-    });
 
-    if (root.fetch && CFG.routes.api && CFG.routes.api.locationsSuggest) {
-      root.fetch(CFG.routes.api.locationsSuggest, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: input.name, parentId: parent.id, parentName: parent.name,
-          note: input.note || ''
-        })
-      }).catch(function () {});
+    var name = String(input.name == null ? '' : input.name).replace(/[\s ]+/g, ' ').trim();
+    if (!name) return Promise.resolve({ ok: false, error: 'Please enter a sub area name.' });
+
+    /* Local check first: the bank the visitor already has in memory
+       usually knows the answer, and saying "it already exists, pick it"
+       without a round trip is the faster, clearer path. The server
+       repeats this check — it is the boundary, this is the shortcut. */
+    var wanted = normName(name);
+    var already = LOC.getSubAreas(parent.id).filter(function (s) {
+      if (normName(s.name) === wanted) return true;
+      return (s.aliases || []).some(function (a) { return normName(a) === wanted; });
+    })[0];
+    if (already) {
+      return Promise.resolve({
+        ok: false,
+        error: '“' + already.name + '” already exists here — please select it instead.',
+        existing: { nodeId: already.id, name: already.name }
+      });
     }
-    return { ok: true, node: node };
+
+    function createLocally() {
+      return LOC.submitLocation({
+        name: name, parentId: parent.id, type: LOC.SUB_AREA_TYPE,
+        note: input.note || '', suggestedBy: input.suggestedBy || null
+      });
+    }
+
+    if (!root.fetch || !CFG.routes.api || !CFG.routes.api.locationsSuggest) {
+      return Promise.resolve({ ok: true, node: createLocally() });
+    }
+
+    return root.fetch(CFG.routes.api.locationsSuggest, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: name, parentId: parent.id, parentName: parent.name,
+        note: input.note || '', suggestedBy: input.suggestedBy || null
+      })
+    }).then(function (res) {
+      return res.json().catch(function () { return null; }).then(function (data) {
+        if (res.ok) return { ok: true, node: createLocally() };
+        /* A refusal is a real answer and must be shown, not swallowed. */
+        return {
+          ok: false,
+          error: (data && data.error) || 'That suggestion could not be saved.',
+          existing: (data && data.existing) || null
+        };
+      });
+    }).catch(function () {
+      /* Unreachable server — keep the pre-existing offline-tolerant
+         behaviour rather than losing what the visitor typed. The node is
+         local and pending, so it is still invisible to everyone else. */
+      return { ok: true, node: createLocally(), offline: true };
+    });
   }
 
   /* ── SEO keyword surface (architecture-ready, per the brief) ──

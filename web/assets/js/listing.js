@@ -33,6 +33,11 @@
   };
   win.MOR_CRITERIA = criteria;   /* consumed by the notify modal */
 
+  /* The search a visitor actually ran is the statement of interest push
+     matching uses. Recorded locally and capped by push.js; nothing is
+     sent anywhere unless they later allow notifications. */
+  if (win.MOR_PUSH) win.MOR_PUSH.rememberSearch(criteria);
+
   /* ── filter bar: single Smart Location Engine (docs/13, Phase 6) ── */
   var citySel = $('fCity'), mainSel = $('fMainLoc'), subSel = $('fSubLoc'),
       budgetMinSel = $('fBudgetMin'), budgetMaxSel = $('fBudgetMax'),

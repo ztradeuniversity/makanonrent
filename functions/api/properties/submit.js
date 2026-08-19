@@ -21,6 +21,7 @@ import { json, preflight } from '../../utils/cors.js';
 import { validateSubmitRequest } from '../../utils/validate.js';
 import { getServiceClient } from '../../utils/supabase.js';
 import { resolveSession } from '../../utils/session.js';
+import { resolveOwner, contactForOwner } from '../../utils/owner-auth.js';
 
 export async function onRequestOptions(context) {
   return preflight(context.env);
@@ -112,19 +113,50 @@ export async function onRequestPost(context) {
 
     var phone = normalizePkPhone(owner.whatsapp);
 
-    /* contact: reuse by phone (Doc 04 §2.3 — one contact per person). */
+    /* contact: the person this property belongs to.
+
+       A signed-in owner is identified by their VERIFIED Google identity,
+       not by the phone number typed into the form — otherwise two people
+       sharing a handset, or one owner mistyping a digit, would silently
+       land the property on someone else's dashboard. The phone is still
+       recorded (it is how the team actually reaches them), it just stops
+       being the identity.
+
+       With no owner session this is byte-for-byte the previous
+       behaviour: phone-keyed reuse, exactly as every existing submission
+       was recorded. The wizard therefore keeps working unchanged for
+       anyone who has not signed in. */
     var contactId;
-    var existingContact = await db.from('contacts').select('id').eq('phone_e164', phone).maybeSingle();
-    if (existingContact.error) throw existingContact.error;
-    if (existingContact.data) {
-      contactId = existingContact.data.id;
+    var signedInOwner = await resolveOwner(env, context.request).catch(function () { return null; });
+
+    if (signedInOwner) {
+      var ownerContact = await contactForOwner(env, signedInOwner);
+      contactId = ownerContact.id;
+
+      /* Fill in what the form supplies without overwriting the verified
+         address, and never clear a detail the contact already had. */
+      var patch = {};
+      if (phone && !ownerContact.phone_e164) patch.phone_e164 = phone;
+      if (owner.name && !ownerContact.full_name) patch.full_name = owner.name;
+      if (Object.keys(patch).length) {
+        var fill = await db.from('contacts').update(patch).eq('id', contactId);
+        /* A phone already held by a different contact row must not fail
+           the whole submission — the property is still theirs. */
+        if (fill.error && String(fill.error.message || '').indexOf('duplicate') === -1) throw fill.error;
+      }
     } else {
-      var newContact = await db.from('contacts').insert({
-        full_name: owner.name, phone_e164: phone, whatsapp_ok: true,
-        email: owner.email || null, source: 'submit_wizard'
-      }).select('id').single();
-      if (newContact.error) throw newContact.error;
-      contactId = newContact.data.id;
+      var existingContact = await db.from('contacts').select('id').eq('phone_e164', phone).maybeSingle();
+      if (existingContact.error) throw existingContact.error;
+      if (existingContact.data) {
+        contactId = existingContact.data.id;
+      } else {
+        var newContact = await db.from('contacts').insert({
+          full_name: owner.name, phone_e164: phone, whatsapp_ok: true,
+          email: owner.email || null, source: 'submit_wizard'
+        }).select('id').single();
+        if (newContact.error) throw newContact.error;
+        contactId = newContact.data.id;
+      }
     }
 
     /* owner_profile *—1 contact */

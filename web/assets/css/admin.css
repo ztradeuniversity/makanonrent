@@ -130,6 +130,37 @@
 .ad-btn.is-danger:hover { border-color: #C0392B; color: #C0392B; background: rgba(192, 57, 43, .06); }
 .ad-btn.is-sm { height: 32px; padding: 0 13px; font-size: 12px; }
 
+/* ── area picker: multi sub-location selection ──────────────────
+   A scrolling checkbox list rather than a multi-<select>: a city can
+   carry hundreds of sub locations, and a native multi-select gives no
+   room to filter and no reliable way to see what is already ticked. */
+.ad-sub-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.ad-sub-search { flex: 1; min-width: 160px; }
+.ad-sublist {
+  max-height: 230px; overflow-y: auto;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 4px;
+  padding: 10px; border: 1.5px solid var(--line); border-radius: var(--radius);
+  background: var(--paper);
+}
+.ad-sublist .ad-empty { grid-column: 1 / -1; padding: 18px 12px; }
+.ad-sub {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 9px; border-radius: 9px; cursor: pointer;
+  font-size: 13px; font-weight: 600; color: var(--text);
+  transition: background .15s var(--ease);
+}
+.ad-sub:hover { background: rgba(18, 90, 68, .07); }
+.ad-sub input { accent-color: var(--green); width: 15px; height: 15px; flex-shrink: 0; }
+.ad-sub span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* States what Assign will do before it is pressed. */
+.ad-assign-scope {
+  font-size: 12.5px; font-weight: 650; color: var(--muted);
+  min-height: 16px; margin-top: 10px;
+}
+@media (max-width: 560px) {
+  .ad-sublist { grid-template-columns: 1fr; max-height: 200px; }
+}
+
 /* ── verification checklist ─────────────────────────────────── */
 .ad-verify-row {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;

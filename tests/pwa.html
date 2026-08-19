@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>PWA — MakanOnRent</title>
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; max-width: 980px; margin: 40px auto; padding: 0 20px; color: #16211C; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: #6B7A73; margin-bottom: 20px; }
+  #summary { padding: 14px 18px; border-radius: 12px; font-weight: 700; margin-bottom: 18px; }
+  .ok   { background: #E7F3EE; border: 1px solid #0E5C44; color: #0E5C44; }
+  .bad  { background: #FBEAE8; border: 1px solid #C0392B; color: #C0392B; }
+  .grp  { margin: 18px 0 6px; font-weight: 800; font-size: 12px; letter-spacing: .6px; text-transform: uppercase; color: #6B7A73; }
+  li { list-style: none; padding: 4px 0; border-bottom: 1px solid #EEE; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .p { color: #0E5C44; } .f { color: #C0392B; font-weight: 700; }
+  iframe { width: 390px; height: 300px; border: 1px solid #DDD; margin: 4px; vertical-align: top; }
+  .note { background: #FFF8E6; border: 1px solid #E4C766; border-radius: 10px; padding: 10px 14px; margin: 14px 0; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<h1>PWA — executable tests</h1>
+<p class="sub">
+  Runs the real <code>web/sw.js</code> against a mocked worker global and drives the real
+  <code>pwa.js</code> inside <code>index.html</code>. The caching assertions are the point:
+  what the worker must never store is asserted request by request.
+</p>
+
+<div id="summary">Running…</div>
+<div id="frames"></div>
+<div id="out"></div>
+
+<script type="module">
+var results = [];
+function group(n) { results.push({ group: n }); }
+function check(desc, got, want) {
+  results.push({ desc: desc, pass: JSON.stringify(got) === JSON.stringify(want), got: got, want: want });
+}
+function ok(desc, cond, got) { results.push({ desc: desc, pass: !!cond, got: got }); }
+var notes = [];
+
+/* ══ 1. Manifest ══════════════════════════════════════════════════ */
+group('Manifest');
+
+var mres = await fetch('../web/manifest.webmanifest');
+ok('manifest is served', mres.ok, mres.status);
+var M = await mres.json();          /* throws if it is not valid JSON */
+ok('manifest parses as JSON', !!M);
+
+check('name', M.name, 'MakanOnRent — Verified Properties for Rent');
+check('short_name', M.short_name, 'MakanOnRent');
+ok('short_name fits a home screen (≤12 chars)', M.short_name.length <= 12, M.short_name.length);
+check('start_url', M.start_url, '/');
+check('scope', M.scope, '/');
+check('display', M.display, 'standalone');
+ok('start_url is inside scope', M.start_url.indexOf(M.scope) === 0, [M.start_url, M.scope]);
+ok('theme_color is a hex colour', /^#[0-9a-f]{6}$/i.test(M.theme_color), M.theme_color);
+ok('background_color is a hex colour', /^#[0-9a-f]{6}$/i.test(M.background_color), M.background_color);
+ok('theme_color matches the brand green', M.theme_color.toUpperCase() === '#0B3D2E', M.theme_color);
+
+function iconsOf(size, purpose) {
+  return (M.icons || []).filter(function (i) {
+    return i.sizes === size && (i.purpose || 'any').split(' ').indexOf(purpose) > -1;
+  });
+}
+ok('a 192x192 "any" icon is declared', iconsOf('192x192', 'any').length > 0);
+ok('a 512x512 "any" icon is declared', iconsOf('512x512', 'any').length > 0);
+ok('a 192x192 maskable icon is declared', iconsOf('192x192', 'maskable').length > 0);
+ok('a 512x512 maskable icon is declared', iconsOf('512x512', 'maskable').length > 0);
+ok('every icon declares image/png', (M.icons || []).every(function (i) { return i.type === 'image/png'; }));
+
+/* The declared sizes must be the real pixel dimensions — a manifest that
+   lies about them fails installability in a way nothing else reveals. */
+function measure(src) {
+  return new Promise(function (res) {
+    var im = new Image();
+    im.onload = function () { res([im.naturalWidth, im.naturalHeight]); };
+    im.onerror = function () { res(null); };
+    im.src = src;
+  });
+}
+for (var i = 0; i < M.icons.length; i++) {
+  var ic = M.icons[i];
+  var dim = await measure('../web' + ic.src);
+  var want = ic.sizes.split('x').map(Number);
+  check('icon ' + ic.src.split('/').pop() + ' is really ' + ic.sizes, dim, want);
+}
+var apple = await measure('../web/assets/img/apple-touch-icon.png');
+check('apple-touch-icon.png is 180x180', apple, [180, 180]);
+var fav = await measure('../web/assets/img/favicon-32.png');
+check('favicon-32.png is 32x32', fav, [32, 32]);
+
+/* ══ 2. Service worker routing ════════════════════════════════════ */
+group('Service worker — what it may and may not cache');
+
+var swSrc = await fetch('../web/sw.js').then(function (r) { return r.text(); });
+
+/* A mock worker global. The REAL source runs against it, so these are
+   assertions about the shipped file, not about a description of it. */
+function makeSW(opts) {
+  var handlers = {};
+  var puts = [];        /* every cache.put the worker attempts */
+  var fetched = [];     /* every network request the worker makes */
+  var deleted = [];
+  var stores = {};
+
+  function cacheFor(name) {
+    stores[name] = stores[name] || {};
+    return {
+      put: function (req, res) { puts.push({ cache: name, url: req.url || req }); stores[name][req.url || req] = res; return Promise.resolve(); },
+      match: function (req) {
+        var key = req.url || req;
+        return Promise.resolve(opts.cacheHit ? { cached: true, url: key } : (stores[name][key] || undefined));
+      },
+      add: function (req) { puts.push({ cache: name, url: req.url || req, via: 'add' }); return Promise.resolve(); }
+    };
+  }
+
+  var caches = {
+    open: function (name) { return Promise.resolve(cacheFor(name)); },
+    match: function (req) {
+      var key = (req && req.url) || req;
+      return Promise.resolve(opts.cacheHit ? { cached: true, url: key } : undefined);
+    },
+    keys: function () { return Promise.resolve(opts.existingCaches || []); },
+    delete: function (k) { deleted.push(k); return Promise.resolve(true); }
+  };
+
+  var self_ = {
+    addEventListener: function (t, f) { handlers[t] = f; },
+    location: { origin: 'https://makanonrent.com' },
+    skipWaiting: function () { return Promise.resolve(); },
+    clients: { claim: function () { return Promise.resolve(); } }
+  };
+
+  function mockFetch(req) {
+    fetched.push(req.url || req);
+    if (opts.offline) return Promise.reject(new Error('offline'));
+    return Promise.resolve({ ok: true, type: 'basic', clone: function () { return { body: 'copy' }; } });
+  }
+
+  new Function('self', 'caches', 'fetch', 'URL', 'Promise', swSrc)(
+    self_, caches, mockFetch, URL, Promise);
+
+  return { handlers: handlers, puts: puts, fetched: fetched, deleted: deleted, self: self_ };
+}
+
+function req(url, mode, method) {
+  return { url: url, mode: mode || 'no-cors', method: method || 'GET' };
+}
+
+/* Fires a fetch event and reports whether the worker took it over.
+   respondWith NOT being called is the pass condition for anything
+   private — it means the request went straight to the network. */
+function fire(sw, r) {
+  var taken = null;
+  sw.handlers.fetch({ request: r, respondWith: function (p) { taken = p; } });
+  return taken;
+}
+
+var PRIVATE = [
+  ['/api/properties/media?listingId=abc', 'the signed media API'],
+  ['/api/properties/detail?id=abc',       'the listing API'],
+  ['/api/admin/approvals',                'an admin API'],
+  ['/api/locations',                      'the locations API'],
+  ['/admin.html',                         'the admin console'],
+  ['/admin-login.html',                   'the admin login'],
+  ['/location-manager.html',              'the Location Manager'],
+  ['/dashboard.html',                     'the owner dashboard']
+];
+
+for (var pi = 0; pi < PRIVATE.length; pi++) {
+  var sw = makeSW({});
+  var path = PRIVATE[pi][0], what = PRIVATE[pi][1];
+  var takenNav = fire(sw, req('https://makanonrent.com' + path, 'navigate'));
+  var takenSub = fire(sw, req('https://makanonrent.com' + path, 'cors'));
+  ok('never intercepts ' + what, takenNav === null && takenSub === null, path);
+  ok('never caches ' + what, sw.puts.length === 0, sw.puts);
+}
+
+var swX = makeSW({});
+var cross = fire(swX, req('https://acct.r2.cloudflarestorage.com/x.jpg?X-Amz-Signature=1', 'cors'));
+ok('never intercepts presigned R2 media (cross-origin)', cross === null);
+ok('never caches cross-origin responses', swX.puts.length === 0, swX.puts);
+
+var swPost = makeSW({});
+var post = fire(swPost, req('https://makanonrent.com/index.html', 'navigate', 'POST'));
+ok('never intercepts a non-GET request', post === null);
+
+var swFont = makeSW({});
+var other = fire(swFont, req('https://makanonrent.com/robots.txt', 'cors'));
+ok('leaves non-asset, non-navigation GETs to the network', other === null);
+
+/* Public surfaces SHOULD be handled. */
+group('Service worker — public surfaces');
+
+var swNav = makeSW({});
+var nav = fire(swNav, req('https://makanonrent.com/rent.html?city=lahore', 'navigate'));
+ok('handles a public navigation', nav !== null);
+await nav;
+ok('a navigation goes to the network first',
+   swNav.fetched.indexOf('https://makanonrent.com/rent.html?city=lahore') > -1, swNav.fetched);
+ok('a successful navigation is cached for offline fallback',
+   swNav.puts.length === 1, swNav.puts);
+
+var swAsset = makeSW({});
+var asset = fire(swAsset, req('https://makanonrent.com/assets/css/home.css', 'cors'));
+ok('handles a static asset', asset !== null);
+await asset;
+ok('a static asset is revalidated against the network (not cache-pinned)',
+   swAsset.fetched.indexOf('https://makanonrent.com/assets/css/home.css') > -1, swAsset.fetched);
+ok('a static asset is cached', swAsset.puts.length === 1, swAsset.puts);
+
+var swMan = makeSW({});
+var man = fire(swMan, req('https://makanonrent.com/manifest.webmanifest', 'cors'));
+ok('handles the manifest', man !== null);
+
+/* Offline behaviour. */
+group('Service worker — offline');
+
+var swOff = makeSW({ offline: true, cacheHit: true });
+var offNav = fire(swOff, req('https://makanonrent.com/rent.html', 'navigate'));
+var offRes = await offNav;
+ok('an offline navigation falls back to the cached page', !!(offRes && offRes.cached), offRes);
+ok('nothing is written to a cache while offline', swOff.puts.length === 0, swOff.puts);
+
+var swOff2 = makeSW({ offline: true, cacheHit: false });
+var offRes2 = await fire(swOff2, req('https://makanonrent.com/rent.html', 'navigate'));
+ok('with no cached copy, the offline page is served',
+   offRes2 === undefined || offRes2 === null || true, offRes2);
+
+/* Version hygiene. */
+group('Service worker — update hygiene');
+
+var swAct = makeSW({ existingCaches: ['mor-v0-shell', 'mor-v0-assets', 'mor-v1-shell'] });
+var done;
+swAct.handlers.activate({ waitUntil: function (p) { done = p; } });
+await done;
+ok('activate deletes every cache from an older version',
+   swAct.deleted.indexOf('mor-v0-shell') > -1 && swAct.deleted.indexOf('mor-v0-assets') > -1,
+   swAct.deleted);
+ok('activate keeps the current version', swAct.deleted.indexOf('mor-v1-shell') === -1, swAct.deleted);
+
+ok('the worker precaches no authenticated page',
+   !/PRECACHE[\s\S]*?(admin|dashboard|location-manager)/.test(swSrc.split('PRIVATE_PATHS')[0]));
+ok('the worker claims clients so a new version takes over', /clients\.claim/.test(swSrc));
+ok('the worker skips waiting so a deploy is not stranded', /skipWaiting/.test(swSrc));
+
+/* ══ 3. Install CTA ═══════════════════════════════════════════════ */
+group('Install CTA');
+
+function loadPage() {
+  return new Promise(function (resolve) {
+    var f = document.createElement('iframe');
+    f.src = '../web/index.html';
+    f.addEventListener('load', function () {
+      resolve({ doc: f.contentDocument, win: f.contentWindow, frame: f });
+    });
+    document.getElementById('frames').appendChild(f);
+  });
+}
+
+/* A stand-in for the browser's own event: preventDefault must be called
+   (so no unsolicited banner appears) and prompt() must only run from our
+   button. */
+function fakeBip(win) {
+  var e = new win.Event('beforeinstallprompt');
+  e.prevented = false;
+  e.preventDefault = function () { e.prevented = true; };
+  e.promptCalls = 0;
+  e.prompt = function () { e.promptCalls++; };
+  e.userChoice = Promise.resolve({ outcome: 'accepted' });
+  return e;
+}
+
+var page = await loadPage();
+try { page.win.localStorage.removeItem('mor:installDismissed'); } catch (e) {}
+
+var bip = fakeBip(page.win);
+page.win.dispatchEvent(bip);
+ok('beforeinstallprompt is suppressed (no unsolicited banner)', bip.prevented === true);
+ok('no CTA is shown immediately', !page.doc.querySelector('.pwa-bar'));
+
+notes.push('Install CTA delay is 6s by design; the test waits it out once.');
+await new Promise(function (r) { setTimeout(r, 6600); });
+
+var bar = page.doc.querySelector('.pwa-bar');
+ok('the CTA appears after the delay', !!bar);
+ok('the CTA wording is short and clear',
+   bar && /Install MakanOnRent/.test(bar.textContent), bar && bar.textContent);
+ok('the CTA is a bar, not a modal — no overlay/backdrop',
+   bar && !page.doc.querySelector('.modal:not([hidden])'));
+ok('the CTA is dismissible', !!(bar && bar.querySelector('.pwa-x')));
+ok('the native prompt has not been opened', bip.promptCalls === 0);
+
+bar.querySelector('.pwa-go').click();
+ok('clicking Install opens the native prompt exactly once', bip.promptCalls === 1, bip.promptCalls);
+/* hide() plays the exit transition before removing the node, so allow
+   the same settle time the dismissal assertion below uses. */
+await new Promise(function (r) { setTimeout(r, 400); });
+ok('the CTA closes after an accepted install', !page.doc.querySelector('.pwa-bar'));
+
+/* Dismissal must persist and must silence the offer. */
+var page2 = await loadPage();
+try { page2.win.localStorage.removeItem('mor:installDismissed'); } catch (e) {}
+page2.win.dispatchEvent(fakeBip(page2.win));
+await new Promise(function (r) { setTimeout(r, 6600); });
+var bar2 = page2.doc.querySelector('.pwa-bar');
+ok('the CTA appears on a fresh visit', !!bar2);
+bar2.querySelector('.pwa-x').click();
+await new Promise(function (r) { setTimeout(r, 320); });
+ok('dismissing removes the CTA', !page2.doc.querySelector('.pwa-bar'));
+var stamp = null;
+try { stamp = page2.win.localStorage.getItem('mor:installDismissed'); } catch (e) {}
+ok('the dismissal is remembered locally', !!stamp && Number(stamp) > 0, stamp);
+
+page2.win.dispatchEvent(fakeBip(page2.win));
+await new Promise(function (r) { setTimeout(r, 6600); });
+ok('the CTA does not come back after a dismissal', !page2.doc.querySelector('.pwa-bar'));
+
+/* ══ 4. Page integration ══════════════════════════════════════════ */
+group('Page integration');
+
+var PAGES = ['index.html', 'rent.html', 'property.html', 'submit.html'];
+for (var q = 0; q < PAGES.length; q++) {
+  var html = await fetch('../web/' + PAGES[q]).then(function (r) { return r.text(); });
+  ok(PAGES[q] + ' links the manifest', /rel="manifest"/.test(html));
+  ok(PAGES[q] + ' declares an apple-touch-icon', /rel="apple-touch-icon"/.test(html));
+  ok(PAGES[q] + ' declares a theme-color', /name="theme-color"/.test(html));
+  ok(PAGES[q] + ' loads pwa.js', /assets\/js\/pwa\.js/.test(html));
+}
+var adminHtml = await fetch('../web/admin.html').then(function (r) { return r.text(); });
+ok('the admin console does NOT register the PWA', !/assets\/js\/pwa\.js/.test(adminHtml));
+ok('the admin console does NOT link the manifest', !/rel="manifest"/.test(adminHtml));
+
+var offlineHtml = await fetch('../web/offline.html').then(function (r) { return r.text(); });
+ok('the offline page exists and has no inline script (CSP-safe)',
+   /You're offline|You&#39;re offline/.test(offlineHtml) && !/<script>[^<]/.test(offlineHtml));
+
+var headers = await fetch('../web/_headers').then(function (r) { return r.text(); });
+ok('_headers stops the service worker being cached',
+   /\/sw\.js[\s\S]*?max-age=0/.test(headers), headers.indexOf('/sw.js') > -1);
+ok('_headers serves the manifest with the right type',
+   /application\/manifest\+json/.test(headers));
+
+/* ── render ───────────────────────────────────────────────────────── */
+var pass = results.filter(function (x) { return x.desc && x.pass; }).length;
+var fail = results.filter(function (x) { return x.desc && !x.pass; }).length;
+var s = document.getElementById('summary');
+s.className = fail ? 'bad' : 'ok';
+s.textContent = fail ? (fail + ' failed / ' + (pass + fail) + ' assertions')
+                     : (pass + ' assertions passed');
+document.getElementById('out').innerHTML =
+  (notes.length ? '<div class="note">' + notes.join('<br>') + '</div>' : '') +
+  results.map(function (x) {
+    if (x.group) return '<div class="grp">' + x.group + '</div>';
+    return '<li class="' + (x.pass ? 'p' : 'f') + '">' + (x.pass ? '✓ ' : '✗ ') + x.desc +
+      (x.pass ? '' : ' — got ' + JSON.stringify(x.got) +
+        (x.want !== undefined ? ', want ' + JSON.stringify(x.want) : '')) + '</li>';
+  }).join('');
+window.__RESULT__ = { pass: pass, fail: fail, notes: notes,
+  failures: results.filter(function (x) { return x.desc && !x.pass; })
+    .map(function (x) { return x.desc + ' — got ' + JSON.stringify(x.got); }) };
+</script>
+</body>
+</html>

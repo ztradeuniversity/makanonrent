@@ -77,7 +77,10 @@
 <script src="assets/js/location-sample-subareas.js"></script>
 <script src="assets/js/location-bank.js"></script>
 <script src="assets/js/shared.js"></script>
-<script src="assets/js/owner-data.js"></script>
+<!-- owner-data.js (the fixture) is deliberately NOT loaded: this page now
+     reads GET /api/properties/mine and shows an error rather than
+     invented properties when that call fails. -->
+<script src="assets/js/owner-session.js"></script>
 <script src="assets/js/dashboard.js"></script>
 </body>
 </html>

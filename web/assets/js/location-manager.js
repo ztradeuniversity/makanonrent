@@ -713,28 +713,82 @@
     });
   })();
 
-  /* ── pending user suggestions (sub areas only) ──────────── */
-  function renderPending() {
-    var pending = LOC.getPendingSuggestions();
-    $('lmPendingCard').hidden = !pending.length;
-    if (!pending.length) return;
+  /* ── pending user suggestions (sub areas only) ────────────
+     Read from the SERVER, not from this browser's copy of the engine.
+     A suggestion is submitted by a visitor on their own device, so the
+     local engine of whoever happens to be reviewing never contains it —
+     reading locally is why the queue always looked empty. Approving is
+     a server call for the same reason: locations.status is what
+     /api/locations filters on, and only the endpoint can write it. */
+  function pendingRowHTML(s) {
+    var where = [s.cityName, s.mainName].filter(Boolean).join(' › ');
+    var when = s.createdAt ? new Date(s.createdAt).toLocaleDateString('en-PK',
+      { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+    var meta = [when, s.suggestedBy ? 'by ' + s.suggestedBy : ''].filter(Boolean).join(' · ');
 
-    $('lmPending').innerHTML = pending.map(function (p) {
-      return '<div class="lm-pending-row">' +
-        '<div class="lm-grow"><b>' + esc(p.name) + '</b>' +
-        '<div class="lm-crumb">' + esc(p.breadcrumb.slice(1).join(' › ')) + '</div></div>' +
-        '<button class="lm-mini is-ok" type="button" data-approve="' + esc(p.id) + '">Approve</button>' +
-        '<button class="lm-mini is-no" type="button" data-reject="' + esc(p.id) + '">Reject</button>' +
-      '</div>';
-    }).join('');
+    return '<div class="lm-pending-row">' +
+      '<div class="lm-grow">' +
+        '<b>' + esc(s.name) + '</b>' +
+        '<div class="lm-crumb">' + esc(where || 'Unknown parent') + '</div>' +
+        (meta ? '<div class="lm-crumb">' + esc(meta) + '</div>' : '') +
+        (s.note ? '<div class="lm-note">“' + esc(s.note) + '”</div>' : '') +
+      '</div>' +
+      '<span class="lm-pill">' + esc(s.status) + '</span>' +
+      '<button class="lm-mini is-ok" type="button" data-approve="' + esc(s.id) + '">Approve</button>' +
+      '<button class="lm-mini is-no" type="button" data-reject="' + esc(s.id) + '">Reject</button>' +
+    '</div>';
   }
 
-  $('lmPending').addEventListener('click', function (e) {
+  async function renderPending() {
+    var list = [];
+    try {
+      var res = await win.MOR_ADMIN.get(CFG.routes.api.locationsSuggestions + '?status=pending');
+      list = (res && res.suggestions) || [];
+    } catch (e) {
+      /* Never leave the reviewer looking at a silently empty queue when
+         the real answer is "could not load". */
+      $('lmPendingCard').hidden = false;
+      $('lmPending').innerHTML = '<p class="lm-hint">Could not load suggestions: ' +
+        esc((e && e.message) || 'request failed') + '</p>';
+      return;
+    }
+
+    $('lmPendingCard').hidden = !list.length;
+    if (!list.length) return;
+    $('lmPending').innerHTML = list.map(pendingRowHTML).join('');
+  }
+
+  $('lmPending').addEventListener('click', async function (e) {
     var ok = e.target.closest('[data-approve]');
     var no = e.target.closest('[data-reject]');
-    if (ok) { LOC.approveLocation(ok.getAttribute('data-approve')); msg('Suggestion approved — it is now live in search.', 'is-ok'); }
-    else if (no) { LOC.rejectLocation(no.getAttribute('data-reject')); msg('Suggestion rejected.', 'is-ok'); }
-    else return;
+    var btn = ok || no;
+    if (!btn) return;
+
+    var id = btn.getAttribute(ok ? 'data-approve' : 'data-reject');
+    var row = btn.closest('.lm-pending-row');
+    if (row) row.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
+
+    try {
+      var res = await win.MOR_ADMIN.post(CFG.routes.api.locationsSuggestions, {
+        action: ok ? 'approve' : 'reject', id: id
+      });
+      if (ok) {
+        /* Mirror the decision into this admin's own engine so their
+           search reflects it without a reload. The server has already
+           made it public for everyone else; this is a local echo, not a
+           second source of truth. */
+        if (res && res.nodeId && LOC.approveLocation) LOC.approveLocation(res.nodeId);
+        msg('Suggestion approved — “' + (res && res.name ? res.name : 'location') +
+            '” is now live in search.', 'is-ok');
+      } else {
+        if (res && res.nodeId && LOC.rejectLocation) LOC.rejectLocation(res.nodeId);
+        msg('Suggestion rejected — it stays hidden from every selector.', 'is-ok');
+      }
+    } catch (err) {
+      msg((err && err.message) || 'Could not update that suggestion.', 'is-error');
+      if (row) row.querySelectorAll('button').forEach(function (b) { b.disabled = false; });
+      return;
+    }
     renderPending();
   });
 

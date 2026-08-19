@@ -139,18 +139,38 @@
 
       <div class="ad-card">
         <div class="ad-card-head"><b>Assign an area</b><span>City → Main Location → Sub Location. One active manager per area.</span></div>
+        <!-- Every level is a choice from the published Location Data Bank.
+             The free-text node path this replaced accepted any string, so a
+             typo produced a 404 and the manager silently ended up with no
+             scope at all — which reads as "the console is empty" rather
+             than "the area was never assigned". -->
         <div class="ad-row">
           <div class="ad-field">
             <label for="adAssignUser">Team member</label>
             <select class="ad-select" id="adAssignUser"></select>
           </div>
           <div class="ad-field">
-            <label for="adAssignNode">Area path</label>
-            <input class="ad-input" type="text" id="adAssignNode" placeholder="lahore/johar-town" autocomplete="off" />
+            <label for="adAssignCity">City</label>
+            <select class="ad-select" id="adAssignCity"><option value="">Select city</option></select>
+          </div>
+          <div class="ad-field">
+            <label for="adAssignMain">Main Location</label>
+            <select class="ad-select" id="adAssignMain" disabled><option value="">Select a city first</option></select>
           </div>
         </div>
+        <div class="ad-field" id="adAssignSubWrap" hidden>
+          <label>Sub Locations</label>
+          <div class="ad-sub-tools">
+            <input class="ad-input ad-sub-search" type="text" id="adAssignSubSearch"
+                   placeholder="Filter sub locations" autocomplete="off" aria-label="Filter sub locations" />
+            <button class="ad-btn is-sm" type="button" id="adAssignSubAll">Select all</button>
+            <button class="ad-btn is-sm" type="button" id="adAssignSubNone">Clear</button>
+          </div>
+          <div class="ad-sublist" id="adAssignSubs" role="group" aria-label="Sub locations"></div>
+        </div>
+        <p class="ad-assign-scope" id="adAssignScope" aria-live="polite"></p>
         <div class="ad-actions">
-          <button class="ad-btn is-primary" type="button" id="adAssignArea">Assign area</button>
+          <button class="ad-btn is-primary" type="button" id="adAssignArea" disabled>Assign area</button>
         </div>
         <p class="ad-msg" id="adAssignMsg" role="status" aria-live="polite"></p>
         <div id="adAssignmentList" style="margin-top:14px;"></div>
@@ -274,6 +294,14 @@
 
 <script src="assets/js/config.js"></script>
 <script src="assets/js/admin-core.js"></script>
+<!-- The Location Data Bank, exactly as location-manager.html loads it.
+     The area picker below reads City → Main → Sub from this one source;
+     no second location list exists on this page. -->
+<script src="assets/js/pk-locations.js"></script>
+<script src="assets/js/location-engine.js"></script>
+<script src="assets/js/location-fixture.js"></script>
+<script src="assets/js/location-sample-subareas.js"></script>
+<script src="assets/js/location-bank.js"></script>
 <script src="assets/js/admin-console.js"></script>
 </body>
 </html>

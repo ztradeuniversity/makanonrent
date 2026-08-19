@@ -6,8 +6,72 @@
 (function (win, doc) {
   'use strict';
 
-  var CFG = win.MOR_CONFIG, DATA = win.MOR_OWNER, UI = win.MOR_UI, LOC = win.MOR_LOC;
+  var CFG = win.MOR_CONFIG, UI = win.MOR_UI, LOC = win.MOR_LOC;
   var $ = function (id) { return doc.getElementById(id); };
+
+  /* ── data source ─────────────────────────────────────────────
+     GET /api/properties/mine, and nothing else. The fixture module
+     this page used to read (owner-data.js) is deliberately gone: a
+     dashboard that falls back to invented properties when the API is
+     unreachable tells the owner their submission is fine when nobody
+     knows whether it is. An error is shown instead.
+
+     The API shape is mapped to the shape the renderers below already
+     expect, so nothing about the cards changed. */
+  var DATA = (function () {
+    var rows = [];
+
+    function map(p) {
+      return {
+        /* The business reference is what the owner was given on the
+           success screen, so it is what they see and search by. */
+        id: p.reference || p.listingId,
+        listingId: p.listingId,
+        title: p.title,
+        city: p.city,
+        area: p.mainLocation,
+        subArea: p.subLocation,
+        rent: p.rent,
+        type: p.type,
+        status: p.status,
+        submittedAt: p.submittedAt,
+        updatedAt: p.updatedAt,
+        published: p.published,
+        lifecycleLabel: p.lifecycleLabel,
+        /* Rejection / return explanation, straight from the lifecycle
+           history the reviewer wrote. */
+        reason: p.reason || null,
+        review: { stage: p.approvalLabel || p.lifecycleLabel, reason: p.reason || null },
+        /* Photos come from the signed media route, never from a stored
+           permanent link; the card renders its placeholder until an
+           owner-side gallery exists. */
+        images: [],
+        /* No owner-facing availability or analytics service exists yet.
+           Stating that plainly beats showing invented numbers. */
+        availability: { state: p.published ? 'not_applicable' : 'not_applicable' },
+        stats: { views: null, whatsapp: null, calls: null }
+      };
+    }
+
+    return {
+      list: function () { return rows.slice(); },
+      byId: function (id) {
+        return rows.filter(function (r) { return r.id === id || r.listingId === id; })[0] || null;
+      },
+      load: function () {
+        return win.fetch(CFG.routes.api.myProperties, { credentials: 'same-origin' })
+          .then(function (res) {
+            if (res.status === 401) { var e = new Error('signed-out'); e.signedOut = true; throw e; }
+            if (!res.ok) throw new Error('Could not load your properties.');
+            return res.json();
+          })
+          .then(function (data) {
+            rows = ((data && data.properties) || []).map(map);
+            return rows;
+          });
+      }
+    };
+  })();
 
   var host = $('ocards');
   var view = 'all';
@@ -347,26 +411,15 @@
     var id = b.getAttribute('data-id');
 
     if (act === 'clear-search') { applySearch(''); return; }
-    if (act === 'confirm') {
-      DATA.update(id, { availability: { confirmedAt: new Date().toISOString() } });
-      render();
-      return;
-    }
-    if (act === 'archive') {
-      confirmDialog(
-        'Archive this property?',
-        'It will be hidden from tenants. You can restore it any time — nothing is deleted.',
-        'Archive', function () {
-          var rec = DATA.byId(id);
-          DATA.update(id, { status: 'archived', previousStatus: rec ? rec.status : 'live' });
-          render();
-        });
-      return;
-    }
-    if (act === 'restore') {
-      var rec = DATA.byId(id);
-      DATA.update(id, { status: (rec && rec.previousStatus) || 'pending_review' });
-      render();
+
+    /* Availability confirmation, archive and restore are OWNER WRITES,
+       and no owner-facing write API exists yet — archiving is a CEO
+       capability on the admin side (properties.archive). These used to
+       mutate the local fixture, which made the button look like it had
+       done something to a property nobody else could see change. Saying
+       so is the honest state until that endpoint exists. */
+    if (act === 'confirm' || act === 'archive' || act === 'restore') {
+      notice('This is handled by the MakanOnRent team for now — contact us and we will update the listing.');
       return;
     }
     if (act === 'edit' || act === 'fix') {
@@ -401,6 +454,74 @@
     confirmDlg.open();
   }
 
+  /* Transient message for actions that have no owner API yet. */
+  var noticeTimer = null;
+  function notice(text) {
+    var el = $('dashNotice');
+    if (!el) { el = doc.createElement('p'); el.id = 'dashNotice'; el.className = 'dash-notice';
+      host.parentNode.insertBefore(el, host); }
+    el.textContent = text;
+    el.hidden = false;
+    if (noticeTimer) clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(function () { el.hidden = true; }, 5000);
+  }
+
+  /* Full-panel state for "not signed in" / "could not load". Replaces the
+     cards rather than sitting beside them, because in both cases there is
+     nothing truthful to show. */
+  function panel(title, body, action) {
+    doc.getElementById('dashNav').hidden = !!action;
+    $('searchWrap').hidden = true;
+    host.innerHTML =
+      '<div class="empty">' +
+        '<div class="empty-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.8V20h14V9.8"/></svg></div>' +
+        '<h2>' + UI.esc(title) + '</h2><p>' + UI.esc(body) + '</p>' +
+        (action ? '<button class="btn-gold" type="button" id="dashAuthBtn">' + UI.esc(action) + '</button>' : '') +
+      '</div>';
+  }
+
+  /* ── boot ────────────────────────────────────────────────────
+     My Properties is owner data, so nothing renders until the SERVER
+     confirms who the visitor is. There is no local flag to trust and no
+     fixture to fall back to. */
   $('yr').textContent = new Date().getFullYear();
-  render();
+
+  (function boot() {
+    var S = win.MOR_OWNER_SESSION;
+    if (S) S.consumeSigninFlag();
+
+    if (!S || !win.fetch) {
+      panel('Sign in to see your properties',
+            'Your properties are linked to your Google account.', 'Continue with Google');
+      return;
+    }
+
+    panel('Loading your properties…', 'One moment.');
+
+    S.load(true).then(function (me) {
+      if (!me || !me.signedIn) {
+        panel('Sign in to see your properties',
+              'Your properties are linked to the Google account you submitted them with.',
+              'Continue with Google');
+        var btn = $('dashAuthBtn');
+        if (btn) btn.addEventListener('click', function () { S.signIn('/dashboard.html'); });
+        return;
+      }
+
+      return DATA.load().then(function () {
+        doc.getElementById('dashNav').hidden = false;
+        render();
+      }).catch(function (err) {
+        if (err && err.signedOut) {
+          panel('Your session has expired', 'Sign in again to see your properties.',
+                'Continue with Google');
+          var b = $('dashAuthBtn');
+          if (b) b.addEventListener('click', function () { S.signIn('/dashboard.html'); });
+          return;
+        }
+        panel('We could not load your properties',
+              (err && err.message) || 'Please try again in a moment.');
+      });
+    });
+  })();
 })(window, document);
