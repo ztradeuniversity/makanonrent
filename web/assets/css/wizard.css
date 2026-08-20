@@ -291,3 +291,72 @@
   .thumbs { grid-template-columns: repeat(auto-fill, minmax(82px, 1fr)); }
   .ref-card b { font-size: 22px; }
 }
+
+/* ── upload state on each thumbnail ──────────────────────────
+   Files upload as they are chosen, so every tile shows where its
+   own upload has actually got to. "Uploaded" appears only after the
+   store has acknowledged the bytes — never merely because a file was
+   picked. */
+.thumb .up {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 3;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px; padding: 6px 5px;
+  font-size: 9.5px; font-weight: 750; text-align: center; color: #fff;
+}
+.thumb .up-txt { line-height: 1.1; }
+
+/* In progress — the tile dims so a half-uploaded photo never reads as
+   finished, and the bar carries the real byte count. */
+.thumb.is-uploading img, .thumb.is-uploading video { opacity: .45; }
+.thumb .up-busy { inset: 0; background: rgba(10, 26, 20, .55); }
+.thumb .up-bar {
+  width: 76%; height: 4px; border-radius: 100px;
+  background: rgba(255, 255, 255, .28); overflow: hidden;
+}
+.thumb .up-bar i {
+  display: block; height: 100%; width: 0;
+  background: var(--gold); transition: width .25s var(--ease);
+}
+
+/* Complete. Green, and only ever set from a successful response. */
+.thumb .up-ok {
+  flex-direction: row; gap: 5px;
+  background: rgba(18, 90, 68, .92);
+}
+.thumb .up-ok .up-tick { display: grid; place-items: center; }
+.thumb .up-ok svg { width: 12px; height: 12px; color: #fff; }
+
+/* Failed, with the retry the owner needs to fix it in place. */
+.thumb.is-error { border-color: #C0392B; }
+.thumb .up-err { inset: 0; background: rgba(192, 57, 43, .88); justify-content: center; }
+.thumb .up-err svg { width: 16px; height: 16px; color: #fff; }
+.thumb .up-retry {
+  margin-top: 2px; padding: 3px 10px; border-radius: 100px; cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, .7); background: transparent;
+  color: #fff; font: inherit; font-size: 9.5px; font-weight: 800;
+}
+.thumb .up-retry:hover { background: #fff; color: #C0392B; }
+
+/* ── size + unit as one control ──────────────────────────────
+   The unit buttons sit inside the size field so they cannot be read as
+   belonging to the road-width row above. */
+.control-size { display: flex; align-items: center; gap: 0; padding-right: 4px; }
+.control-size input { flex: 1; min-width: 0; }
+.seg-inline {
+  display: flex; flex-shrink: 0; gap: 2px; padding: 3px;
+  background: var(--paper); border-radius: 100px;
+}
+.seg-inline button {
+  padding: 6px 12px; border: 0; border-radius: 100px; cursor: pointer;
+  background: transparent; color: var(--muted);
+  font: inherit; font-size: 12.5px; font-weight: 750;
+  transition: background .2s var(--ease), color .2s var(--ease);
+}
+.seg-inline button[aria-pressed="true"] { background: var(--green); color: #fff; }
+
+/* ── submission failure ───────────────────────────────────── */
+.wz-submit-err {
+  margin: 0 auto 10px; max-width: 620px; padding: 0 20px;
+  font-size: 13px; font-weight: 700; color: #C0392B; text-align: center;
+}
+.wz-submit-err:empty { display: none; }

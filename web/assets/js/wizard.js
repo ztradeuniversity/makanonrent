@@ -369,56 +369,161 @@
      Files stay client-side. On submit the backend receives the
      originals and returns the optimised variants declared in
      CFG.submit.imageOptimization — no wizard change required. */
+  /* Each entry carries its own upload state:
+       status : 'uploading' | 'done' | 'error'
+       pct    : 0-100, real bytes sent (XHR upload progress)
+       key    : the R2 object key, set ONLY once the PUT succeeded
+     `done` therefore means the file is in storage, not merely chosen —
+     which is the distinction the previous version had no way to make,
+     because it did not upload anything until the very last step. */
+  var STATUS_ICON = {
+    done: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg>',
+    error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v5M12 16.5h.01"/><circle cx="12" cy="12" r="9"/></svg>'
+  };
+
   function mediaThumb(entry, kind, i) {
     var inner = kind === 'images'
       ? '<img src="' + entry.url + '" alt="">'
       : '<video src="' + entry.url + '" muted playsinline></video>';
-    return '<div class="thumb">' + inner +
+
+    var st = entry.status || 'uploading';
+    var overlay = '';
+    if (st === 'uploading') {
+      overlay =
+        '<div class="up up-busy">' +
+          '<div class="up-bar"><i style="width:' + (entry.pct || 0) + '%"></i></div>' +
+          '<span class="up-txt">Uploading… ' + (entry.pct || 0) + '%</span>' +
+        '</div>';
+    } else if (st === 'done') {
+      overlay = '<div class="up up-ok"><span class="up-tick" aria-hidden="true">' + STATUS_ICON.done +
+                '</span><span class="up-txt">Uploaded</span></div>';
+    } else {
+      overlay = '<div class="up up-err">' +
+        '<span class="up-tick" aria-hidden="true">' + STATUS_ICON.error + '</span>' +
+        '<span class="up-txt">Upload failed</span>' +
+        '<button class="up-retry" type="button" data-retry="' + kind + '" data-i="' + i + '">Retry</button>' +
+      '</div>';
+    }
+
+    return '<div class="thumb is-' + st + '">' + inner + overlay +
       '<button class="rm" type="button" data-rm="' + kind + '" data-i="' + i + '" aria-label="Remove ' + UI.esc(entry.file.name) + '">&times;</button>' +
       '<span class="nm">' + UI.esc(entry.file.name) + '</span></div>';
   }
 
-  function renderMedia(kind, hostId, hintId, max) {
-    var host = $(hostId);
-    host.innerHTML = files[kind].map(function (e, i) { return mediaThumb(e, kind, i); }).join('');
-    $(hintId).textContent = files[kind].length
-      ? files[kind].length + ' of ' + max + ' added — tap to add more'
-      : (kind === 'images' ? 'Tap to choose from your phone' : 'A short walkthrough helps a lot');
+  var MEDIA_HOSTS = {
+    images: { hostId: 'imgThumbs', hintId: 'imgHint', max: function () { return SUB.maxImages; } },
+    videos: { hostId: 'vidThumbs', hintId: 'vidHint', max: function () { return SUB.maxVideos; } }
+  };
+
+  function renderMedia(kind) {
+    var cfg = MEDIA_HOSTS[kind];
+    var max = cfg.max();
+    $(cfg.hostId).innerHTML = files[kind].map(function (e, i) { return mediaThumb(e, kind, i); }).join('');
+
+    var total = files[kind].length;
+    var busy = files[kind].filter(function (e) { return e.status === 'uploading'; }).length;
+    var bad = files[kind].filter(function (e) { return e.status === 'error'; }).length;
+
+    var hint;
+    if (!total) hint = kind === 'images' ? 'Tap to choose from your phone' : 'A short walkthrough helps a lot';
+    else if (busy) hint = total + ' of ' + max + ' added — uploading ' + busy + '…';
+    else if (bad) hint = total + ' of ' + max + ' added — ' + bad + ' failed, tap Retry';
+    else hint = total + ' of ' + max + ' added — all uploaded';
+    $(cfg.hintId).textContent = hint;
+
+    refreshNav();
   }
 
-  function addFiles(kind, list, max, maxMB, hostId, hintId) {
+  /* Uploads one entry and keeps its progress in the entry itself, so a
+     re-render (add, remove, retry) never loses or double-counts a file. */
+  function startUpload(kind, entry) {
+    entry.status = 'uploading';
+    entry.pct = 0;
+    entry.key = null;
+    renderMedia(kind);
+
+    var apiKind = kind === 'videos' ? 'property-video' : 'property-image';
+
+    uploadOne(entry.file, apiKind, function (pct) {  // eslint-disable-line
+      entry.pct = pct;
+      /* Repaint just this tile's bar — a full re-render on every progress
+         event would fight the user's scroll position. */
+      var host = $(MEDIA_HOSTS[kind].hostId);
+      var idx = files[kind].indexOf(entry);
+      var tile = host.children[idx];
+      if (!tile) return;
+      var bar = tile.querySelector('.up-bar i');
+      var txt = tile.querySelector('.up-txt');
+      if (bar) bar.style.width = pct + '%';
+      if (txt) txt.textContent = 'Uploading… ' + pct + '%';
+    }, function (abortFn) { entry.abort = abortFn; }).then(function (res) {
+      entry.status = 'done';
+      entry.pct = 100;
+      entry.key = res.key;
+      entry.publicUrl = res.publicUrl;
+      entry.mediaKind = res.kind;
+      renderMedia(kind);
+    }).catch(function () {
+      entry.status = 'error';
+      renderMedia(kind);
+    });
+  }
+
+  function addFiles(kind, list, max, maxMB) {
     Array.prototype.forEach.call(list, function (f) {
       if (files[kind].length >= max) return;
       if (f.size > maxMB * 1024 * 1024) return;
-      files[kind].push({ file: f, url: URL.createObjectURL(f) });
+      var entry = { file: f, url: URL.createObjectURL(f), status: 'uploading', pct: 0, key: null };
+      files[kind].push(entry);
+      /* Upload begins the moment the file is chosen, so the progress the
+         owner sees is real and the final step has nothing left to wait
+         for. */
+      startUpload(kind, entry);
     });
-    renderMedia(kind, hostId, hintId, max);
+    renderMedia(kind);
   }
 
   $('imgInput').addEventListener('change', function () {
-    addFiles('images', this.files, SUB.maxImages, SUB.imageMaxMB, 'imgThumbs', 'imgHint');
+    addFiles('images', this.files, SUB.maxImages, SUB.imageMaxMB);
     this.value = '';
   });
   $('vidInput').addEventListener('change', function () {
-    addFiles('videos', this.files, SUB.maxVideos, SUB.videoMaxMB, 'vidThumbs', 'vidHint');
+    addFiles('videos', this.files, SUB.maxVideos, SUB.videoMaxMB);
     this.value = '';
   });
 
   doc.addEventListener('click', function (e) {
-    var b = e.target.closest('[data-rm]');
-    if (!b) return;
-    e.preventDefault();
-    var kind = b.getAttribute('data-rm'), i = Number(b.getAttribute('data-i'));
-    URL.revokeObjectURL(files[kind][i].url);
-    files[kind].splice(i, 1);
-    kind === 'images'
-      ? renderMedia('images', 'imgThumbs', 'imgHint', SUB.maxImages)
-      : renderMedia('videos', 'vidThumbs', 'vidHint', SUB.maxVideos);
+    var rm = e.target.closest('[data-rm]');
+    if (rm) {
+      e.preventDefault();
+      var kind = rm.getAttribute('data-rm'), i = Number(rm.getAttribute('data-i'));
+      var entry = files[kind][i];
+      if (entry) {
+        URL.revokeObjectURL(entry.url);
+        /* An in-flight upload is abandoned rather than left to finish
+           into a slot that no longer exists. */
+        if (entry.abort) { try { entry.abort(); } catch (err) {} }
+        files[kind].splice(i, 1);
+      }
+      renderMedia(kind);
+      return;
+    }
+
+    var re = e.target.closest('[data-retry]');
+    if (re) {
+      e.preventDefault();
+      var rk = re.getAttribute('data-retry');
+      var entry2 = files[rk][Number(re.getAttribute('data-i'))];
+      if (entry2) startUpload(rk, entry2);
+    }
   });
 
   /* ── STEP 7 · free-form feature tags ────────────────────── */
   var SUGGEST = ['Solar', 'Park Facing', 'Corner', 'Near School', 'Near Market',
-                 'Main Road', 'Gated Community', 'Walking Distance', '40 Feet Road',
+                 /* "Walking Distance" alone never said walking distance to
+                    WHAT. The stored tag text is the label, so this is the
+                    one place it is defined. */
+                 'Main Road', 'Gated Community', 'Main Road Walking Distance', '40 Feet Road',
                  'Separate Meter', 'Servant Quarter', 'Rooftop'];
 
   var tagInput = $('tagInput'), tagList = $('tagList'), tagSuggest = $('tagSuggest');
@@ -527,7 +632,7 @@
         row('Main Location', state.mainAreaName) +
         row('Sub Location', state.subAreaName) +
         row('Landmark', state.landmark) +
-        row('Road width', state.roadWidth ? state.roadWidth + ' feet' : '') +
+        row('Front road width', state.roadWidth ? state.roadWidth + ' feet' : '') +
         row('Size', state.size ? state.size + ' ' + (state.sizeUnit === 'marla' ? 'Marla' : 'Sq Ft') : '')) +
       group('Details', 4,
         row('Bedrooms', state.beds || '') + row('Bathrooms', state.baths || '') +
@@ -727,27 +832,14 @@
     return SUB.referencePrefix + '-' + code + '-' + ymd + '-' + rand;
   }
 
-  /* Queues the submission locally exactly as before — the pre-backend
-     fallback path. Used when the API is unreachable (static preview
-     with no Functions runtime, or a real network failure) so the demo
-     never breaks and the owner's work is never silently lost. */
-  function queueLocally(ref) {
-    try {
-      var key = CFG.storage.submissions;
-      var all = JSON.parse(localStorage.getItem(key) || '[]');
-      all.push({
-        ref: ref, at: new Date().toISOString(), status: 'pending_review',
-        property: state,
-        media: {
-          images: files.images.map(function (e) { return e.file.name; }),
-          videos: files.videos.map(function (e) { return e.file.name; }),
-          cnicFront: files.cnicFront ? files.cnicFront.name : null,
-          cnicBack: files.cnicBack ? files.cnicBack.name : null
-        }
-      });
-      localStorage.setItem(key, JSON.stringify(all));
-    } catch (e) {}
-  }
+  /* queueLocally() stood here. It wrote a "pending_review" record into
+     localStorage whenever the API call failed, and the caller then showed
+     the success screen with a locally invented reference. Nothing ever
+     read that queue, no manager could see it, and it is what made a
+     failed submission look identical to a successful one. Removed with
+     the fallback that called it — a submission that did not reach the
+     server is now reported as failed, and the draft is kept so the owner
+     can retry rather than re-type. */
 
   function showDone(ref) {
     clearDraft();
@@ -765,9 +857,16 @@
   /* Presigns + uploads one file directly to R2 (functions/api/uploads/
      presign.js issues the URL; the PUT never touches our own server).
      Returns { key, publicUrl, kind } for storage in the submit payload. */
-  function uploadOne(file, kind) {
+  /* The PUT goes through XMLHttpRequest rather than fetch for one
+     reason: fetch cannot report how many bytes have actually been sent,
+     so a fetch-based upload can only ever show a spinner. xhr.upload
+     reports real progress, which is what makes the percentage honest.
+     The presign call stays on fetch — it is a small JSON round trip. */
+  function uploadOne(file, kind, onProgress, onAbortRef) {
     return win.fetch(CFG.routes.api.presign, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         draftId: draftId, filename: file.name, contentType: file.type,
         kind: kind, sizeBytes: file.size
@@ -775,30 +874,86 @@
     })
       .then(function (r) { if (!r.ok) throw new Error('presign failed'); return r.json(); })
       .then(function (res) {
-        return win.fetch(res.uploadUrl, { method: 'PUT', headers: { 'Content-Type': file.type }, body: file })
-          .then(function (put) {
-            if (!put.ok) throw new Error('upload failed');
-            return { key: res.key, publicUrl: res.publicUrl, kind: kind === 'property-video' ? 'video' : 'image' };
+        return new Promise(function (resolve, reject) {
+          var xhr = new XMLHttpRequest();
+          xhr.open('PUT', res.uploadUrl, true);
+          xhr.setRequestHeader('Content-Type', file.type);
+
+          if (onAbortRef) onAbortRef(function () { xhr.abort(); });
+
+          xhr.upload.addEventListener('progress', function (ev) {
+            if (!ev.lengthComputable || !onProgress) return;
+            /* Capped at 99 until the response confirms it: 100% of bytes
+               sent is not the same as the store having accepted them. */
+            onProgress(Math.min(99, Math.round((ev.loaded / ev.total) * 100)));
           });
+
+          xhr.addEventListener('load', function () {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              if (onProgress) onProgress(100);
+              resolve({ key: res.key, publicUrl: res.publicUrl,
+                        kind: kind === 'property-video' ? 'video' : 'image' });
+            } else {
+              reject(new Error('upload failed (' + xhr.status + ')'));
+            }
+          });
+          xhr.addEventListener('error', function () { reject(new Error('upload failed')); });
+          xhr.addEventListener('abort', function () { reject(new Error('upload cancelled')); });
+
+          xhr.send(file);
+        });
       });
   }
 
-  function submit() {
-    var localRef = reference();
+  function submitFailed(message) {
     var nextBtn = $('nextBtn');
+    nextBtn.disabled = false;
+    nextBtn.firstChild.nodeValue = 'Submit Property ';
+    var el = $('errSubmit');
+    if (el) {
+      el.textContent = message;
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }
+
+  function submit() {
+    var nextBtn = $('nextBtn');
+    var errEl = $('errSubmit');
+    if (errEl) errEl.textContent = '';
+
+    /* Media is already in storage by this point — it uploaded as it was
+       chosen. What is left is to refuse to submit while anything is still
+       in flight or has failed, rather than silently dropping it. */
+    var all = files.images.concat(files.videos);
+    if (all.some(function (e) { return e.status === 'uploading'; })) {
+      submitFailed('Some photos or videos are still uploading. Please wait for them to finish.');
+      return;
+    }
+    if (all.some(function (e) { return e.status === 'error'; })) {
+      submitFailed('Some photos or videos failed to upload. Tap Retry on them, or remove them, then submit again.');
+      return;
+    }
+
     nextBtn.disabled = true;
     nextBtn.firstChild.nodeValue = 'Submitting… ';
 
-    var imageUploads = files.images.map(function (e) { return uploadOne(e.file, 'property-image'); });
-    var videoUploads = files.videos.map(function (e) { return uploadOne(e.file, 'property-video'); });
-    var cnicUploads = [];
-    if (state.wantVerification && files.cnicFront) cnicUploads.push(uploadOne(files.cnicFront, 'cnic').then(function (r) { return { side: 'front', key: r.key }; }));
-    if (state.wantVerification && files.cnicBack) cnicUploads.push(uploadOne(files.cnicBack, 'cnic').then(function (r) { return { side: 'back', key: r.key }; }));
+    var media = all
+      .filter(function (e) { return e.status === 'done' && e.key; })
+      .map(function (e) { return { key: e.key, publicUrl: e.publicUrl, kind: e.mediaKind }; });
 
-    Promise.all(imageUploads.concat(videoUploads).concat(cnicUploads))
-      .then(function (results) {
-        var media = results.slice(0, imageUploads.length + videoUploads.length);
-        var cnicResults = results.slice(imageUploads.length + videoUploads.length);
+    /* CNIC is the one upload that still happens here: it is optional, it
+       is never shown as a thumbnail, and it must not be uploaded until
+       the owner has actually committed to submitting. */
+    var cnicUploads = [];
+    if (state.wantVerification && files.cnicFront) {
+      cnicUploads.push(uploadOne(files.cnicFront, 'cnic').then(function (r) { return { side: 'front', key: r.key }; }));
+    }
+    if (state.wantVerification && files.cnicBack) {
+      cnicUploads.push(uploadOne(files.cnicBack, 'cnic').then(function (r) { return { side: 'back', key: r.key }; }));
+    }
+
+    Promise.all(cnicUploads)
+      .then(function (cnicResults) {
         var verification = null;
         if (cnicResults.length) {
           verification = {};
@@ -809,7 +964,13 @@
         }
 
         return win.fetch(CFG.routes.api.submitProperty, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          method: 'POST',
+          /* Explicit, because this request's OWNER SESSION is what binds
+             the property to the person submitting it. Relying on the
+             default here means the binding depends on a browser default
+             rather than on something this code states. */
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             draftId: draftId, property: state,
             owner: { name: state.ownerName, whatsapp: state.whatsapp, phone: state.phone, email: state.email },
@@ -817,13 +978,24 @@
           })
         });
       })
-      .then(function (r) { if (!r.ok) throw new Error('submit failed'); return r.json(); })
-      .then(function (res) { showDone(res.ref || localRef); })
-      .catch(function () {
-        /* API unreachable or not yet deployed — fall back to the
-           original local-only queue so the wizard still completes. */
-        queueLocally(localRef);
-        showDone(localRef);
+      .then(function (r) {
+        return r.json().catch(function () { return null; }).then(function (data) {
+          if (!r.ok) throw new Error((data && data.error) || 'We could not save your property (' + r.status + ').');
+          if (!data || !data.ref) throw new Error('The server did not confirm your property. Please try again.');
+          return data;
+        });
+      })
+      /* ONLY a real, server-issued reference reaches the success screen.
+         This used to fall back to a locally invented reference on any
+         failure — which produced a "Property Received" page, with a
+         plausible reference number, for a property that had never been
+         saved. That is precisely why submissions were not appearing in My
+         Properties: there was nothing to appear. A failure is now shown
+         as a failure, and the owner's draft is kept so they can retry. */
+      .then(function (res) { showDone(res.ref); })
+      .catch(function (err) {
+        submitFailed((err && err.message) ||
+          'We could not reach MakanOnRent. Your details are saved on this device — please try again.');
       });
   }
 
@@ -854,6 +1026,14 @@
     });
     dlg.open();
   }
+
+  /* Test seam, same pattern as MOR_WZ_SYNC_FEATS above: the submission
+     path is what tests/submit-loop.html has to exercise, and walking all
+     ten steps through the DOM would test the stepper rather than the
+     submit. Exposes state and submit only — no behaviour depends on
+     these, and nothing in the product reads them. */
+  win.MOR_WZ_STATE = state;
+  win.MOR_WZ_SUBMIT = submit;
 
   /* ── boot ───────────────────────────────────────────────── */
   var draft = readDraft();

@@ -422,11 +422,16 @@
       notice('This is handled by the MakanOnRent team for now — contact us and we will update the listing.');
       return;
     }
+    /* Edit / Fix sent the owner to submit.html?ref=…&mode=edit — but the
+       wizard has never read either parameter, so it opened a BLANK form.
+       Anything the owner then filled in was submitted as a SECOND
+       property, not a correction of this one. There is no owner-side
+       update endpoint to call instead, so until one exists this says so
+       rather than quietly duplicating their listing. */
     if (act === 'edit' || act === 'fix') {
-      /* The wizard reopens in edit mode once the owner API exists.
-         Until then the reference travels with the request. */
-      win.location.assign(CFG.routes.submitPage + '?ref=' + encodeURIComponent(id) +
-        (act === 'fix' ? '&mode=resubmit' : '&mode=edit'));
+      notice('Editing a submitted property is not available yet — contact the MakanOnRent team with reference ' +
+             id + ' and we will update it for you.');
+      return;
     }
   });
 

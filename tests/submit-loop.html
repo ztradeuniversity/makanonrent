@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Submit Loop — MakanOnRent</title>
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; max-width: 1000px; margin: 40px auto; padding: 0 20px; color: #16211C; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: #6B7A73; margin-bottom: 20px; }
+  #summary { padding: 14px 18px; border-radius: 12px; font-weight: 700; margin-bottom: 18px; }
+  .ok { background: #E7F3EE; border: 1px solid #0E5C44; color: #0E5C44; }
+  .bad { background: #FBEAE8; border: 1px solid #C0392B; color: #C0392B; }
+  .grp { margin: 18px 0 6px; font-weight: 800; font-size: 12px; letter-spacing: .6px; text-transform: uppercase; color: #6B7A73; }
+  li { list-style: none; padding: 4px 0; border-bottom: 1px solid #EEE; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .p { color: #0E5C44; } .f { color: #C0392B; font-weight: 700; }
+  iframe { width: 100%; height: 420px; border: 1px solid #DDD; border-radius: 10px; }
+  #stage { margin-bottom: 18px; }
+  .note { background: #FFF8E6; border: 1px solid #E4C766; border-radius: 10px; padding: 10px 14px; margin: 14px 0; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<h1>Submit loop — executable tests</h1>
+<p class="sub">
+  Boots the real <code>submit.html</code> wizard with only the network stubbed. The assertion
+  that matters: a submission that does not reach the server must NEVER produce a reference
+  number or a success screen — that is what made a failed submit look identical to a saved one.
+</p>
+
+<div id="summary">Running…</div>
+<div id="stage"></div>
+<div id="out"></div>
+
+<script type="module">
+var results = [];
+function group(n) { results.push({ group: n }); }
+function check(desc, got, want) {
+  results.push({ desc: desc, pass: JSON.stringify(got) === JSON.stringify(want), got: got, want: want });
+}
+function ok(desc, cond, got) { results.push({ desc: desc, pass: !!cond, got: got }); }
+function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+var notes = [];
+
+/* ── boot one wizard with a scripted network ──────────────────────── */
+function boot(scenario) {
+  return new Promise(function (resolve) {
+    var f = document.createElement('iframe');
+    f.src = 'submit-loop-harness.html?scenario=' + encodeURIComponent(scenario);
+    f.addEventListener('load', function () {
+      var tries = 0;
+      (function ready() {
+        var w = f.contentWindow;
+        if ((w && w.__READY__) || ++tries > 160) resolve({ win: w, doc: f.contentDocument, frame: f });
+        else setTimeout(ready, 50);
+      })();
+    });
+    document.getElementById('stage').appendChild(f);
+  });
+}
+
+function file(w, name, type, size) {
+  var bytes = new Uint8Array(size || 64);
+  return new w.File([bytes], name, { type: type });
+}
+
+/* Drives the real change handler on the real file input. */
+function addImages(ctx, names) {
+  var dt = new ctx.win.DataTransfer();
+  names.forEach(function (n) { dt.items.add(file(ctx.win, n, 'image/png', 128)); });
+  var input = ctx.doc.getElementById('imgInput');
+  input.files = dt.files;
+  input.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
+}
+
+/* ══ 1. Upload progress is real ═══════════════════════════════════ */
+group('Image upload progress');
+
+var a = await boot('ok');
+addImages(a, ['one.png', 'two.png']);
+await wait(60);
+
+var thumbs = a.doc.querySelectorAll('#imgThumbs .thumb');
+check('both files produce a tile', thumbs.length, 2);
+ok('a tile starts in the uploading state',
+   a.doc.querySelectorAll('#imgThumbs .thumb.is-uploading').length === 2,
+   a.doc.getElementById('imgHint').textContent);
+ok('a progress bar is shown while uploading', !!a.doc.querySelector('#imgThumbs .up-bar'));
+ok('the hint reports uploading', /uploading/i.test(a.doc.getElementById('imgHint').textContent),
+   a.doc.getElementById('imgHint').textContent);
+ok('a file is NOT marked uploaded merely because it was chosen',
+   a.doc.querySelectorAll('#imgThumbs .thumb.is-done').length === 0);
+
+/* The harness releases progress events then completes the PUT. */
+a.win.__EMIT_PROGRESS__(50);
+await wait(40);
+var txt = a.doc.querySelector('#imgThumbs .up-txt').textContent;
+ok('the percentage reflects real bytes sent', /50%/.test(txt), txt);
+ok('the bar width tracks the percentage',
+   a.doc.querySelector('#imgThumbs .up-bar i').style.width === '50%',
+   a.doc.querySelector('#imgThumbs .up-bar i').style.width);
+
+a.win.__FINISH_UPLOADS__();
+await wait(120);
+check('both complete', a.doc.querySelectorAll('#imgThumbs .thumb.is-done').length, 2);
+ok('completion shows a tick', !!a.doc.querySelector('#imgThumbs .up-ok svg'));
+ok('completion is labelled', /Uploaded/i.test(a.doc.querySelector('#imgThumbs .up-ok .up-txt').textContent));
+ok('the hint reports all uploaded', /all uploaded/i.test(a.doc.getElementById('imgHint').textContent),
+   a.doc.getElementById('imgHint').textContent);
+ok('completion came from the PUT response, not the file picker',
+   a.win.__PUTS__.length === 2, a.win.__PUTS__.length);
+
+/* ══ 2. Failure and retry ═════════════════════════════════════════ */
+group('Upload failure and retry');
+
+var b = await boot('put-fails');
+addImages(b, ['bad.png']);
+await wait(40);
+b.win.__FINISH_UPLOADS__();
+await wait(120);
+
+check('a failed upload is marked failed', b.doc.querySelectorAll('#imgThumbs .thumb.is-error').length, 1);
+ok('the failure is visible to the owner',
+   /failed/i.test(b.doc.querySelector('#imgThumbs .up-err .up-txt').textContent));
+ok('a retry is offered', !!b.doc.querySelector('#imgThumbs .up-retry'));
+ok('the hint reports the failure', /failed/i.test(b.doc.getElementById('imgHint').textContent),
+   b.doc.getElementById('imgHint').textContent);
+
+b.win.__SCENARIO__ = 'ok';
+b.doc.querySelector('#imgThumbs .up-retry').click();
+await wait(40);
+b.win.__FINISH_UPLOADS__();
+await wait(120);
+check('retry succeeds', b.doc.querySelectorAll('#imgThumbs .thumb.is-done').length, 1);
+check('no duplicate tile is created by retry', b.doc.querySelectorAll('#imgThumbs .thumb').length, 1);
+
+/* ══ 3. Limits still hold ═════════════════════════════════════════ */
+group('Limits');
+
+var c = await boot('ok');
+var many = [];
+for (var i = 0; i < 25; i++) many.push('p' + i + '.png');
+addImages(c, many);
+await wait(60);
+check('the 20-image limit is enforced', c.doc.querySelectorAll('#imgThumbs .thumb').length, 20);
+c.win.__FINISH_UPLOADS__();
+await wait(200);
+check('all 20 upload', c.doc.querySelectorAll('#imgThumbs .thumb.is-done').length, 20);
+
+/* ══ 4. THE REPORTED BUG — a failed submit must not look successful ══ */
+group('Failed submit is never a success');
+
+var d = await boot('submit-500');
+d.win.__FILL_AND_SUBMIT__();
+await wait(400);
+
+ok('the success screen is NOT shown', d.doc.getElementById('doneStep').hidden,
+   'doneStep.hidden=' + d.doc.getElementById('doneStep').hidden);
+check('no reference number is displayed', d.doc.getElementById('refNo').textContent, '—');
+ok('the failure is reported to the owner',
+   d.doc.getElementById('errSubmit').textContent.length > 0,
+   d.doc.getElementById('errSubmit').textContent);
+ok('the server\'s reason is shown, not a generic one',
+   /area manager unavailable/i.test(d.doc.getElementById('errSubmit').textContent),
+   d.doc.getElementById('errSubmit').textContent);
+ok('the owner can try again', !d.doc.getElementById('nextBtn').disabled);
+ok('the draft is kept so nothing is retyped',
+   !!d.win.localStorage.getItem(d.win.MOR_CONFIG.storage.submitDraft));
+ok('no fake pending submission is queued locally',
+   !d.win.localStorage.getItem(d.win.MOR_CONFIG.storage.submissions),
+   d.win.localStorage.getItem(d.win.MOR_CONFIG.storage.submissions));
+
+var e = await boot('submit-network-down');
+e.win.__FILL_AND_SUBMIT__();
+await wait(400);
+ok('a network failure also shows no success screen', e.doc.getElementById('doneStep').hidden);
+check('and no reference', e.doc.getElementById('refNo').textContent, '—');
+ok('and explains itself', e.doc.getElementById('errSubmit').textContent.length > 0,
+   e.doc.getElementById('errSubmit').textContent);
+
+/* A 200 with no ref is still not a success. */
+var f2 = await boot('submit-no-ref');
+f2.win.__FILL_AND_SUBMIT__();
+await wait(400);
+ok('a 200 without a reference is treated as failure', f2.doc.getElementById('doneStep').hidden);
+check('still no reference shown', f2.doc.getElementById('refNo').textContent, '—');
+
+/* ══ 5. A real success still works ════════════════════════════════ */
+group('Successful submit');
+
+var g = await boot('ok');
+g.win.__FILL_AND_SUBMIT__();
+await wait(400);
+
+ok('the success screen is shown', !g.doc.getElementById('doneStep').hidden);
+check('the reference is the one the SERVER issued',
+      g.doc.getElementById('refNo').textContent, 'MOR-SRV-260820-0001');
+ok('the reference is not locally generated',
+   g.doc.getElementById('refNo').textContent.indexOf('MOR-SRV') === 0);
+ok('the submit request carried credentials',
+   g.win.__SUBMIT_INIT__ && g.win.__SUBMIT_INIT__.credentials === 'same-origin',
+   g.win.__SUBMIT_INIT__ && g.win.__SUBMIT_INIT__.credentials);
+ok('the draft was cleared on real success',
+   !g.win.localStorage.getItem(g.win.MOR_CONFIG.storage.submitDraft));
+
+/* ══ 6. Submitting is blocked while media is unresolved ═══════════ */
+group('Media must be settled before submit');
+
+var h = await boot('ok');
+addImages(h, ['slow.png']);
+await wait(40);
+h.win.__FILL_AND_SUBMIT__();
+await wait(200);
+ok('submit is refused while an upload is in flight',
+   h.doc.getElementById('doneStep').hidden &&
+   /still uploading/i.test(h.doc.getElementById('errSubmit').textContent),
+   h.doc.getElementById('errSubmit').textContent);
+ok('no submit request was sent', !h.win.__SUBMIT_INIT__);
+
+var k = await boot('put-fails');
+addImages(k, ['bad.png']);
+await wait(40);
+k.win.__FINISH_UPLOADS__();
+await wait(120);
+k.win.__FILL_AND_SUBMIT__();
+await wait(200);
+ok('submit is refused while an upload has failed',
+   k.doc.getElementById('doneStep').hidden &&
+   /failed to upload/i.test(k.doc.getElementById('errSubmit').textContent),
+   k.doc.getElementById('errSubmit').textContent);
+ok('and nothing was sent', !k.win.__SUBMIT_INIT__);
+
+/* Uploaded media travels with the submission by KEY, not by file. */
+var m = await boot('ok');
+addImages(m, ['a.png', 'b.png']);
+await wait(40);
+m.win.__FINISH_UPLOADS__();
+await wait(150);
+m.win.__FILL_AND_SUBMIT__();
+await wait(400);
+var body = m.win.__SUBMIT_BODY__;
+check('both uploaded files are attached to the submission', body.media.length, 2);
+ok('each carries the storage key the PUT confirmed',
+   body.media.every(function (x) { return typeof x.key === 'string' && x.key.length > 0; }),
+   JSON.stringify(body.media));
+ok('media is not re-uploaded at submit time', m.win.__PUTS__.length === 2, m.win.__PUTS__.length);
+
+/* ══ 7. Labels ════════════════════════════════════════════════════ */
+group('Form clarity');
+
+var src = await fetch('../web/submit.html').then(function (r) { return r.text(); });
+ok('road width says it is the front road', /Front road width/.test(src));
+ok('and explains which road that is',
+   /directly in front of your property's main entrance/i.test(src));
+ok('the size unit sits inside the size control',
+   /control-size[\s\S]{0,400}unitSeg/.test(src));
+ok('the standalone "Size unit" legend is gone', !/wz-legend">Size unit/.test(src));
+var wiz = await fetch('../web/assets/js/wizard.js').then(function (r) { return r.text(); });
+ok('the walking-distance tag names the main road',
+   wiz.indexOf("'Main Road Walking Distance'") > -1);
+ok('the bare "Walking Distance" tag is gone', wiz.indexOf("'Walking Distance'") === -1);
+/* Comments stripped: the removal is recorded in a comment that names the
+   function, and that note is not a call site. */
+var wizCode = wiz.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+ok('the local fake-reference fallback is gone', wizCode.indexOf('queueLocally') === -1);
+ok('the success screen only ever shows a server reference',
+   /showDone\(res\.ref\)/.test(wizCode) && !/showDone\(localRef\)/.test(wizCode));
+
+var idx = await fetch('../web/index.html').then(function (r) { return r.text(); });
+/* The anchor wraps an inline SVG, so the label is well past 200 chars. */
+ok('the homepage offers My Properties',
+   /href="dashboard\.html"[\s\S]*?My Properties/.test(idx));
+ok('it sits in the existing header, not a new bar',
+   /head-right[\s\S]*?href="dashboard\.html"/.test(idx));
+
+/* ── render ───────────────────────────────────────────────────────── */
+notes.push('The network is stubbed here. What is proven is the wizard\'s behaviour: real byte-level progress, completion only on an acknowledged PUT, and no success screen or reference without a server-issued ref. Whether the live API itself succeeds is a production question this environment cannot reach.');
+
+var pass = results.filter(function (x) { return x.desc && x.pass; }).length;
+var fail = results.filter(function (x) { return x.desc && !x.pass; }).length;
+var s = document.getElementById('summary');
+s.className = fail ? 'bad' : 'ok';
+s.textContent = fail ? (fail + ' failed / ' + (pass + fail) + ' assertions') : (pass + ' assertions passed');
+document.getElementById('out').innerHTML =
+  '<div class="note">' + notes.join('<br>') + '</div>' +
+  results.map(function (x) {
+    if (x.group) return '<div class="grp">' + x.group + '</div>';
+    return '<li class="' + (x.pass ? 'p' : 'f') + '">' + (x.pass ? '✓ ' : '✗ ') + x.desc +
+      (x.pass ? '' : ' — got ' + JSON.stringify(x.got) +
+        (x.want !== undefined ? ', want ' + JSON.stringify(x.want) : '')) + '</li>';
+  }).join('');
+window.__RESULT__ = { pass: pass, fail: fail, notes: notes,
+  failures: results.filter(function (x) { return x.desc && !x.pass; })
+    .map(function (x) { return x.desc + ' — got ' + JSON.stringify(x.got); }) };
+</script>
+</body>
+</html>

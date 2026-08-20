@@ -130,27 +130,31 @@
           </div>
           <span class="hint">This helps tenants find the house easily.</span>
         </div>
-        <div class="wz-row">
-          <div class="wz-field">
-            <label for="wRoad">Road width</label>
-            <div class="control">
-              <input id="wRoad" type="text" inputmode="numeric" placeholder="e.g. 40" />
-              <span class="suffix">Feet</span>
-            </div>
-          </div>
-          <div class="wz-field">
-            <label for="wSize">Property size</label>
-            <div class="control">
-              <input id="wSize" type="text" inputmode="numeric" placeholder="e.g. 5" />
-            </div>
-          </div>
-        </div>
+        <!-- "Road width" alone was read as the nearest road of any kind.
+             It means the road the front door opens onto, so the label and
+             the helper line now say exactly that. The stored field
+             (property.roadWidth → properties.road_width_ft) is unchanged. -->
         <div class="wz-field">
-          <span class="wz-legend">Size unit</span>
-          <div class="seg" id="unitSeg" role="group" aria-label="Size unit">
-            <button type="button" data-unit="marla" aria-pressed="true">Marla</button>
-            <button type="button" data-unit="sqft" aria-pressed="false">Square Feet</button>
+          <label for="wRoad">Front road width</label>
+          <div class="control">
+            <input id="wRoad" type="text" inputmode="numeric" placeholder="e.g. 40" />
+            <span class="suffix">Feet</span>
           </div>
+          <span class="hint">The width of the road directly in front of your property's main entrance — not the nearest main road.</span>
+        </div>
+        <!-- Size and its unit sit in ONE control. Separated, the unit
+             buttons sat directly under the road-width row and read as if
+             they belonged to it. -->
+        <div class="wz-field">
+          <label for="wSize">Property size</label>
+          <div class="control control-size">
+            <input id="wSize" type="text" inputmode="numeric" placeholder="e.g. 5" />
+            <div class="seg seg-inline" id="unitSeg" role="group" aria-label="Property size unit">
+              <button type="button" data-unit="marla" aria-pressed="true">Marla</button>
+              <button type="button" data-unit="sqft" aria-pressed="false">Sq Ft</button>
+            </div>
+          </div>
+          <span class="hint">Choose the unit this size is measured in.</span>
           <p class="err" id="errSize"></p>
         </div>
       </div>
@@ -430,6 +434,11 @@
 </main>
 
 <nav class="wz-nav" id="wzNav" aria-label="Wizard navigation">
+  <!-- A submission that does not reach the server is reported here.
+       Previously any failure was swallowed and the success screen shown
+       regardless, so the owner had no way to know their property had not
+       been saved. -->
+  <p class="wz-submit-err" id="errSubmit" role="alert" aria-live="assertive"></p>
   <div class="wz-nav-in">
     <button class="btn-ghost" type="button" id="backBtn" hidden>Back</button>
     <button class="btn-next" type="button" id="nextBtn" disabled>

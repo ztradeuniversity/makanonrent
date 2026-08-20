@@ -87,6 +87,39 @@ img, svg { display: block; max-width: 100%; }
 .head-cta { height: 42px; padding: 0 18px; font-size: 13.5px; }
 .head-cta svg { width: 14px; height: 14px; }
 
+/* Secondary header link (My Properties). Quiet next to the gold CTA —
+   returning owners look for it, new visitors should not be pulled away
+   from the search. */
+.head-link {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 42px; padding: 0 14px; border-radius: 100px;
+  color: rgba(255, 255, 255, .88); text-decoration: none;
+  font-size: 13.5px; font-weight: 700;
+  border: 1.5px solid rgba(255, 255, 255, .22);
+  transition: border-color .2s var(--ease), color .2s var(--ease), background .2s var(--ease);
+}
+.head-link:hover {
+  color: #fff; border-color: var(--gold); background: rgba(200, 162, 74, .12);
+}
+.head-link svg { width: 15px; height: 15px; flex-shrink: 0; }
+
+/* .head-right had no layout of its own — with one child that never
+   mattered, but two inline-flex anchors in a narrow box stack into a
+   double-height header. An explicit row fixes the stacking. */
+.head-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+
+@media (max-width: 560px) {
+  /* Brand and actions get a row each rather than being crushed into
+     one: at this width the two together are wider than the screen, and
+     a tidy second row beats a squeezed first one. */
+  .head-inner { flex-wrap: wrap; row-gap: 10px; }
+  .head-right { width: 100%; justify-content: flex-end; gap: 8px; }
+  /* The label goes, the house mark stays — the icon alone still reads
+     as "my listings" and keeps the row short. */
+  .head-link { padding: 0 13px; gap: 0; font-size: 0; }
+  .head-link svg { width: 17px; height: 17px; }
+}
+
 /* ── HERO ───────────────────────────────────────────────────── */
 .hero {
   position: relative;

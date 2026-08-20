@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Submit wizard harness</title>
+</head>
+<body>
+<!-- Loads the REAL submit.html markup and scripts at runtime so this
+     harness cannot drift from the page it tests. Only the network is
+     replaced: fetch (presign / submit / owner session) and
+     XMLHttpRequest (the R2 PUT, which is where upload progress comes
+     from). -->
+<script>
+window.__PUTS__ = [];
+window.__SUBMIT_INIT__ = null;
+window.__SUBMIT_BODY__ = null;
+
+(function () {
+  var params = new URLSearchParams(location.search);
+  window.__SCENARIO__ = params.get('scenario') || 'ok';
+
+  /* Uploads are held open until the test releases them, so a test can
+     observe the in-flight state instead of racing it. */
+  var pending = [];
+  window.__EMIT_PROGRESS__ = function (pct) {
+    pending.forEach(function (p) { p.progress(pct); });
+  };
+  window.__FINISH_UPLOADS__ = function () {
+    var list = pending.slice();
+    pending.length = 0;
+    list.forEach(function (p) { p.finish(); });
+  };
+
+  function reply(body, status) {
+    return Promise.resolve({
+      ok: (status || 200) < 400,
+      status: status || 200,
+      json: function () { return Promise.resolve(body); }
+    });
+  }
+
+  var realFetch = window.fetch.bind(window);
+
+  window.fetch = function (url, init) {
+    var u = String(url);
+
+    if (u.indexOf('/api/owner/me') === 0) {
+      return reply({ signedIn: true, owner: { name: 'Test Owner', email: 'owner@gmail.com', phone: null } });
+    }
+    if (u.indexOf('/api/uploads/presign') === 0) {
+      if (window.__SCENARIO__ === 'presign-fails') return reply({ error: 'no' }, 500);
+      var n = window.__PUTS__.length + pending.length;
+      return reply({
+        uploadUrl: 'https://r2.test/upload/' + n,
+        key: 'property/draft/' + n + '.png',
+        publicUrl: 'https://media.test/' + n + '.png'
+      });
+    }
+    if (u.indexOf('/api/properties/submit') === 0) {
+      window.__SUBMIT_INIT__ = init || {};
+      try { window.__SUBMIT_BODY__ = JSON.parse(init.body); } catch (e) {}
+      if (window.__SCENARIO__ === 'submit-network-down') return Promise.reject(new Error('offline'));
+      if (window.__SCENARIO__ === 'submit-500') {
+        return reply({ error: 'Area manager unavailable for this location.' }, 500);
+      }
+      if (window.__SCENARIO__ === 'submit-no-ref') return reply({ ok: true });
+      return reply({ ref: 'MOR-SRV-260820-0001', status: 'pending_review',
+                     propertyId: 'p1', listingId: 'l1' }, 201);
+    }
+    if (u.indexOf('/api/locations') === 0) return reply({ bank: { version: 1, entries: [] } });
+    return realFetch(url, init);
+  };
+
+  /* The R2 PUT. Progress events are what the tile's percentage is built
+     from, so they are driven explicitly rather than simulated on a timer. */
+  function FakeXHR() {
+    var self = this;
+    this.upload = {
+      _h: {},
+      addEventListener: function (t, fn) { this._h[t] = fn; }
+    };
+    this._h = {};
+    this.status = 0;
+    this.addEventListener = function (t, fn) { self._h[t] = fn; };
+    this.open = function (m, u) { self._method = m; self._url = u; };
+    this.setRequestHeader = function () {};
+    this.abort = function () { if (self._h.abort) self._h.abort(); };
+    this.send = function (file) {
+      pending.push({
+        progress: function (pct) {
+          if (self.upload._h.progress) {
+            self.upload._h.progress({ lengthComputable: true, loaded: pct, total: 100 });
+          }
+        },
+        finish: function () {
+          if (window.__SCENARIO__ === 'put-fails') {
+            self.status = 500;
+            if (self._h.load) self._h.load();
+            return;
+          }
+          window.__PUTS__.push({ url: self._url, name: file && file.name });
+          self.status = 200;
+          if (self._h.load) self._h.load();
+        }
+      });
+    };
+  }
+  window.XMLHttpRequest = FakeXHR;
+})();
+</script>
+
+<script type="module">
+var html = await fetch('../web/submit.html').then(function (r) { return r.text(); });
+var doc = new DOMParser().parseFromString(html, 'text/html');
+
+Array.prototype.forEach.call(doc.querySelectorAll('link[rel=stylesheet]'), function (l) {
+  var link = document.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = '../web/' + l.getAttribute('href');
+  document.head.appendChild(link);
+});
+
+var scripts = Array.prototype.map.call(doc.querySelectorAll('body script[src]'), function (s) {
+  return '../web/' + s.getAttribute('src');
+});
+Array.prototype.forEach.call(doc.querySelectorAll('body script'), function (s) { s.remove(); });
+document.body.insertAdjacentHTML('beforeend', doc.body.innerHTML);
+
+for (var i = 0; i < scripts.length; i++) {
+  await new Promise(function (resolve) {
+    var el = document.createElement('script');
+    el.src = scripts[i];
+    el.async = false;
+    el.onload = resolve;
+    el.onerror = resolve;   /* a missing optional script must not stall the harness */
+    document.body.appendChild(el);
+  });
+}
+
+/* Fills the wizard's state directly and calls the real submit path.
+   Walking all ten steps through the UI would test the stepper, not the
+   submission — and the stepper is not what is under test here. */
+window.__FILL_AND_SUBMIT__ = function () {
+  var s = window.MOR_WZ_STATE;
+  s.signedIn = true;
+  s.category = 'homes'; s.type = 'house';
+  s.city = 'lahore'; s.cityName = 'Lahore';
+  s.area = 'johar-town'; s.areaName = 'Johar Town';
+  s.mainArea = 'johar-town'; s.mainAreaName = 'Johar Town';
+  s.size = '5'; s.sizeUnit = 'marla';
+  s.beds = 3; s.baths = 3; s.rent = '95000'; s.advance = '190000';
+  s.ownerName = 'Test Owner'; s.whatsapp = '03001234567'; s.phone = '03001234567';
+  s.email = 'owner@gmail.com';
+  window.MOR_WZ_SUBMIT();
+};
+
+window.__READY__ = true;
+</script>
+</body>
+</html>
