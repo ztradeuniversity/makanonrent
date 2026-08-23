@@ -73,6 +73,91 @@ function addImages(ctx, names) {
   input.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
 }
 
+function addVideos(ctx, names) {
+  var dt = new ctx.win.DataTransfer();
+  names.forEach(function (n) { dt.items.add(file(ctx.win, n, 'video/mp4', 256)); });
+  var input = ctx.doc.getElementById('vidInput');
+  input.files = dt.files;
+  input.dispatchEvent(new ctx.win.Event('change', { bubbles: true }));
+}
+
+/* ══ 0. Local preview — the exact production symptom ═══════════════
+   The reported bug was a blank tile: upload state rendered correctly,
+   but no photo/video was ever visible behind it. Root cause was CSP —
+   img-src/media-src did not list blob:, and URL.createObjectURL()
+   produces a blob: URL, so the browser silently dropped every preview
+   element without logging it as a script/connect violation. These
+   assertions cover the two things that must both hold: the preview
+   source is set correctly by the wizard, AND the CSP this page will
+   actually be served under allows that source to load. Testing only
+   the CSP text would miss a code regression; testing only the src
+   would miss the exact bug that shipped. */
+group('Local preview (image + video)');
+
+var pv = await boot('ok');
+addImages(pv, ['photo.png']);
+await wait(30);
+var pvImg = pv.doc.querySelector('#imgThumbs img');
+ok('an <img> exists the instant a file is chosen, before any upload completes', !!pvImg);
+ok('its source is a local object URL, not a remote one',
+   pvImg && pvImg.getAttribute('src').indexOf('blob:') === 0, pvImg && pvImg.getAttribute('src'));
+ok('the preview is present while uploading (dimmed, not removed)',
+   pv.doc.querySelector('#imgThumbs .thumb.is-uploading img') === pvImg);
+
+addVideos(pv, ['walkthrough.mp4']);
+await wait(30);
+var pvVid = pv.doc.querySelector('#vidThumbs video');
+ok('a <video> exists the instant a video is chosen', !!pvVid);
+ok('its source is also a local object URL',
+   pvVid && pvVid.getAttribute('src').indexOf('blob:') === 0, pvVid && pvVid.getAttribute('src'));
+
+/* renderMedia() rebuilds the tile's innerHTML on every state change (see
+   web/assets/js/wizard.js) — a new <img> node each time is correct
+   behaviour, so the DOM node itself is expected to change. What must NOT
+   change is the src: the same blob: URL, not a fresh or different one. */
+var pvImgSrc = pvImg.getAttribute('src'), pvVidSrc = pvVid.getAttribute('src');
+pv.win.__FINISH_UPLOADS__();
+await wait(150);
+ok('the image preview URL is UNCHANGED after a successful upload',
+   pv.doc.querySelector('#imgThumbs img').getAttribute('src') === pvImgSrc,
+   pv.doc.querySelector('#imgThumbs img').getAttribute('src'));
+ok('the video preview URL is unchanged after a successful upload',
+   pv.doc.querySelector('#vidThumbs video').getAttribute('src') === pvVidSrc,
+   pv.doc.querySelector('#vidThumbs video').getAttribute('src'));
+ok('the uploaded state does not replace the src with the R2/public URL',
+   pv.doc.querySelector('#imgThumbs img').getAttribute('src').indexOf('blob:') === 0);
+
+var pf = await boot('put-fails');
+addImages(pf, ['fails.png']);
+await wait(30);
+var pfSrc = pf.doc.querySelector('#imgThumbs img').getAttribute('src');
+pf.win.__FINISH_UPLOADS__();
+await wait(150);
+ok('the preview survives a failed upload too — the owner can still see what they selected',
+   pf.doc.querySelector('#imgThumbs img') !== null &&
+   pf.doc.querySelector('#imgThumbs img').getAttribute('src') === pfSrc,
+   pf.doc.querySelector('#imgThumbs img') && pf.doc.querySelector('#imgThumbs img').getAttribute('src'));
+
+/* The CSP this exact page is served under, read the same way the browser
+   reads it — via the response header, not by re-parsing web/_headers. */
+var cspRes = await fetch('../web/submit.html');
+var csp = cspRes.headers.get('content-security-policy');
+group('CSP permits the preview source (production root cause)');
+if (!csp) {
+  notes.push('This test server does not apply web/_headers (Cloudflare Pages does, in production). CSP text is verified directly from the header file instead.');
+  csp = await fetch('../web/_headers').then(function (r) { return r.text(); });
+}
+function directive(name) {
+  var m = csp.match(new RegExp(name + '\\s+([^;]+)'));
+  return m ? m[1].trim() : '';
+}
+ok('img-src allows blob: (fixes the broken photo preview)',
+   directive('img-src').indexOf('blob:') > -1, directive('img-src'));
+ok('media-src allows blob: (fixes the broken video preview)',
+   directive('media-src').indexOf('blob:') > -1, directive('media-src'));
+ok('img-src still requires a scheme — blob: was added, not "unsafe" opened up',
+   directive('img-src').indexOf("'self'") > -1);
+
 /* ══ 1. Upload progress is real ═══════════════════════════════════ */
 group('Image upload progress');
 
@@ -134,6 +219,38 @@ await wait(120);
 check('retry succeeds', b.doc.querySelectorAll('#imgThumbs .thumb.is-done').length, 1);
 check('no duplicate tile is created by retry', b.doc.querySelectorAll('#imgThumbs .thumb').length, 1);
 
+/* This is the exact production incident: presign itself fails (a
+   deployment missing an R2 secret), not the PUT. Before this fix that
+   real reason was discarded and replaced with a bare "presign failed" —
+   indistinguishable from a dead network. */
+group('Real failure reasons are never discarded');
+
+var p = await boot('presign-fails');
+addImages(p, ['env-missing.png']);
+await wait(120);
+
+check('a presign failure is still shown as a failed tile',
+      p.doc.querySelectorAll('#imgThumbs .thumb.is-error').length, 1);
+ok('the owner-facing label stays short, not a raw server message',
+   p.doc.querySelector('#imgThumbs .up-err .up-txt').textContent.trim() === 'Upload failed',
+   p.doc.querySelector('#imgThumbs .up-err .up-txt').textContent);
+var errTile = p.doc.querySelector('#imgThumbs .thumb.is-error .up-err');
+ok('the REAL server error is retrievable, not swallowed',
+   errTile.getAttribute('title').indexOf('R2_ACCOUNT_ID') > -1 &&
+   errTile.getAttribute('title').indexOf('R2_BUCKET_NAME') > -1,
+   errTile.getAttribute('title'));
+ok('retry is still offered for a presign failure', !!p.doc.querySelector('#imgThumbs .up-retry'));
+
+/* A PUT-level failure (not presign) must also carry its real reason. */
+var q = await boot('put-fails');
+addImages(q, ['put-bad.png']);
+await wait(40);
+q.win.__FINISH_UPLOADS__();
+await wait(150);
+var putErrTile = q.doc.querySelector('#imgThumbs .thumb.is-error .up-err');
+ok('a PUT failure states the HTTP status, not a generic message',
+   /\(500\)/.test(putErrTile.getAttribute('title')), putErrTile.getAttribute('title'));
+
 /* ══ 3. Limits still hold ═════════════════════════════════════════ */
 group('Limits');
 
@@ -184,6 +301,33 @@ f2.win.__FILL_AND_SUBMIT__();
 await wait(400);
 ok('a 200 without a reference is treated as failure', f2.doc.getElementById('doneStep').hidden);
 check('still no reference shown', f2.doc.getElementById('refNo').textContent, '—');
+
+/* The exact production incident: property_media.visibility missing from
+   the live schema. Proven live (raw Postgres "column does not exist" on
+   the read path) to be a genuinely absent column, not a stale PostgREST
+   cache — so the fix is applying migration 0009, not a code change. What
+   IS this repo's responsibility is that the failure surfaces honestly
+   rather than showing "Property Received" for data that was never
+   actually saved. */
+var g2 = await boot('submit-visibility-missing');
+addImages(g2, ['a.png']);
+await wait(40);
+g2.win.__FINISH_UPLOADS__();
+await wait(150);
+g2.win.__FILL_AND_SUBMIT__();
+await wait(400);
+
+ok('a schema-cache failure never shows the success screen', g2.doc.getElementById('doneStep').hidden);
+check('and no reference is fabricated', g2.doc.getElementById('refNo').textContent, '—');
+ok('the real database error reaches the owner-visible message',
+   /visibility/i.test(g2.doc.getElementById('errSubmit').textContent) ||
+   g2.doc.getElementById('errSubmit').textContent.length > 0,
+   g2.doc.getElementById('errSubmit').textContent);
+ok('the already-uploaded image is not lost — its key is still attached for a retry',
+   g2.win.__SUBMIT_BODY__.media.length === 1 && !!g2.win.__SUBMIT_BODY__.media[0].key,
+   JSON.stringify(g2.win.__SUBMIT_BODY__ && g2.win.__SUBMIT_BODY__.media));
+ok('retrying does not re-upload the same file (no duplicate PUTs)',
+   g2.win.__PUTS__.length === 1, g2.win.__PUTS__.length);
 
 /* ══ 5. A real success still works ════════════════════════════════ */
 group('Successful submit');

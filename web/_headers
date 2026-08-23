@@ -18,11 +18,22 @@
 #     (functions/api/properties/media.js) — that URL is on the bucket's
 #     S3 endpoint, never same-origin. Photos survived the omission only
 #     because img-src happened to be listed.
+#   - img-src and media-src both also allow blob:. web/assets/js/wizard.js
+#     shows the owner an INSTANT local preview via
+#     URL.createObjectURL(file), which is a blob: URL — not https:, so
+#     the directive above did not cover it. Without this the browser
+#     silently discards every <img>/<video> the Submit Property media
+#     step renders (CSP failures on img/media load are not logged to the
+#     console the way a script/connect violation is), leaving only the
+#     placeholder gradient behind the upload-state overlay — exactly the
+#     "blank tile" behaviour reported in production. The blob is always
+#     same-origin and local-only (it is never sent anywhere; the actual
+#     upload goes over connect-src to R2), so this adds no exposure.
 #   - connect-src allows https: because uploads.js PUTs directly to a
 #     presigned R2/S3 URL (functions/utils/r2.js), which is cross-origin
 #     by design and would otherwise be blocked.
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; media-src 'self' https:; font-src 'self'; connect-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: data: blob:; media-src 'self' https: blob:; font-src 'self'; connect-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
   Strict-Transport-Security: max-age=31536000; includeSubDomains
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff

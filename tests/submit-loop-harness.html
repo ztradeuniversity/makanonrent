@@ -49,7 +49,12 @@ window.__SUBMIT_BODY__ = null;
       return reply({ signedIn: true, owner: { name: 'Test Owner', email: 'owner@gmail.com', phone: null } });
     }
     if (u.indexOf('/api/uploads/presign') === 0) {
-      if (window.__SCENARIO__ === 'presign-fails') return reply({ error: 'no' }, 500);
+      /* Matches the exact shape of a real production failure: the
+         presign endpoint's requireEnv() throws this precise message when
+         an R2 secret is missing from the deployment's environment. */
+      if (window.__SCENARIO__ === 'presign-fails') {
+        return reply({ error: 'Missing required environment variable(s): R2_ACCOUNT_ID, R2_BUCKET_NAME' }, 500);
+      }
       var n = window.__PUTS__.length + pending.length;
       return reply({
         uploadUrl: 'https://r2.test/upload/' + n,
@@ -63,6 +68,13 @@ window.__SUBMIT_BODY__ = null;
       if (window.__SCENARIO__ === 'submit-network-down') return Promise.reject(new Error('offline'));
       if (window.__SCENARIO__ === 'submit-500') {
         return reply({ error: 'Area manager unavailable for this location.' }, 500);
+      }
+      /* The exact production incident: migration 0009 (property_media.
+         visibility) was never applied to the live Supabase database, so
+         PostgREST's schema cache has no such column and submit.js's
+         insert fails with this precise message. */
+      if (window.__SCENARIO__ === 'submit-visibility-missing') {
+        return reply({ error: "Could not find the 'visibility' column of 'property_media' in the schema cache" }, 500);
       }
       if (window.__SCENARIO__ === 'submit-no-ref') return reply({ ok: true });
       return reply({ ref: 'MOR-SRV-260820-0001', status: 'pending_review',
