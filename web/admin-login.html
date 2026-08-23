@@ -25,8 +25,24 @@
         <label for="adPassword">Password</label>
         <input class="ad-input" type="password" id="adPassword" autocomplete="current-password" required />
       </div>
+      <div class="ad-field">
+        <label for="adEmail">Gmail / Email</label>
+        <input class="ad-input" type="email" id="adEmail" autocomplete="email" placeholder="Only needed if your account has one on file" />
+      </div>
       <button class="ad-btn is-primary" type="submit" id="adLoginBtn">Sign in</button>
       <p class="ad-msg" id="adLoginMsg" role="status" aria-live="polite"></p>
+    </form>
+
+    <!-- Shown only when the credentials step reports otpRequired: true. -->
+    <form id="adOtpForm" hidden novalidate>
+      <div class="ad-note" id="adOtpNote">Enter the one-time code sent to your email.</div>
+      <div class="ad-field">
+        <label for="adOtpCode">One-time code</label>
+        <input class="ad-input" type="text" id="adOtpCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required />
+      </div>
+      <button class="ad-btn is-primary" type="submit" id="adOtpBtn">Verify &amp; sign in</button>
+      <button class="ad-btn" type="button" id="adOtpBack">Back</button>
+      <p class="ad-msg" id="adOtpMsg" role="status" aria-live="polite"></p>
     </form>
 
     <!-- Shown only when the server reports must_change_password. -->

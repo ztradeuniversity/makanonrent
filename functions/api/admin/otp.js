@@ -13,7 +13,11 @@ import { logAudit } from '../../utils/audit.js';
 
 export async function onRequestOptions(context) { return preflight(context.env); }
 
-function genCode() {
+/* Exported so functions/api/admin/login.js can reuse the exact same code
+   generator for the login-time OTP step instead of inventing a second one
+   — same table (admin_email_otp), same hashing (hashToken), same shape,
+   different `purpose` value ('login'). */
+export function genCode() {
   var n = crypto.getRandomValues(new Uint32Array(1))[0] % 1000000;
   return String(n).padStart(6, '0');
 }

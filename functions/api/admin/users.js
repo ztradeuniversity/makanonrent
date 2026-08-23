@@ -1,14 +1,15 @@
 /* GET  /api/admin/users        → identities the caller may see
-   POST /api/admin/users        → { action: 'create' | 'set-status' | 'reset-password', ... }
+   POST /api/admin/users        → { action: 'create' | 'update' | 'set-status' | 'reset-password', ... }
 
    Authority flows strictly downward (rbac.canManageRole):
-     CEO           → Assistant CEOs and Managers
-     Assistant CEO → Managers only        ("cannot control CEO")
-     Manager       → nobody
+     CEO           → Assistant CEOs, Area Managers ('manager') and Field Officers
+     Assistant CEO → Area Managers and Field Officers   ("cannot control CEO")
+     Area Manager  → Field Officers only
+     Field Officer → nobody
 
    There is no delete. Doc 18 Article 2.4 forbids hard deletes on business
-   entities; "remove a user" is status='archived', which preserves every
-   verification and approval they ever signed. */
+   entities; the Team UI's "Delete" action is status='archived', which
+   preserves every verification and approval the account ever signed. */
 import { json, preflight } from '../../utils/cors.js';
 import { getServiceClient } from '../../utils/supabase.js';
 import { isNonEmptyString } from '../../utils/validate.js';
@@ -21,7 +22,17 @@ export async function onRequestOptions(context) {
   return preflight(context.env);
 }
 
-var FROZEN_ROLE = { ceo: 'exec', assistant_ceo: 'city_manager', manager: 'area_manager' };
+var FROZEN_ROLE = {
+  ceo: 'exec', assistant_ceo: 'city_manager', manager: 'area_manager', field_officer: 'field_officer'
+};
+
+/* Downward visibility only, same shape as canManageRole but for LISTING
+   rather than acting: a role may see everyone it is entitled to manage,
+   never a peer or a superior — that would leak the org chart upward. */
+var VISIBLE_ROLES = {
+  assistant_ceo: ['manager', 'field_officer'],
+  manager: ['field_officer']
+};
 
 export async function onRequestGet(context) {
   var env = context.env;
@@ -31,14 +42,13 @@ export async function onRequestGet(context) {
   try {
     var db = getServiceClient(env);
     var q = db.from('admin_users')
-      .select('id, username, full_name, role, status, last_login_at, last_verification_at, created_at')
+      .select('id, username, full_name, email, role, status, last_login_at, last_verification_at, created_at')
       .neq('status', 'archived')
       .order('role', { ascending: true })
       .order('full_name', { ascending: true });
 
-    /* An Assistant CEO manages Managers, so that is all they may enumerate
-       — listing peers and the CEO would leak the org chart upward. */
-    if (auth.user.role === 'assistant_ceo') q = q.eq('role', 'manager');
+    var visible = VISIBLE_ROLES[auth.user.role];
+    if (visible) q = q.in('role', visible);
 
     var res = await q;
     if (res.error) throw res.error;
@@ -46,7 +56,7 @@ export async function onRequestGet(context) {
     return json(env, {
       users: (res.data || []).map(function (u) {
         return {
-          id: u.id, username: u.username, fullName: u.full_name, role: u.role,
+          id: u.id, username: u.username, fullName: u.full_name, email: u.email, role: u.role,
           status: u.status, lastLoginAt: u.last_login_at,
           lastVerificationAt: u.last_verification_at, createdAt: u.created_at,
           manageable: canManageRole(auth.user.role, u.role)
@@ -80,10 +90,10 @@ export async function onRequestPost(context) {
     /* ── create ─────────────────────────────────────────────────────── */
     if (body.action === 'create') {
       var role = body.role;
-      if (role !== 'assistant_ceo' && role !== 'manager') {
-        return json(env, { error: "role must be 'assistant_ceo' or 'manager'." }, 422);
+      if (['assistant_ceo', 'manager', 'field_officer'].indexOf(role) === -1) {
+        return json(env, { error: "role must be 'assistant_ceo', 'manager' or 'field_officer'." }, 422);
       }
-      var cap = role === 'assistant_ceo' ? 'users.create.assistant_ceo' : 'users.create.manager';
+      var cap = 'users.create.' + role;
       if (!can(auth.user.role, cap)) {
         return json(env, { error: 'Your role cannot create that role.' }, 403);
       }
@@ -92,21 +102,34 @@ export async function onRequestPost(context) {
       if (!/^[a-zA-Z0-9._-]+$/.test(body.username)) {
         return json(env, { error: 'Username may contain only letters, numbers, dot, underscore and hyphen.' }, 422);
       }
-
-      /* An explicit password is allowed but not required; when omitted we
-         issue a temporary one and force a change at first login. */
-      var initial = body.password;
-      if (initial != null) {
-        var weak = validatePasswordStrength(initial);
-        if (weak) return json(env, { error: weak }, 422);
-      } else {
-        initial = generateTempPassword();
+      /* Registered Gmail/email is what the login-time OTP is sent to
+         (see functions/api/admin/login.js), so it is required for every
+         newly created team member — not optional the way it was when
+         email only existed for later self-service verification. */
+      if (!isNonEmptyString(body.email, 200) || body.email.indexOf('@') === -1) {
+        return json(env, { error: 'A valid Gmail/email is required.' }, 422);
       }
+      var email = String(body.email).trim().toLowerCase();
 
-      var pw = await hashPassword(initial);
+      /* Password is REQUIRED at creation — the CEO/Assistant CEO/Area
+         Manager creating this account must set it explicitly. No
+         auto-generation fallback: an account the creator never actually
+         set a password for is exactly the gap that would let the
+         username+password+email+OTP login flow start from a password
+         nobody chose. reset-password (below) still generates one, which
+         is the correct place for that — a RESET is explicitly requested,
+         a CREATE must not be silently substituted. */
+      if (!isNonEmptyString(body.password, 200)) {
+        return json(env, { error: 'A password is required to create a team member.' }, 422);
+      }
+      var weak = validatePasswordStrength(body.password);
+      if (weak) return json(env, { error: weak }, 422);
+
+      var pw = await hashPassword(body.password);
       var ins = await db.from('admin_users').insert({
         username: String(body.username).trim().toLowerCase(),
         full_name: body.fullName,
+        email: email,
         role: role,
         frozen_role: FROZEN_ROLE[role],
         password_hash: pw.hash, password_salt: pw.salt, password_algo: pw.algo,
@@ -119,18 +142,61 @@ export async function onRequestPost(context) {
         if (String(ins.error.message || '').indexOf('uq_admin_users_username') > -1) {
           return json(env, { error: 'That username is already taken.' }, 409);
         }
+        if (String(ins.error.message || '').indexOf('uq_admin_users_email') > -1) {
+          return json(env, { error: 'That email is already registered to another account.' }, 409);
+        }
         throw ins.error;
       }
 
       await audit('create_user', 'admin_user', ins.data.id, { role: role, username: ins.data.username });
 
-      /* The temporary password is returned ONCE, in this response, and is
-         never stored in readable form or written to the audit detail —
-         the audit records that an account was created, not its secret. */
-      return json(env, {
-        ok: true, userId: ins.data.id, username: ins.data.username,
-        temporaryPassword: body.password == null ? initial : undefined
-      }, 201);
+      /* No temporaryPassword in this response — the CEO/manager set the
+         password themselves, so there is nothing generated to echo back.
+         The password itself is never stored in readable form or written
+         to the audit detail. */
+      return json(env, { ok: true, userId: ins.data.id, username: ins.data.username }, 201);
+    }
+
+    /* ── update (edit allowed profile fields) ─────────────────────────── */
+    if (body.action === 'update') {
+      if (!can(auth.user.role, 'users.edit')) {
+        return json(env, { error: 'Your role does not permit this action.' }, 403);
+      }
+      if (!isNonEmptyString(body.userId, 60)) return json(env, { error: 'userId is required.' }, 422);
+
+      var editTarget = await db.from('admin_users').select('id, role, username').eq('id', body.userId).maybeSingle();
+      if (editTarget.error) throw editTarget.error;
+      if (!editTarget.data) return json(env, { error: 'No such user.' }, 404);
+      if (!canManageRole(auth.user.role, editTarget.data.role)) {
+        return json(env, { error: 'You cannot manage that user.' }, 403);
+      }
+
+      var patchFields = {};
+      if (body.fullName != null) {
+        if (!isNonEmptyString(body.fullName, 160)) return json(env, { error: 'fullName cannot be empty.' }, 422);
+        patchFields.full_name = body.fullName;
+      }
+      if (body.email != null) {
+        if (!isNonEmptyString(body.email, 200) || body.email.indexOf('@') === -1) {
+          return json(env, { error: 'A valid email is required.' }, 422);
+        }
+        patchFields.email = String(body.email).trim().toLowerCase();
+        patchFields.email_verified_at = null;
+      }
+      if (!Object.keys(patchFields).length) {
+        return json(env, { error: 'Nothing to update.' }, 422);
+      }
+
+      var editUpd = await db.from('admin_users').update(patchFields).eq('id', body.userId);
+      if (editUpd.error) {
+        if (String(editUpd.error.message || '').indexOf('uq_admin_users_email') > -1) {
+          return json(env, { error: 'That email is already registered to another account.' }, 409);
+        }
+        throw editUpd.error;
+      }
+
+      await audit('update_user', 'admin_user', body.userId, { fields: Object.keys(patchFields), username: editTarget.data.username });
+      return json(env, { ok: true });
     }
 
     /* ── set-status (disable / enable / archive) ─────────────────────── */
@@ -197,7 +263,7 @@ export async function onRequestPost(context) {
       return json(env, { ok: true, temporaryPassword: temp });
     }
 
-    return json(env, { error: "action must be 'create', 'set-status' or 'reset-password'." }, 422);
+    return json(env, { error: "action must be 'create', 'update', 'set-status' or 'reset-password'." }, 422);
   } catch (e) {
     return json(env, { error: (e && e.message) || 'User request failed.' }, 500);
   }

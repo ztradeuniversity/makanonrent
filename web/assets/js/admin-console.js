@@ -627,39 +627,166 @@
   }
 
   /* ── TEAM ───────────────────────────────────────────────────────── */
+  var ROLE_GROUPS = ['manager', 'assistant_ceo', 'field_officer'];
+  var ROLE_DESC = {
+    manager: 'Manages properties and field activity within assigned areas.',
+    assistant_ceo: 'Assists the CEO with oversight and the management actions RBAC grants this role.',
+    field_officer: 'Collects property and location information in assigned areas.'
+  };
+  var ACTION_DESC = {
+    view: 'Shows this member’s account details.',
+    edit: 'Change this member’s full name or registered email.',
+    reset: 'Invalidates the current password and issues a new one-time login credential.',
+    disable: 'Stops this member from logging in and using the dashboard immediately.',
+    enable: 'Restores this member’s ability to log in.',
+    'delete': 'Removes this member’s access permanently. Their history is kept for audit — this is not a hard delete.',
+    assign: 'Defines the locations this team member is authorized to manage.'
+  };
+  var teamFilters = { q: '', role: '', status: '' };
+  var teamExpanded = {};   // userId -> 'view' | 'edit'
+  var teamBound = false;
+
+  /* Moves each element's `data-tip` attribute into its sibling bubble once,
+     then makes the "?" button toggle it too — :hover/:focus-within already
+     shows it for mouse and keyboard, this adds a plain tap for touch. */
+  function bindTooltips(root) {
+    (root || doc).querySelectorAll('.ad-tip[data-tip]').forEach(function (tip) {
+      var bubble = tip.querySelector('.ad-tip-bubble');
+      if (bubble && !bubble.textContent) bubble.textContent = tip.getAttribute('data-tip');
+      if (tip.dataset.tipBound) return;
+      tip.dataset.tipBound = '1';
+      var btn = tip.querySelector('.ad-tip-btn');
+      if (btn) btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var open = tip.classList.toggle('is-open');
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+    });
+  }
+  doc.addEventListener('click', function (e) {
+    if (!e.target.closest('.ad-tip')) {
+      doc.querySelectorAll('.ad-tip.is-open').forEach(function (t) { t.classList.remove('is-open'); });
+    }
+  });
+
+  function tipSpan(key, label) {
+    return '<span class="ad-tip" data-tip="' + esc(ACTION_DESC[key] || '') + '">' +
+      '<button type="button" class="ad-tip-btn" aria-label="What does ' + esc(label) + ' do?">?</button>' +
+      '<span class="ad-tip-bubble" role="tooltip"></span></span>';
+  }
+
+  function filteredTeam() {
+    var q = teamFilters.q.trim().toLowerCase();
+    return teamCache.filter(function (u) {
+      if (teamFilters.role && u.role !== teamFilters.role) return false;
+      if (teamFilters.status && u.status !== teamFilters.status) return false;
+      if (!q) return true;
+      return (u.fullName || '').toLowerCase().indexOf(q) > -1 ||
+        (u.username || '').toLowerCase().indexOf(q) > -1 ||
+        (u.email || '').toLowerCase().indexOf(q) > -1;
+    });
+  }
+
+  function renderUserRow(u) {
+    var mode = teamExpanded[u.id];
+    var actions = u.manageable
+      ? '<button class="ad-btn is-sm" type="button" data-view>View</button> ' +
+        '<button class="ad-btn is-sm" type="button" data-edit>Edit</button> ' +
+        '<button class="ad-btn is-sm" type="button" data-toggle="' + (u.status === 'active' ? 'disabled' : 'active') + '">' +
+          (u.status === 'active' ? 'Disable' : 'Enable') + '</button> ' +
+        '<button class="ad-btn is-sm" type="button" data-reset>Reset password</button> ' +
+        '<button class="ad-btn is-sm is-danger" type="button" data-delete>Delete</button>'
+      : '<span class="ad-pill">View only</span>';
+
+    var row = '<tr data-user="' + esc(u.id) + '">' +
+      '<td><b>' + esc(u.fullName) + '</b></td>' +
+      '<td>' + esc(u.username) + '</td>' +
+      '<td>' + esc(u.email || '—') + '</td>' +
+      '<td><span class="ad-pill ' + (u.status === 'active' ? 'is-ok' : 'is-danger') + '">' + esc(u.status) + '</span></td>' +
+      '<td>' + esc(A.fmtDateTime(u.lastLoginAt)) + '</td>' +
+      '<td>' + esc(A.fmtDate(u.createdAt)) + '</td>' +
+      '<td>' + actions + '</td>' +
+    '</tr>';
+
+    if (mode === 'view') {
+      row += '<tr class="ad-detail-row"><td colspan="7"><div class="ad-detail-grid">' +
+        '<div class="ad-kv-row"><span>Role</span><span>' + esc(A.roleLabel(u.role)) + '</span></div>' +
+        '<div class="ad-kv-row"><span>Username</span><span>' + esc(u.username) + '</span></div>' +
+        '<div class="ad-kv-row"><span>Email</span><span>' + esc(u.email || '—') + '</span></div>' +
+        '<div class="ad-kv-row"><span>Status</span><span>' + esc(u.status) + '</span></div>' +
+        '<div class="ad-kv-row"><span>Created</span><span>' + esc(A.fmtDateTime(u.createdAt)) + '</span></div>' +
+        '<div class="ad-kv-row"><span>Last login</span><span>' + esc(A.fmtDateTime(u.lastLoginAt)) + '</span></div>' +
+        '<div class="ad-kv-row"><span>Last verification</span><span>' + esc(A.fmtDateTime(u.lastVerificationAt)) + '</span></div>' +
+      '</div></td></tr>';
+    } else if (mode === 'edit') {
+      row += '<tr class="ad-detail-row"><td colspan="7"><div class="ad-row">' +
+        '<div class="ad-field"><label>Full name</label><input class="ad-input" type="text" data-edit-fullname value="' + esc(u.fullName) + '" /></div>' +
+        '<div class="ad-field"><label>Email</label><input class="ad-input" type="email" data-edit-email value="' + esc(u.email || '') + '" /></div>' +
+        '</div><div class="ad-actions">' +
+        '<button class="ad-btn is-primary is-sm" type="button" data-save-edit>Save</button>' +
+        '<button class="ad-btn is-sm" type="button" data-cancel-edit>Cancel</button>' +
+        '</div></td></tr>';
+    }
+    return row;
+  }
+
+  function renderTeamList() {
+    var rows = filteredTeam();
+    $('adTeamCount').textContent = teamCache.length + ' account(s)' +
+      (rows.length !== teamCache.length ? ' · ' + rows.length + ' shown' : '');
+
+    if (!teamCache.length) {
+      $('adUserList').innerHTML = '<div class="ad-empty">No accounts yet.</div>';
+      return;
+    }
+    if (!rows.length) {
+      $('adUserList').innerHTML = '<div class="ad-empty">No accounts match this search/filter.</div>';
+      return;
+    }
+
+    var head = '<div class="ad-table-wrap"><table class="ad-table"><thead><tr>' +
+      '<th>Name</th><th>Username</th><th>Email</th><th>Status</th><th>Last login</th><th>Created</th><th></th>' +
+    '</tr></thead><tbody>';
+    var tail = '</tbody></table></div>';
+
+    var html = ROLE_GROUPS.map(function (role) {
+      var members = rows.filter(function (u) { return u.role === role; });
+      if (!members.length) return '';
+      return '<div class="ad-team-group">' +
+        '<div class="ad-team-group-head">' +
+          esc(A.roleLabel(role).toUpperCase()) +
+          '<span class="ad-pill">' + members.length + '</span>' +
+          '<span class="ad-tip" data-tip="' + esc(ROLE_DESC[role]) + '">' +
+            '<button type="button" class="ad-tip-btn" aria-label="What is ' + esc(A.roleLabel(role)) + '?">?</button>' +
+            '<span class="ad-tip-bubble" role="tooltip"></span></span>' +
+        '</div>' +
+        head + members.map(renderUserRow).join('') + tail +
+      '</div>';
+    }).join('');
+
+    $('adUserList').innerHTML = html || '<div class="ad-empty">No accounts match this search/filter.</div>';
+    bindTooltips($('adUserList'));
+  }
+
   async function loadTeam() {
-    /* The CEO may create Assistant CEOs; an Assistant CEO may not. The
-       select is built from capabilities rather than hardcoded. */
+    /* The role select is built from capabilities rather than hardcoded —
+       who may create whom is decided once, in rbac.js, and read here. */
     var roleOpts = [];
     if (can('users.create.assistant_ceo')) roleOpts.push('<option value="assistant_ceo">Assistant CEO</option>');
-    if (can('users.create.manager')) roleOpts.push('<option value="manager">Manager</option>');
+    if (can('users.create.manager')) roleOpts.push('<option value="manager">Area Manager</option>');
+    if (can('users.create.field_officer')) roleOpts.push('<option value="field_officer">Field Officer</option>');
     $('adNewRole').innerHTML = roleOpts.join('');
     $('adCreateUserCard').hidden = !roleOpts.length;
+    bindTooltips($('adCreateUserCard'));
+    /* Area Manager now sees this panel (to manage their Field Officers)
+       but does not hold tasks.assign — hide what they cannot do rather
+       than let them hit a 403. */
+    $('adTaskCard').hidden = !can('tasks.assign');
 
     try {
       var res = await A.get(API.adminUsers);
       teamCache = res.users;
-
-      $('adTeamCount').textContent = res.users.length + ' account(s)';
-      $('adUserList').innerHTML = res.users.length
-        ? '<table class="ad-table"><thead><tr>' +
-            '<th>Name</th><th>Username</th><th>Role</th><th>Status</th><th>Last login</th><th></th>' +
-          '</tr></thead><tbody>' +
-          res.users.map(function (u) {
-            return '<tr data-user="' + esc(u.id) + '">' +
-              '<td><b>' + esc(u.fullName) + '</b></td>' +
-              '<td>' + esc(u.username) + '</td>' +
-              '<td>' + esc(A.roleLabel(u.role)) + '</td>' +
-              '<td><span class="ad-pill ' + (u.status === 'active' ? 'is-ok' : 'is-danger') + '">' + esc(u.status) + '</span></td>' +
-              '<td>' + esc(A.fmtDateTime(u.lastLoginAt)) + '</td>' +
-              '<td>' + (u.manageable
-                ? '<button class="ad-btn is-sm" type="button" data-toggle="' + (u.status === 'active' ? 'disabled' : 'active') + '">' +
-                    (u.status === 'active' ? 'Disable' : 'Enable') + '</button> ' +
-                  '<button class="ad-btn is-sm" type="button" data-reset>Reset password</button>'
-                : '') + '</td>' +
-            '</tr>';
-          }).join('') + '</tbody></table>'
-        : '<div class="ad-empty">No accounts yet.</div>';
+      renderTeamList();
 
       var assignable = res.users.filter(function (u) { return u.manageable && u.status === 'active'; });
       var opts = assignable.map(function (u) {
@@ -680,29 +807,41 @@
     } catch (e) {
       $('adUserList').innerHTML = '<div class="ad-empty">' + esc(e.message) + '</div>';
     }
+
+    if (!teamBound) {
+      teamBound = true;
+      $('adTeamSearch').addEventListener('input', function () { teamFilters.q = this.value; renderTeamList(); });
+      $('adTeamRoleFilter').addEventListener('change', function () { teamFilters.role = this.value; renderTeamList(); });
+      $('adTeamStatusFilter').addEventListener('change', function () { teamFilters.status = this.value; renderTeamList(); });
+    }
   }
 
   $('adCreateUser').addEventListener('click', async function () {
     var role = $('adNewRole').value;
     var fullName = $('adNewFullName').value.trim();
     var username = $('adNewUsername').value.trim();
+    var password = $('adNewPassword').value;
+    var email = $('adNewEmail').value.trim();
 
-    if (!role || !fullName || !username) {
-      A.msg($('adUserMsg'), 'Role, full name and username are all required.', 'is-error');
+    if (!role || !fullName || !username || !password || !email) {
+      A.msg($('adUserMsg'), 'Designation, full name, username, password and email are all required.', 'is-error');
+      return;
+    }
+    if (password.length < 10) {
+      A.msg($('adUserMsg'), 'Password must be at least 10 characters.', 'is-error');
       return;
     }
 
     this.disabled = true;
     try {
-      var res = await A.post(API.adminUsers, {
-        action: 'create', role: role, fullName: fullName, username: username
+      await A.post(API.adminUsers, {
+        action: 'create', role: role, fullName: fullName, username: username, email: email, password: password
       });
-      /* The temporary password is shown once and never again — it is not
-         stored in readable form anywhere. */
-      A.msg($('adUserMsg'),
-        'Account created. Temporary password (shown once): ' + res.temporaryPassword, 'is-ok');
+      A.msg($('adUserMsg'), 'Team member created with the password and email you set.', 'is-ok');
       $('adNewFullName').value = '';
       $('adNewUsername').value = '';
+      $('adNewPassword').value = '';
+      $('adNewEmail').value = '';
       await loadTeam();
     } catch (e) {
       A.msg($('adUserMsg'), e.message, 'is-error');
@@ -716,6 +855,11 @@
     var userId = row.getAttribute('data-user');
     var toggle = e.target.closest('[data-toggle]');
     var reset = e.target.closest('[data-reset]');
+    var view = e.target.closest('[data-view]');
+    var edit = e.target.closest('[data-edit]');
+    var del = e.target.closest('[data-delete]');
+    var saveEdit = e.target.closest('[data-save-edit]');
+    var cancelEdit = e.target.closest('[data-cancel-edit]');
 
     try {
       if (toggle) {
@@ -728,6 +872,32 @@
         if (!win.confirm('Reset this password? Their sessions end immediately.')) return;
         var res = await A.post(API.adminUsers, { action: 'reset-password', userId: userId });
         A.msg($('adUserMsg'), 'New temporary password (shown once): ' + res.temporaryPassword, 'is-ok');
+      } else if (del) {
+        if (!win.confirm('Delete this team member? This stops their access immediately. Their audit history is kept, not erased — this matches the console-wide "no hard deletes" policy.')) return;
+        await A.post(API.adminUsers, { action: 'set-status', userId: userId, status: 'archived' });
+        A.msg($('adUserMsg'), 'Team member deleted. Access is revoked; their history is retained for audit.', 'is-ok');
+        delete teamExpanded[userId];
+        await loadTeam();
+      } else if (view) {
+        teamExpanded[userId] = teamExpanded[userId] === 'view' ? null : 'view';
+        renderTeamList();
+      } else if (edit) {
+        teamExpanded[userId] = teamExpanded[userId] === 'edit' ? null : 'edit';
+        renderTeamList();
+      } else if (cancelEdit) {
+        teamExpanded[userId] = null;
+        renderTeamList();
+      } else if (saveEdit) {
+        var detailRow = row.nextElementSibling;
+        var fullNameEl = detailRow.querySelector('[data-edit-fullname]');
+        var emailEl = detailRow.querySelector('[data-edit-email]');
+        await A.post(API.adminUsers, {
+          action: 'update', userId: userId,
+          fullName: fullNameEl.value.trim(), email: emailEl.value.trim()
+        });
+        A.msg($('adUserMsg'), 'Team member updated.', 'is-ok');
+        teamExpanded[userId] = null;
+        await loadTeam();
       }
     } catch (err) {
       A.msg($('adUserMsg'), err.message, 'is-error');
@@ -1069,6 +1239,7 @@
     $('adTaskDue').value = A.todayISO();
     renderTabs();
     refreshBell();
+    bindTooltips(doc);
 
     /* Poll the unread badge. 60s rather than a socket: at 120 admin users
        this is negligible load, and a websocket would be real infrastructure

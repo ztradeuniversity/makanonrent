@@ -12,22 +12,29 @@ import { json } from './cors.js';
 import { getServiceClient } from './supabase.js';
 import { resolveSession } from './session.js';
 
-export var ROLES = ['ceo', 'assistant_ceo', 'manager'];
+/* 'manager' is the "Area Manager" the CEO Team UI shows — same DB role,
+   relabelled only. 'field_officer' is new (migration 0012): audited and
+   confirmed no existing role covered field data collection. */
+export var ROLES = ['ceo', 'assistant_ceo', 'manager', 'field_officer'];
 
 /* capability → roles that hold it.
    Read this as the authoritative answer to "who can do what"; the spec in
    the Founder's brief maps onto it one-to-one. */
 export var PERMISSIONS = {
   /* — identity management — */
-  'users.create.assistant_ceo': ['ceo'],
-  'users.create.manager':       ['ceo', 'assistant_ceo'],
-  'users.list':                 ['ceo', 'assistant_ceo'],
-  'users.toggle_status':        ['ceo', 'assistant_ceo'],
-  'users.reset_password':       ['ceo', 'assistant_ceo'],
+  'users.create.assistant_ceo':  ['ceo'],
+  'users.create.manager':        ['ceo', 'assistant_ceo'],
+  /* An Area Manager manages the Field Officers working their own areas,
+     mirroring how an Assistant CEO manages Managers one tier down. */
+  'users.create.field_officer':  ['ceo', 'assistant_ceo', 'manager'],
+  'users.list':                  ['ceo', 'assistant_ceo', 'manager'],
+  'users.toggle_status':         ['ceo', 'assistant_ceo', 'manager'],
+  'users.reset_password':        ['ceo', 'assistant_ceo', 'manager'],
+  'users.edit':                  ['ceo', 'assistant_ceo', 'manager'],
 
   /* — area assignment (City → Main → Sub) — */
-  'areas.assign':               ['ceo', 'assistant_ceo'],
-  'areas.list':                 ['ceo', 'assistant_ceo', 'manager'],
+  'areas.assign':               ['ceo', 'assistant_ceo', 'manager'],
+  'areas.list':                 ['ceo', 'assistant_ceo', 'manager', 'field_officer'],
 
   /* — Location Data Bank (Location Manager: City/Main/Sub master data) —
      Distinct from areas.assign, which grants a MANAGER access to areas
@@ -38,12 +45,14 @@ export var PERMISSIONS = {
   /* — tasks — */
   'tasks.assign':               ['ceo', 'assistant_ceo'],
   'tasks.list.any':             ['ceo', 'assistant_ceo'],
-  'tasks.list.own':             ['ceo', 'assistant_ceo', 'manager'],
+  'tasks.list.own':             ['ceo', 'assistant_ceo', 'manager', 'field_officer'],
 
   /* — properties — */
-  'properties.add':             ['ceo', 'assistant_ceo', 'manager'],
-  'properties.edit.assigned':   ['ceo', 'assistant_ceo', 'manager'],
-  'properties.verify':          ['ceo', 'assistant_ceo', 'manager'],
+  /* Field Officer = data capture in the field, not approval authority:
+     add/edit/verify, never properties.approve/archive/restore. */
+  'properties.add':             ['ceo', 'assistant_ceo', 'manager', 'field_officer'],
+  'properties.edit.assigned':   ['ceo', 'assistant_ceo', 'manager', 'field_officer'],
+  'properties.verify':          ['ceo', 'assistant_ceo', 'manager', 'field_officer'],
   'properties.approve':         ['ceo', 'assistant_ceo', 'manager'],
   'properties.archive':         ['ceo'],
   'properties.restore':         ['ceo'],
@@ -52,7 +61,7 @@ export var PERMISSIONS = {
   /* — oversight — */
   'monitor.read':               ['ceo', 'assistant_ceo'],
   'audit.read':                 ['ceo'],
-  'comments.create':            ['ceo', 'assistant_ceo', 'manager'],
+  'comments.create':            ['ceo', 'assistant_ceo', 'manager', 'field_officer'],
   'settings.read':              ['ceo', 'assistant_ceo'],
   'settings.write':             ['ceo']
 };
@@ -68,8 +77,9 @@ export function can(role, capability) {
    themselves (which would let a user re-enable an account the CEO just
    disabled, or reset their own way around must_change_password). */
 export function canManageRole(actorRole, targetRole) {
-  if (actorRole === 'ceo') return targetRole === 'assistant_ceo' || targetRole === 'manager';
-  if (actorRole === 'assistant_ceo') return targetRole === 'manager';
+  if (actorRole === 'ceo') return targetRole === 'assistant_ceo' || targetRole === 'manager' || targetRole === 'field_officer';
+  if (actorRole === 'assistant_ceo') return targetRole === 'manager' || targetRole === 'field_officer';
+  if (actorRole === 'manager') return targetRole === 'field_officer';
   return false;
 }
 

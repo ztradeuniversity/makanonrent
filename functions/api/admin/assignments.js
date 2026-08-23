@@ -41,8 +41,8 @@ export async function onRequestGet(context) {
     var url = new URL(context.request.url);
     var userId = url.searchParams.get('userId');
 
-    /* A Manager may only ever read their own assignments. */
-    if (auth.user.role === 'manager') userId = auth.user.id;
+    /* A Manager or Field Officer may only ever read their own assignments. */
+    if (auth.user.role === 'manager' || auth.user.role === 'field_officer') userId = auth.user.id;
 
     var q = db.from('admin_area_assignments')
       .select('id, user_id, node_id, scope_level, created_at, admin_users!inner(full_name, role), locations!inner(name)')

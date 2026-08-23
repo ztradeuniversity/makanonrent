@@ -71,7 +71,7 @@
     el.className = 'ad-msg' + (cls ? ' ' + cls : '');
   }
 
-  var ROLE_LABEL = { ceo: 'CEO', assistant_ceo: 'Assistant CEO', manager: 'Manager' };
+  var ROLE_LABEL = { ceo: 'CEO', assistant_ceo: 'Assistant CEO', manager: 'Area Manager', field_officer: 'Field Officer' };
 
   function roleLabel(role) { return ROLE_LABEL[role] || role; }
 

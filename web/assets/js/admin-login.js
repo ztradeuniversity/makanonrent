@@ -1,6 +1,7 @@
-/* MakanOnRent — admin sign-in page controller.
-   Two states in one page: credentials, then (only when the server says
-   so) the forced password change for admin-issued temporary passwords. */
+/* MakanOnRent — admin/team sign-in page controller.
+   Three states in one page: credentials (+ optional OTP step for accounts
+   that carry a registered email), then the forced password change for
+   admin-issued temporary passwords. */
 (function (win, doc) {
   'use strict';
 
@@ -8,6 +9,7 @@
   var $ = function (id) { return doc.getElementById(id); };
 
   var loginForm = $('adLoginForm');
+  var otpForm = $('adOtpForm');
   var changeForm = $('adChangeForm');
 
   /* Credentials are held only for the duration of the change-password
@@ -15,9 +17,26 @@
      are never persisted anywhere. */
   var pendingCurrentPassword = '';
 
+  function showLoginStep() {
+    otpForm.hidden = true;
+    loginForm.hidden = false;
+    $('adPassword').focus();
+  }
+
+  function showOtpStep(maskedEmail) {
+    loginForm.hidden = true;
+    otpForm.hidden = false;
+    $('adOtpNote').textContent = maskedEmail
+      ? 'Enter the one-time code sent to ' + maskedEmail + '.'
+      : 'Enter the one-time code sent to your email.';
+    $('adOtpCode').value = '';
+    $('adOtpCode').focus();
+  }
+
   function showChangeStep(currentPassword) {
     pendingCurrentPassword = currentPassword || '';
     loginForm.hidden = true;
+    otpForm.hidden = true;
     changeForm.hidden = false;
     if (pendingCurrentPassword) {
       $('adCurrentPw').value = pendingCurrentPassword;
@@ -31,11 +50,21 @@
      not-yet-changed session back here. */
   if (new URLSearchParams(win.location.search).get('change')) showChangeStep('');
 
+  function finishLogin(res) {
+    if (res.mustChangePassword) {
+      A.msg($('adLoginMsg'), '');
+      showChangeStep('');
+      return;
+    }
+    win.location.href = CFG.routes.adminPage;
+  }
+
   loginForm.addEventListener('submit', async function (e) {
     e.preventDefault();
     var btn = $('adLoginBtn');
     var username = $('adUsername').value.trim();
     var password = $('adPassword').value;
+    var email = $('adEmail').value.trim();
 
     if (!username || !password) {
       A.msg($('adLoginMsg'), 'Enter your username and password.', 'is-error');
@@ -46,17 +75,50 @@
     A.msg($('adLoginMsg'), 'Signing in…');
 
     try {
-      var res = await A.post(CFG.routes.api.adminLogin, { username: username, password: password });
-      if (res.mustChangePassword) {
+      var res = await A.post(CFG.routes.api.adminLogin, {
+        step: 'credentials', username: username, password: password, email: email
+      });
+      if (res.otpRequired) {
         A.msg($('adLoginMsg'), '');
-        showChangeStep(password);
+        win.MOR_PENDING_OTP_ID = res.otpId;
+        showOtpStep(res.maskedEmail);
         return;
       }
-      win.location.href = CFG.routes.adminPage;
+      finishLogin(res);
     } catch (err) {
       A.msg($('adLoginMsg'), err.message, 'is-error');
+    }
+    btn.disabled = false;
+  });
+
+  otpForm.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var btn = $('adOtpBtn');
+    var code = $('adOtpCode').value.trim();
+
+    if (!code) {
+      A.msg($('adOtpMsg'), 'Enter the code from your email.', 'is-error');
+      return;
+    }
+
+    btn.disabled = true;
+    A.msg($('adOtpMsg'), 'Verifying…');
+
+    try {
+      var res = await A.post(CFG.routes.api.adminLogin, {
+        step: 'otp', otpId: win.MOR_PENDING_OTP_ID, code: code
+      });
+      finishLogin(res);
+    } catch (err) {
+      A.msg($('adOtpMsg'), err.message, 'is-error');
       btn.disabled = false;
     }
+  });
+
+  $('adOtpBack').addEventListener('click', function () {
+    win.MOR_PENDING_OTP_ID = null;
+    A.msg($('adOtpMsg'), '');
+    showLoginStep();
   });
 
   changeForm.addEventListener('submit', async function (e) {

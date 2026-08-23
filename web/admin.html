@@ -111,10 +111,15 @@
     <!-- ══ TEAM ══ -->
     <section class="ad-panel" id="panel-team" role="tabpanel">
       <div class="ad-card" id="adCreateUserCard">
-        <div class="ad-card-head"><b>Create an account</b><span>No self-registration — every account originates here.</span></div>
+        <div class="ad-card-head">
+          <b>Create a New Team Member</b>
+          <span>No self-registration — every account originates here.</span>
+        </div>
         <div class="ad-row">
           <div class="ad-field">
-            <label for="adNewRole">Role</label>
+            <label class="ad-label-tip" for="adNewRole">Designation
+              <span class="ad-tip" data-tip="Area Manager, Assistant CEO or Field Officer — this decides the dashboard and permissions the account gets."><button type="button" class="ad-tip-btn" aria-label="What is Designation?">?</button><span class="ad-tip-bubble" role="tooltip"></span></span>
+            </label>
             <select class="ad-select" id="adNewRole"></select>
           </div>
           <div class="ad-field">
@@ -122,23 +127,58 @@
             <input class="ad-input" type="text" id="adNewFullName" autocomplete="off" />
           </div>
           <div class="ad-field">
-            <label for="adNewUsername">Username</label>
+            <label class="ad-label-tip" for="adNewUsername">Username
+              <span class="ad-tip" data-tip="Chosen by you, not generated. This is what the team member types to sign in."><button type="button" class="ad-tip-btn" aria-label="What is Username?">?</button><span class="ad-tip-bubble" role="tooltip"></span></span>
+            </label>
             <input class="ad-input" type="text" id="adNewUsername" autocomplete="off" autocapitalize="none" />
           </div>
         </div>
+        <div class="ad-row">
+          <div class="ad-field">
+            <label class="ad-label-tip" for="adNewPassword">Password
+              <span class="ad-tip" data-tip="Required. Set the initial password this member will sign in with — it is stored only as a secure hash, never in plain text. They will be asked to change it on first login."><button type="button" class="ad-tip-btn" aria-label="What is Password?">?</button><span class="ad-tip-bubble" role="tooltip"></span></span>
+            </label>
+            <input class="ad-input" type="password" id="adNewPassword" autocomplete="new-password" minlength="10" required />
+          </div>
+          <div class="ad-field">
+            <label class="ad-label-tip" for="adNewEmail">Gmail / Email
+              <span class="ad-tip" data-tip="The one-time login code (OTP) is sent to this address every time this member signs in, so it must be an address only they control."><button type="button" class="ad-tip-btn" aria-label="What is Gmail / Email?">?</button><span class="ad-tip-bubble" role="tooltip"></span></span>
+            </label>
+            <input class="ad-input" type="email" id="adNewEmail" autocomplete="off" placeholder="name@gmail.com" />
+          </div>
+        </div>
         <div class="ad-actions">
-          <button class="ad-btn is-primary" type="button" id="adCreateUser">Create account</button>
+          <button class="ad-btn is-primary" type="button" id="adCreateUser">Create Team Member</button>
         </div>
         <p class="ad-msg" id="adUserMsg" role="status" aria-live="polite"></p>
       </div>
 
       <div class="ad-card">
-        <div class="ad-card-head"><b>Team</b><span id="adTeamCount"></span></div>
-        <div class="ad-table-wrap"><div id="adUserList"></div></div>
+        <div class="ad-card-head"><b>Team Manager</b><span id="adTeamCount"></span></div>
+        <div class="ad-team-toolbar">
+          <input class="ad-input" type="search" id="adTeamSearch" placeholder="Search by name, username or email" aria-label="Search team members" />
+          <select class="ad-select" id="adTeamRoleFilter" aria-label="Filter by role">
+            <option value="">All roles</option>
+            <option value="assistant_ceo">Assistant CEO</option>
+            <option value="manager">Area Manager</option>
+            <option value="field_officer">Field Officer</option>
+          </select>
+          <select class="ad-select" id="adTeamStatusFilter" aria-label="Filter by status">
+            <option value="">All statuses</option>
+            <option value="active">Active</option>
+            <option value="disabled">Disabled</option>
+          </select>
+        </div>
+        <div id="adUserList"></div>
       </div>
 
       <div class="ad-card">
-        <div class="ad-card-head"><b>Assign an area</b><span>City → Main Location → Sub Location. One active manager per area.</span></div>
+        <div class="ad-card-head">
+          <b>Assign an area
+            <span class="ad-tip" data-tip="Defines the City / Main / Sub locations this Area Manager or Field Officer is authorized to work in. Scope is enforced by the server, not just hidden in the UI."><button type="button" class="ad-tip-btn" aria-label="What does Assign an area do?">?</button><span class="ad-tip-bubble" role="tooltip"></span></span>
+          </b>
+          <span>City → Main Location → Sub Location. One active manager per area.</span>
+        </div>
         <!-- Every level is a choice from the published Location Data Bank.
              The free-text node path this replaced accepted any string, so a
              typo produced a 404 and the manager silently ended up with no
@@ -176,7 +216,7 @@
         <div id="adAssignmentList" style="margin-top:14px;"></div>
       </div>
 
-      <div class="ad-card">
+      <div class="ad-card" id="adTaskCard">
         <div class="ad-card-head"><b>Assign a daily task</b><span>Progress is measured from real work, not self-reported.</span></div>
         <div class="ad-row">
           <div class="ad-field">

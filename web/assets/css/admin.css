@@ -305,3 +305,46 @@
 @media (max-width: 640px) {
   .ad-review-grid { grid-template-columns: 1fr; gap: 14px; }
 }
+
+/* ── accessible tooltip: hover, keyboard focus AND tap ─────────────
+   A "?" button rather than a bare title="" attribute — title-only help
+   is invisible to touch and to most screen readers. This one is a real
+   focusable control with aria-describedby wired to the bubble, and the
+   same CSS that shows it on :hover/:focus-within also lets a tap toggle
+   it via .is-open (see admin-console.js bindTooltips). */
+.ad-tip { position: relative; display: inline-flex; }
+.ad-tip-btn {
+  width: 17px; height: 17px; border-radius: 50%; flex-shrink: 0;
+  border: 1.5px solid var(--line); background: var(--paper); color: var(--muted);
+  font-size: 10.5px; font-weight: 800; line-height: 1; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0;
+}
+.ad-tip-btn:hover, .ad-tip-btn:focus-visible { border-color: var(--gold); color: #8A6D22; outline: none; }
+.ad-tip-bubble {
+  position: absolute; z-index: 40; bottom: calc(100% + 8px); left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  width: max-content; max-width: 240px; padding: 9px 12px;
+  background: var(--ink); color: #fff; font-size: 12px; font-weight: 600; line-height: 1.4;
+  border-radius: 10px; box-shadow: var(--shadow);
+  opacity: 0; pointer-events: none; transition: opacity .15s var(--ease), transform .15s var(--ease);
+}
+.ad-tip:hover .ad-tip-bubble,
+.ad-tip:focus-within .ad-tip-bubble,
+.ad-tip.is-open .ad-tip-bubble {
+  opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto;
+}
+.ad-label-tip { display: inline-flex; align-items: center; gap: 6px; }
+
+/* ── team management ────────────────────────────────────────────── */
+.ad-team-toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+.ad-team-toolbar .ad-input { flex: 1; min-width: 180px; }
+.ad-team-toolbar .ad-select { max-width: 200px; }
+.ad-team-group { margin-bottom: 18px; }
+.ad-team-group:last-child { margin-bottom: 0; }
+.ad-team-group-head {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  font-size: 12px; font-weight: 800; letter-spacing: .5px; text-transform: uppercase; color: var(--muted);
+}
+.ad-team-group-head .ad-pill { text-transform: none; letter-spacing: 0; }
+.ad-detail-grid { display: grid; gap: 6px; margin-bottom: 14px; }

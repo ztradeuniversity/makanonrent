@@ -14,7 +14,7 @@ export async function sendEmail(env, to, subject, text) {
 }
 
 export function renderTemplate(template, payload) {
-  if (template === 'admin_otp_email_verify' || template === 'admin_otp_password_reset' || template === 'admin_password_reset') {
+  if (template === 'admin_otp_email_verify' || template === 'admin_otp_password_reset' || template === 'admin_password_reset' || template === 'admin_otp_login') {
     return { subject: 'Your MakanOnRent verification code', text: 'Your code is ' + payload.code + '. Expires in ' + (payload.expiresInMinutes || 10) + ' minutes.' };
   }
   if (template === 'notify_available') {
