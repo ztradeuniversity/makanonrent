@@ -103,6 +103,43 @@ export async function presignPutUrl(env, key, opts) {
   return presignUrl(env, key, 'PUT', (opts && opts.expiresSeconds) || 600);
 }
 
+/* Deletes one object from R2, executed server-side (not a presigned URL
+   handed to the browser — a delete is never something the client should
+   be trusted to trigger on its own). Reuses presignUrl's exact SigV4
+   signer with method 'DELETE'; the request is then made immediately
+   rather than returned as a link.
+
+   Callers are the only guard against deleting the wrong thing: this
+   function trusts `key` completely and does not verify it belongs to any
+   particular listing. Every caller must compute `key` from a
+   property_media row already scoped to the correct listing_id — never
+   from anything the client sent.
+
+   Returns { ok, status } and never throws for an R2-side failure (a 404
+   for an object already gone is treated as success — the end state,
+   "not in the bucket", is what was asked for). A network-level failure
+   still resolves rather than rejecting, so a batch delete can report
+   partial failure instead of losing track of which keys succeeded. */
+export async function deleteObject(env, key) {
+  try {
+    var url = await presignUrl(env, key, 'DELETE', 60);
+    var res = await fetch(url, { method: 'DELETE' });
+    var ok = res.status === 204 || res.status === 200 || res.status === 404;
+    return { key: key, ok: ok, status: res.status };
+  } catch (e) {
+    return { key: key, ok: false, status: 0, error: (e && e.message) || 'delete failed' };
+  }
+}
+
+/* Best-effort batch delete. Every key is attempted even if an earlier one
+   fails, and the caller gets a full per-key report — a partial failure
+   here must be visible, never silently swallowed into a bare "done". */
+export async function deleteObjects(env, keys) {
+  var out = [];
+  for (var i = 0; i < keys.length; i++) out.push(await deleteObject(env, keys[i]));
+  return out;
+}
+
 /* Presigned GET URL — the controlled read path for media whose listing is
    published. Deliberately short-lived: the URL is minted per page view, so
    a link that escapes (shared screenshot, referrer log, cached HTML) stops

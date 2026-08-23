@@ -382,6 +382,29 @@
 
   $('adLcBack').addEventListener('click', function () { selectTab('properties'); });
 
+  function kv(pairs) {
+    return pairs.filter(function (p) { return p[1] !== null && p[1] !== undefined && p[1] !== ''; })
+      .map(function (p) { return '<div class="ad-kv-row"><span>' + esc(p[0]) + '</span><span>' + p[1] + '</span></div>'; })
+      .join('');
+  }
+
+  var MEDIA_STATUS_LABEL = { draft: 'Draft', pending_review: 'Pending Review', rejected: 'Rejected', published: 'Published' };
+
+  function renderReviewMedia(media) {
+    $('adLcMediaEmpty').hidden = !!(media && media.length);
+    $('adLcMedia').innerHTML = (media || []).map(function (m) {
+      var inner = !m.url
+        ? '<div class="ad-media-badge is-rejected">Link unavailable</div>'
+        : m.kind === 'video'
+          ? '<video src="' + esc(m.url) + '" muted playsinline controls></video>'
+          : '<img src="' + esc(m.url) + '" alt="" loading="lazy">';
+      return '<div class="ad-media-tile">' + inner +
+        '<span class="ad-media-badge is-' + esc(m.visibility) + '">' + esc(MEDIA_STATUS_LABEL[m.visibility] || m.visibility) + '</span>' +
+        '<span class="ad-media-kind">' + esc(m.kind) + '</span>' +
+      '</div>';
+    }).join('');
+  }
+
   async function loadLifecycle() {
     if (!lifecycleListingId) return;
     A.msg($('adLcMsg'), '');
@@ -389,15 +412,73 @@
       var res = await A.get(API.adminLifecycle + '?listingId=' + encodeURIComponent(lifecycleListingId));
       $('adLcTitle').textContent = res.businessCode + ' — ' + res.stateLabel;
 
+      var p = res.property || {};
+      $('adLcProperty').innerHTML = kv([
+        ['Type', p.typeLabel], ['Rent', p.rent != null ? 'PKR ' + p.rent.toLocaleString('en-PK') + '/mo' : null],
+        ['Advance', p.advance != null ? 'PKR ' + p.advance.toLocaleString('en-PK') : null],
+        ['Bedrooms', p.beds], ['Bathrooms', p.baths],
+        ['Car porch', p.carPorch ? 'Yes' : 'No'],
+        ['Size', p.size != null ? p.size + ' ' + (p.sizeUnit === 'marla' ? 'Marla' : 'Sq Ft') : null],
+        ['Front road width', p.roadWidthFt != null ? p.roadWidthFt + ' ft' : null],
+        ['Features', (p.features || []).length ? esc((p.features || []).join(', ')) : null],
+        ['Submitted', p.submittedAt ? A.fmtDateTime(p.submittedAt) : null]
+      ]);
+
+      var loc = res.location || {};
+      $('adLcLocation').innerHTML = kv([
+        ['City', loc.city], ['Main location', loc.mainLocation],
+        ['Sub location', loc.subLocation ? esc(loc.subLocation).replace(/\b\w/g, function (c) { return c.toUpperCase(); }) : null],
+        ['Landmark', loc.landmark]
+      ]);
+
+      var o = res.owner;
+      $('adLcOwner').innerHTML = o
+        ? kv([
+            ['Name', o.name], ['Email', o.email ? esc(o.email) + (o.emailVerified ? ' ✓' : ' (unverified)') : null],
+            ['Phone / WhatsApp', o.phone],
+            ['Google account', o.hasGoogleAccount ? 'Linked' : 'Not linked'],
+            ['Prior submissions', res.priorSubmissions]
+          ])
+        : '';
+
+      var mgr = res.assignedManager;
+      $('adLcWorkflow').innerHTML = kv([
+        ['Assigned manager', mgr ? esc(mgr.name) + ' (' + esc(A.roleLabel(mgr.role)) + ')' : 'Unassigned — visible to CEO directly'],
+        ['Current state', res.stateLabel]
+      ]);
+
+      renderReviewMedia(res.media);
+
       /* Buttons come from the server's list of transitions THIS role may
-         make, so the console can never offer a move the API would refuse. */
-      $('adLcActions').innerHTML = res.availableTransitions.length
+         make, so the console can never offer a move the API would refuse.
+         'deleted' is singled out: TRANSITIONS has no edge leaving it (see
+         functions/utils/lifecycle.js), so it is the one truly
+         irreversible action here — everything else (archive, reject) can
+         be moved back to Pending Review. It is labelled and confirmed
+         accordingly rather than folded into the same "danger" style as
+         a recoverable move. */
+      var actionsHtml = res.availableTransitions.length
         ? res.availableTransitions.map(function (t) {
+            var isDelete = t.state === 'deleted';
             var danger = ['rejected', 'archived', 'deleted'].indexOf(t.state) > -1;
+            var label = isDelete ? 'Permanently Delete' : t.label;
             return '<button class="ad-btn is-sm' + (danger ? ' is-danger' : ' is-primary') +
-              '" type="button" data-to="' + esc(t.state) + '">' + esc(t.label) + '</button>';
+              '" type="button" data-to="' + esc(t.state) + '">' + esc(label) + '</button>';
           }).join('')
         : '<span class="ad-pill">No moves available to your role from this state.</span>';
+
+      /* 'deleted' is terminal — no button above ever offers it again once
+         reached. If the media purge that runs on that transition left
+         anything behind (an R2 delete that failed), this is the one way
+         back to it: same action, same server-side handler, but routed as
+         a purge-only retry rather than a state change (see
+         functions/api/admin/lifecycle.js — "alreadyDeleted"). Offered
+         only to the CEO, matching who could reach 'deleted' at all. */
+      if (res.state === 'deleted' && (res.media || []).length && ME.user.role === 'ceo') {
+        actionsHtml += '<button class="ad-btn is-sm is-danger" type="button" data-to="deleted" data-retry-purge>' +
+          'Retry Media Removal (' + res.media.length + ' remaining)</button>';
+      }
+      $('adLcActions').innerHTML = actionsHtml;
 
       $('adLcHistory').innerHTML = res.history.length
         ? res.history.map(function (h) {
@@ -420,10 +501,37 @@
     var btn = e.target.closest('[data-to]');
     if (!btn) return;
     var toState = btn.getAttribute('data-to');
+    var isRetryPurge = btn.hasAttribute('data-retry-purge');
 
-    /* Mirrors REASON_REQUIRED in functions/utils/lifecycle.js. */
+    if (isRetryPurge) {
+      /* Not a state change — the property is already permanently
+         deleted. This only re-attempts removing whatever media the last
+         attempt could not clear from storage, so it gets its own,
+         accurate confirmation rather than the "this cannot be undone"
+         wording below (which would be describing something that already
+         happened). */
+      if (!win.confirm('Retry removing the remaining media from storage for this deleted property?')) return;
+    } else if (toState === 'deleted') {
+      /* Honest about what this actually does: the property/listing row is
+         NOT erased (Doc 18 Article 2.4 forbids that for a business
+         record) — it becomes permanently inaccessible everywhere in the
+         product and its media is removed from storage. Said plainly here
+         rather than left to the "Permanently Delete" label alone. */
+      var sure = win.confirm(
+        'Permanently delete this property?\n\n' +
+        'It will disappear from every list and can never be restored. ' +
+        'Its photos and videos will be removed from storage. ' +
+        'The record itself is kept for compliance, exactly as an archived property is — ' +
+        'only visible through Status History, never again in normal use.'
+      );
+      if (!sure) return;
+    }
+
+    /* Mirrors REASON_REQUIRED in functions/utils/lifecycle.js. Not asked
+       for a purge retry — that call makes no lifecycle transition, so the
+       server does not require (or record) a reason for it. */
     var reason = null;
-    if (['rejected', 'archived', 'deleted', 'unavailable'].indexOf(toState) > -1) {
+    if (!isRetryPurge && ['rejected', 'archived', 'deleted', 'unavailable'].indexOf(toState) > -1) {
       reason = win.prompt('Reason for moving this property to "' + toState + '" (recorded permanently):');
       if (!reason) return;
     }
@@ -433,7 +541,12 @@
       var res = await A.post(API.adminLifecycle, {
         listingId: lifecycleListingId, toState: toState, reason: reason
       });
-      A.msg($('adLcMsg'), 'Moved to ' + res.stateLabel + '.' + (res.warning ? ' ' + res.warning : ''), 'is-ok');
+      var msg = isRetryPurge ? '' : 'Moved to ' + res.stateLabel + '.' + (res.warning ? ' ' + res.warning : '');
+      if (res.mediaPurge) {
+        msg += (msg ? ' ' : '') + 'Media: ' + res.mediaPurge.deleted + ' of ' + res.mediaPurge.requested + ' removed from storage.' +
+          (res.mediaPurge.failed.length ? ' ' + res.mediaPurge.failed.length + ' could not be removed — use Retry Media Removal.' : '');
+      }
+      A.msg($('adLcMsg'), msg, res.mediaPurge && res.mediaPurge.failed.length ? 'is-error' : 'is-ok');
       await loadLifecycle();
     } catch (err) {
       A.msg($('adLcMsg'), err.message, 'is-error');

@@ -166,6 +166,14 @@ function builder(table) {
     ],
     /* listing → unit → property, the chain every property read walks. */
     listings: [{ rel: 'units', fk: 'unit_id', target: 'units', key: 'id' }],
+    /* ownership claim → owner_profile → contact, the chain the admin
+       review endpoint walks to show who owns a property. */
+    property_ownership_claims: [
+      { rel: 'owner_profiles', fk: 'owner_profile_id', target: 'owner_profiles', key: 'id' }
+    ],
+    owner_profiles: [
+      { rel: 'contacts', fk: 'contact_id', target: 'contacts', key: 'id' }
+    ],
     units: [{ rel: 'properties', fk: 'property_id', target: 'properties', key: 'id' }]
   };
 
@@ -300,16 +308,31 @@ function builder(table) {
     upsert: function (r, opts) { return write(r, 'upsert', opts && opts.onConflict); },
     update: function (patch) {
       var chain = {
-        eq: function (col, val) {
-          filters.push({ op: 'eq', col: col, val: val });
-          return chain;
-        },
+        eq: function (col, val) { filters.push({ op: 'eq', col: col, val: val }); return chain; },
+        in: function (col, val) { filters.push({ op: 'in', col: col, val: val }); return chain; },
         then: function (resolve, reject) {
           var f = fail();
           if (f) return Promise.resolve(f).then(resolve, reject);
           rows().forEach(function (r) {
             Object.keys(patch).forEach(function (k) { r[k] = patch[k]; });
           });
+          return Promise.resolve({ data: null, error: null }).then(resolve, reject);
+        }
+      };
+      return chain;
+    },
+    /* Actually removes the matched rows from DB[table] — a caller like
+       the media-purge path checks the ROW COUNT afterward, so a stub
+       that only pretended to delete would make that assertion lie. */
+    delete: function () {
+      var chain = {
+        eq: function (col, val) { filters.push({ op: 'eq', col: col, val: val }); return chain; },
+        in: function (col, val) { filters.push({ op: 'in', col: col, val: val }); return chain; },
+        then: function (resolve, reject) {
+          var f = fail();
+          if (f) return Promise.resolve(f).then(resolve, reject);
+          var doomed = rows();
+          DB[table] = (DB[table] || []).filter(function (r) { return doomed.indexOf(r) === -1; });
           return Promise.resolve({ data: null, error: null }).then(resolve, reject);
         }
       };

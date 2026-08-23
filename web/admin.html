@@ -267,15 +267,49 @@
     </section>
 
     <!-- ══ LIFECYCLE (opened from Properties) ══ -->
+    <!-- Property Review — reached only by drilling into a property (no
+         top-level tab, see TABS above). This is the one review surface:
+         property detail, location, owner, assigned manager and media all
+         live here alongside the lifecycle actions/history that were
+         already here, rather than a second screen. -->
     <section class="ad-panel" id="panel-lifecycle" role="tabpanel">
       <div class="ad-card">
         <div class="ad-card-head">
-          <b id="adLcTitle">Property lifecycle</b>
+          <b id="adLcTitle">Property review</b>
           <div class="ad-spacer"></div>
           <button class="ad-btn is-sm" type="button" id="adLcBack">← Back to properties</button>
         </div>
+
+        <div class="ad-review-grid">
+          <div>
+            <div class="ad-review-sub">Property</div>
+            <div class="ad-kv" id="adLcProperty"></div>
+          </div>
+          <div>
+            <div class="ad-review-sub">Location</div>
+            <div class="ad-kv" id="adLcLocation"></div>
+          </div>
+        </div>
+
+        <div class="ad-review-grid">
+          <div>
+            <div class="ad-review-sub">Owner</div>
+            <div class="ad-kv" id="adLcOwner"></div>
+          </div>
+          <div>
+            <div class="ad-review-sub">Workflow</div>
+            <div class="ad-kv" id="adLcWorkflow"></div>
+          </div>
+        </div>
+
+        <div class="ad-review-sub">Media</div>
+        <div class="ad-media-grid" id="adLcMedia"></div>
+        <p class="ad-empty" id="adLcMediaEmpty" hidden>No media uploaded for this property.</p>
+
+        <div class="ad-card-head" style="margin-top:20px"><b>Actions</b></div>
         <div class="ad-actions" id="adLcActions"></div>
         <p class="ad-msg" id="adLcMsg" role="status" aria-live="polite"></p>
+
         <div class="ad-card-head" style="margin-top:18px"><b>Status history</b><span>Every change, permanently.</span></div>
         <div class="ad-history" id="adLcHistory"></div>
       </div>

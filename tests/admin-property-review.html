@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>CEO Property Review — MakanOnRent</title>
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; max-width: 1000px; margin: 40px auto; padding: 0 20px; color: #16211C; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: #6B7A73; margin-bottom: 20px; }
+  #summary { padding: 14px 18px; border-radius: 12px; font-weight: 700; margin-bottom: 18px; }
+  .ok { background: #E7F3EE; border: 1px solid #0E5C44; color: #0E5C44; }
+  .bad { background: #FBEAE8; border: 1px solid #C0392B; color: #C0392B; }
+  .grp { margin: 18px 0 6px; font-weight: 800; font-size: 12px; letter-spacing: .6px; text-transform: uppercase; color: #6B7A73; }
+  li { list-style: none; padding: 4px 0; border-bottom: 1px solid #EEE; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .p { color: #0E5C44; } .f { color: #C0392B; font-weight: 700; }
+  .note { background: #FFF8E6; border: 1px solid #E4C766; border-radius: 10px; padding: 10px 14px; margin: 14px 0; font-size: 13px; }
+</style>
+<script type="importmap">
+{ "imports": { "@supabase/supabase-js": "./stub-supabase-db.js" } }
+</script>
+</head>
+<body>
+
+<h1>CEO property review — executable tests</h1>
+<p class="sub">
+  Runs the real <code>functions/api/admin/lifecycle.js</code> and <code>functions/utils/r2.js</code>
+  against a queryable database fake and a stubbed R2 endpoint. The load-bearing assertions:
+  CEO sees unassigned properties, a manager never sees outside their scope, permanently
+  deleting a property purges ONLY that listing's R2 objects, and no business record is
+  ever hard-deleted.
+</p>
+
+<div id="summary">Running…</div>
+<div id="out"></div>
+
+<script type="module">
+import { onRequestGet as lcGet, onRequestPost as lcPost } from '../functions/api/admin/lifecycle.js';
+import { onRequestGet as propsGet } from '../functions/api/admin/properties.js';
+import { hashToken, SESSION_COOKIE } from '../functions/utils/session.js';
+import { DB, reset } from './stub-supabase-db.js';
+
+var results = [];
+function group(n) { results.push({ group: n }); }
+function check(desc, got, want) {
+  results.push({ desc: desc, pass: JSON.stringify(got) === JSON.stringify(want), got: got, want: want });
+}
+function ok(desc, cond, got) { results.push({ desc: desc, pass: !!cond, got: got }); }
+var notes = [];
+
+var ENV = {
+  SUPABASE_URL: 'https://stub.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'k', SITE_URL: 'https://makanonrent.com',
+  R2_ACCOUNT_ID: 'acct123', R2_BUCKET_NAME: 'makanonrent-assets',
+  R2_ACCESS_KEY_ID: 'AKIDEXAMPLE', R2_SECRET_ACCESS_KEY: 'secretkeyexample'
+};
+
+/* ── R2 stub: records every DELETE, answers GET presign fine ────────── */
+var realFetch = window.fetch.bind(window);
+var R2_CALLS = [];
+window.fetch = function (url, init) {
+  var u = String(url);
+  if (u.indexOf('https://acct123.r2.cloudflarestorage.com/') === 0) {
+    var method = (init && init.method) || 'GET';
+    R2_CALLS.push({ method: method, url: u });
+    if (method === 'DELETE') {
+      var status = u.indexOf('fail-me') > -1 ? 500 : 204;
+      return Promise.resolve({ status: status });
+    }
+    return Promise.resolve({ status: 200 });
+  }
+  return realFetch(url, init);
+};
+
+function ctx(url, opts) {
+  opts = opts || {};
+  var headers = new Headers();
+  if (opts.auth) headers.set('Cookie', SESSION_COOKIE + '=tok-' + opts.auth);
+  var b = opts.body ? JSON.stringify(opts.body) : null;
+  if (b) headers.set('Content-Type', 'application/json');
+  return {
+    env: ENV,
+    request: {
+      url: 'https://makanonrent.com' + url, method: opts.method || 'GET', headers: headers,
+      json: function () { return b ? Promise.resolve(JSON.parse(b)) : Promise.reject(new Error('no body')); }
+    }
+  };
+}
+async function call(fn, url, opts) {
+  var res = await fn(ctx(url, opts));
+  return { status: res.status, body: await res.json() };
+}
+
+async function seedUser(id, role, name) {
+  DB.admin_users.push({ id: id, username: id, full_name: name, role: role, status: 'active' });
+  DB.admin_sessions.push({
+    id: 'sess-' + id, user_id: id, token_hash: await hashToken('tok-' + id),
+    expires_at: new Date(Date.now() + 36e5).toISOString(), revoked_at: null,
+    admin_users: { id: id, username: id, full_name: name, role: role, status: 'active', must_change_password: false }
+  });
+}
+
+var CITY = 'lahore', MAIN = 'lahore/johar-town', SUB = 'lahore/johar-town/block-a';
+var OWNER_A_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c01';
+var PROP_ID = 'prop-1', UNIT_ID = 'unit-1', LISTING_ID = 'lst-1';
+
+function seedProperty(opts) {
+  opts = opts || {};
+  DB.locations.push(
+    { node_id: CITY, parent_node_id: null, name: 'Lahore', slug: 'lahore', type: 'city', status: 'approved', active: true },
+    { node_id: MAIN, parent_node_id: CITY, name: 'Johar Town', slug: 'johar-town', type: 'locality', status: 'approved', active: true },
+    { node_id: SUB, parent_node_id: MAIN, name: 'Block A', slug: 'block-a', type: 'subarea', status: 'approved', active: true }
+  );
+  DB.contacts.push({ id: OWNER_A_ID, full_name: 'Owner A', email: 'ownera@gmail.com', email_verified: true, phone_e164: '+923001234567', auth_user_id: 'auth-a' });
+  DB.owner_profiles.push({ id: 'op-1', contact_id: OWNER_A_ID });
+  DB.property_ownership_claims.push({ id: 'claim-1', property_id: PROP_ID, owner_profile_id: 'op-1', claim_type: 'sole' });
+  DB.properties.push({
+    id: PROP_ID, business_code: 'MOR-LHR-1', category: 'homes', property_type: 'house',
+    city_slug: 'lahore', city_name: 'Lahore', area_slug: 'johar-town', area_name: 'Johar Town',
+    landmark: 'Near the park', road_width_ft: 30, area_node_id: opts.areaNodeId !== undefined ? opts.areaNodeId : SUB,
+    added_by_admin_id: opts.addedBy || null, created_at: '2026-08-01T00:00:00Z'
+  });
+  DB.units.push({ id: UNIT_ID, property_id: PROP_ID, unit_type: 'house', beds: 3, baths: 2, car_porch: true, size_value: 5, size_unit: 'marla' });
+  DB.listings.push({
+    id: LISTING_ID, unit_id: UNIT_ID, lifecycle_state: opts.state || 'submitted', status: 'intake',
+    rent_amount_minor: 9500000, advance_amount_minor: 19000000, currency: 'PKR', negotiable: true,
+    features: ['gas_meter'], note: null, created_at: '2026-08-01T00:00:00Z'
+  });
+  (opts.media || [{ id: 'm1', kind: 'image', visibility: 'draft', key: 'public/properties/d1/1-a.png' }]).forEach(function (m, i) {
+    DB.property_media.push({ id: m.id, listing_id: LISTING_ID, kind: m.kind, r2_key: m.key, visibility: m.visibility, sort_order: i });
+  });
+}
+
+/* ══ 1. CEO sees everything, including unassigned ═══════════════════ */
+group('CEO visibility (assigned and unassigned)');
+
+reset(); await seedUser('ceo1', 'ceo', 'Chief');
+seedProperty({ areaNodeId: SUB });   // no manager assignment exists at all
+
+var ceoView = await call(lcGet, '/api/admin/lifecycle?listingId=' + LISTING_ID, { auth: 'ceo1' });
+check('CEO can open an unassigned property', ceoView.status, 200);
+check('unassigned is reported honestly, not hidden', ceoView.body.assignedManager, null);
+
+var ceoProps = await call(propsGet, '/api/admin/properties', { auth: 'ceo1' });
+check('CEO sees it in the properties list too', ceoProps.body.properties.length, 1);
+
+/* ══ 2. Manager scope ═════════════════════════════════════════════ */
+group('Manager scope');
+
+reset(); await seedUser('ceo1', 'ceo', 'Chief'); await seedUser('mgr1', 'manager', 'Manager One'); await seedUser('mgr2', 'manager', 'Manager Two');
+seedProperty({ areaNodeId: SUB });
+DB.admin_area_assignments.push({ id: 'aa1', user_id: 'mgr1', node_id: SUB, scope_level: 'sub', scope_role: 'manager', active: true });
+
+var mgr1View = await call(lcGet, '/api/admin/lifecycle?listingId=' + LISTING_ID, { auth: 'mgr1' });
+check('the assigned manager can open it', mgr1View.status, 200);
+check('and is correctly identified as the assigned manager', mgr1View.body.assignedManager.name, 'Manager One');
+
+var mgr2View = await call(lcGet, '/api/admin/lifecycle?listingId=' + LISTING_ID, { auth: 'mgr2' });
+check('an unassigned manager cannot open it', mgr2View.status, 403);
+
+var mgr1Props = await call(propsGet, '/api/admin/properties', { auth: 'mgr1' });
+check('assigned manager sees it in their list', mgr1Props.body.properties.length, 1);
+var mgr2Props = await call(propsGet, '/api/admin/properties', { auth: 'mgr2' });
+check('unassigned manager sees nothing', mgr2Props.body.properties.length, 0);
+
+/* ══ 3. Full review payload ═══════════════════════════════════════ */
+group('Full property review detail');
+
+reset(); await seedUser('ceo1', 'ceo', 'Chief');
+seedProperty({
+  areaNodeId: SUB,
+  media: [
+    { id: 'm1', kind: 'image', visibility: 'draft', key: 'public/properties/d1/1-a.png' },
+    { id: 'm2', kind: 'video', visibility: 'pending_review', key: 'public/properties/d1/2-b.mp4' }
+  ]
+});
+var full = await call(lcGet, '/api/admin/lifecycle?listingId=' + LISTING_ID, { auth: 'ceo1' });
+
+check('reference', full.body.property.reference, 'MOR-LHR-1');
+check('type', full.body.property.typeLabel, 'House');
+check('rent converted from minor units', full.body.property.rent, 95000);
+check('advance converted from minor units', full.body.property.advance, 190000);
+check('beds', full.body.property.beds, 3);
+check('front road width', full.body.property.roadWidthFt, 30);
+check('city', full.body.location.city, 'Lahore');
+check('main location', full.body.location.mainLocation, 'Johar Town');
+check('sub location resolved from the node path', full.body.location.subLocation, 'block a');
+check('landmark', full.body.location.landmark, 'Near the park');
+
+check('owner name', full.body.owner.name, 'Owner A');
+check('owner email shown', full.body.owner.email, 'ownera@gmail.com');
+check('verified flag reflects the real column', full.body.owner.emailVerified, true);
+check('phone shown', full.body.owner.phone, '+923001234567');
+check('Google-linked flag', full.body.owner.hasGoogleAccount, true);
+
+check('two media items are returned', full.body.media.length, 2);
+ok('a signed URL is present for each', full.body.media.every(function (m) { return !!m.url; }));
+ok('BOTH visibility states are visible to an admin reviewer (not just published)',
+   full.body.media.some(function (m) { return m.visibility === 'draft'; }) &&
+   full.body.media.some(function (m) { return m.visibility === 'pending_review'; }));
+ok('the signed URL points at the correct object key',
+   full.body.media[0].url.indexOf(encodeURIComponent('public/properties/d1/1-a.png').replace(/%2F/g, '/')) > -1 ||
+   full.body.media[0].url.indexOf('1-a.png') > -1, full.body.media[0].url);
+
+ok('no owner CNIC or service-role secret leaks into the payload',
+   JSON.stringify(full.body).indexOf('R2_SECRET') === -1 && JSON.stringify(full.body).toLowerCase().indexOf('cnic') === -1);
+
+/* ══ 4. Permanent delete keeps the business record ════════════════ */
+group('Permanent delete — governance-compliant');
+
+reset(); await seedUser('ceo1', 'ceo', 'Chief');
+seedProperty({
+  areaNodeId: SUB, state: 'rejected',
+  media: [
+    { id: 'm1', kind: 'image', visibility: 'rejected', key: 'public/properties/del1/a.png' },
+    { id: 'm2', kind: 'image', visibility: 'rejected', key: 'public/properties/del1/b.png' }
+  ]
+});
+R2_CALLS.length = 0;
+
+var del = await call(lcPost, '/api/admin/lifecycle',
+  { method: 'POST', auth: 'ceo1', body: { listingId: LISTING_ID, toState: 'deleted', reason: 'Fraudulent listing' } });
+check('the delete transition succeeds', del.status, 200);
+check('the property is now in the terminal deleted state', del.body.to, 'deleted');
+
+check('the listing ROW still exists (never a hard DELETE)', DB.listings.length, 1);
+check('the property ROW still exists', DB.properties.length, 1);
+check('the unit ROW still exists', DB.units.length, 1);
+check('the ownership claim still exists', DB.property_ownership_claims.length, 1);
+check('the owner contact still exists', DB.contacts.length, 1);
+ok('deleted_at is stamped on the listing, not a row removal',
+   !!DB.listings[0].deleted_at);
+check('a status-history row records the deletion', DB.listing_status_history.length, 1);
+check('the reason was recorded permanently', DB.listing_status_history[0].reason, 'Fraudulent listing');
+
+/* The media purge itself. */
+check('both R2 objects were deleted', R2_CALLS.filter(function (c) { return c.method === 'DELETE'; }).length, 2);
+ok('only THIS listing\'s object keys were targeted',
+   R2_CALLS.every(function (c) { return c.url.indexOf('del1') > -1; }), R2_CALLS.map(function (c) { return c.url; }));
+check('the property_media ROWS are removed once their object is confirmed gone', DB.property_media.length, 0);
+check('the purge itself is reported in the response', del.body.mediaPurge, { requested: 2, deleted: 2, failed: [] });
+
+var purgeAudit = DB.admin_audit_log.filter(function (a) { return a.action === 'purge_property_media'; });
+check('the purge is audited separately from the lifecycle transition', purgeAudit.length, 1);
+check('the audit records the actor', purgeAudit[0].actor_id, 'ceo1');
+
+/* ══ 5. Another property's media is never touched ═════════════════ */
+group('No cross-property media deletion');
+
+reset(); await seedUser('ceo1', 'ceo', 'Chief');
+seedProperty({ areaNodeId: SUB, state: 'rejected', media: [{ id: 'm1', kind: 'image', visibility: 'rejected', key: 'public/properties/target/x.png' }] });
+/* A second, unrelated listing with its own media. */
+DB.properties.push({ id: 'prop-2', business_code: 'MOR-LHR-2', category: 'homes', property_type: 'house', city_slug: 'lahore', city_name: 'Lahore', area_slug: 'johar-town', area_name: 'Johar Town', area_node_id: SUB, added_by_admin_id: null, created_at: '2026-08-01T00:00:00Z' });
+DB.units.push({ id: 'unit-2', property_id: 'prop-2', unit_type: 'house', beds: 2, baths: 1, car_porch: false, size_value: 4, size_unit: 'marla' });
+DB.listings.push({ id: 'lst-2', unit_id: 'unit-2', lifecycle_state: 'published', status: 'verified_live', rent_amount_minor: 1, currency: 'PKR', features: [], created_at: '2026-08-01T00:00:00Z' });
+DB.property_media.push({ id: 'm2', listing_id: 'lst-2', kind: 'image', r2_key: 'public/properties/OTHER/y.png', visibility: 'published', sort_order: 0 });
+R2_CALLS.length = 0;
+
+await call(lcPost, '/api/admin/lifecycle', { method: 'POST', auth: 'ceo1', body: { listingId: LISTING_ID, toState: 'deleted', reason: 'x' } });
+
+check('only the targeted listing\'s object was deleted', R2_CALLS.length, 1);
+ok('the other property\'s object key was never referenced', R2_CALLS[0].url.indexOf('OTHER') === -1, R2_CALLS[0].url);
+check('the other property\'s media row is untouched', DB.property_media.filter(function (m) { return m.id === 'm2'; }).length, 1);
+check('the other listing is unaffected', DB.listings.filter(function (l) { return l.id === 'lst-2'; })[0].lifecycle_state, 'published');
+
+/* ══ 6. Retry after a partial R2 failure ══════════════════════════ */
+group('Retry after a partial purge failure');
+
+reset(); await seedUser('ceo1', 'ceo', 'Chief'); await seedUser('mgr1', 'manager', 'M');
+seedProperty({
+  areaNodeId: SUB, state: 'rejected',
+  media: [
+    { id: 'm1', kind: 'image', visibility: 'rejected', key: 'public/properties/retry/ok.png' },
+    { id: 'm2', kind: 'image', visibility: 'rejected', key: 'public/properties/retry/fail-me.png' }
+  ]
+});
+R2_CALLS.length = 0;
+var del2 = await call(lcPost, '/api/admin/lifecycle',
+  { method: 'POST', auth: 'ceo1', body: { listingId: LISTING_ID, toState: 'deleted', reason: 'x' } });
+
+check('one object deleted, one failed', del2.body.mediaPurge, { requested: 2, deleted: 1, failed: [{ mediaId: 'm2', key: 'public/properties/retry/fail-me.png', error: undefined }] });
+check('the failed row is KEPT, not lost', DB.property_media.length, 1);
+check('and it is the one that actually failed', DB.property_media[0].id, 'm2');
+
+var notCeo = await call(lcPost, '/api/admin/lifecycle',
+  { method: 'POST', auth: 'mgr1', body: { listingId: LISTING_ID, toState: 'deleted' } });
+check('a non-CEO cannot retry the purge', notCeo.status, 403);
+check('nothing changed from the forbidden attempt', DB.property_media.length, 1);
+
+var retry = await call(lcPost, '/api/admin/lifecycle',
+  { method: 'POST', auth: 'ceo1', body: { listingId: LISTING_ID, toState: 'deleted' } });
+check('the CEO can retry with no reason required', retry.status, 200);
+check('the retry does not re-run the lifecycle transition', retry.body.from, 'deleted');
+ok('only ONE retry-triggered lifecycle audit exists (no duplicate transition audit)',
+   DB.admin_audit_log.filter(function (a) { return a.action === 'lifecycle_transition'; }).length === 1);
+
+/* This test's fixture always fails "fail-me" — so the retry, by design,
+   fails again. What matters is that it was genuinely re-attempted rather
+   than being a no-op, which the R2 call count proves. */
+ok('the retry genuinely re-attempted the R2 delete',
+   R2_CALLS.filter(function (c) { return c.method === 'DELETE' && c.url.indexOf('fail-me') > -1; }).length >= 2);
+
+/* ══ 7. Unauthorized access ════════════════════════════════════════ */
+group('Authorization');
+
+reset(); await seedUser('ceo1', 'ceo', 'Chief');
+seedProperty({ areaNodeId: SUB });
+var anon = await call(lcGet, '/api/admin/lifecycle?listingId=' + LISTING_ID);
+check('an anonymous caller is refused', anon.status, 401);
+var anonPost = await call(lcPost, '/api/admin/lifecycle',
+  { method: 'POST', body: { listingId: LISTING_ID, toState: 'archived', reason: 'x' } });
+check('an anonymous caller cannot transition', anonPost.status, 401);
+
+/* ── render ───────────────────────────────────────────────────────── */
+notes.push('R2 itself is stubbed (a fetch to acct123.r2.cloudflarestorage.com). The real SigV4 signer in functions/utils/r2.js runs unmodified; only the network call it makes is intercepted, exactly as in tests/push.html for the same reason.');
+
+window.fetch = realFetch;
+var pass = results.filter(function (x) { return x.desc && x.pass; }).length;
+var fail = results.filter(function (x) { return x.desc && !x.pass; }).length;
+var s = document.getElementById('summary');
+s.className = fail ? 'bad' : 'ok';
+s.textContent = fail ? (fail + ' failed / ' + (pass + fail) + ' assertions') : (pass + ' assertions passed');
+document.getElementById('out').innerHTML =
+  '<div class="note">' + notes.join('<br>') + '</div>' +
+  results.map(function (x) {
+    if (x.group) return '<div class="grp">' + x.group + '</div>';
+    return '<li class="' + (x.pass ? 'p' : 'f') + '">' + (x.pass ? '✓ ' : '✗ ') + x.desc +
+      (x.pass ? '' : ' — got ' + JSON.stringify(x.got) +
+        (x.want !== undefined ? ', want ' + JSON.stringify(x.want) : '')) + '</li>';
+  }).join('');
+window.__RESULT__ = { pass: pass, fail: fail, notes: notes,
+  failures: results.filter(function (x) { return x.desc && !x.pass; })
+    .map(function (x) { return x.desc + ' — got ' + JSON.stringify(x.got); }) };
+</script>
+</body>
+</html>

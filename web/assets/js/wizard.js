@@ -398,7 +398,14 @@
       overlay = '<div class="up up-ok"><span class="up-tick" aria-hidden="true">' + STATUS_ICON.done +
                 '</span><span class="up-txt">Uploaded</span></div>';
     } else {
-      overlay = '<div class="up up-err">' +
+      /* The real reason (a server error message, an HTTP status, a
+         network failure) is never discarded — it used to be thrown away
+         at the point of failure, which is exactly what made "Upload
+         failed" on every file impossible to diagnose from the outside.
+         It rides in `title` (a native tooltip) rather than as visible
+         tile text: an owner should not be shown a raw server/env error,
+         but nobody debugging this should have to reproduce it blind. */
+      overlay = '<div class="up up-err" title="' + UI.esc(entry.errorMessage || 'Upload failed') + '">' +
         '<span class="up-tick" aria-hidden="true">' + STATUS_ICON.error + '</span>' +
         '<span class="up-txt">Upload failed</span>' +
         '<button class="up-retry" type="button" data-retry="' + kind + '" data-i="' + i + '">Retry</button>' +
@@ -463,8 +470,15 @@
       entry.publicUrl = res.publicUrl;
       entry.mediaKind = res.kind;
       renderMedia(kind);
-    }).catch(function () {
+    }).catch(function (err) {
       entry.status = 'error';
+      entry.errorMessage = (err && err.message) || 'Upload failed';
+      /* Not shown to the owner (see mediaThumb), but this is what turns
+         "every upload just fails" into a diagnosable report instead of a
+         dead end. */
+      if (win.console && win.console.error) {
+        win.console.error('MakanOnRent upload failed (' + entry.file.name + '): ' + entry.errorMessage);
+      }
       renderMedia(kind);
     });
   }
@@ -872,7 +886,19 @@
         kind: kind, sizeBytes: file.size
       })
     })
-      .then(function (r) { if (!r.ok) throw new Error('presign failed'); return r.json(); })
+      .then(function (r) {
+        if (r.ok) return r.json();
+        /* The presign endpoint answers a failure with a real JSON
+           { error }. Swallowing it as a bare "presign failed" was the
+           exact reason a misconfigured deployment (a missing R2 secret,
+           for example) looked identical to a genuine network hiccup —
+           neither the owner's screen nor the console had anything to
+           tell them apart. */
+        return r.json().catch(function () { return null; }).then(function (data) {
+          var msg = (data && data.error) || ('Could not prepare the upload (' + r.status + ').');
+          throw new Error(msg);
+        });
+      })
       .then(function (res) {
         return new Promise(function (resolve, reject) {
           var xhr = new XMLHttpRequest();
