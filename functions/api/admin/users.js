@@ -14,7 +14,7 @@ import { json, preflight } from '../../utils/cors.js';
 import { getServiceClient } from '../../utils/supabase.js';
 import { isNonEmptyString } from '../../utils/validate.js';
 import { requireAuth, requireCapability, canManageRole, can, getManagedManagerIds, getScopeNodeIds, isWithinScope } from '../../utils/rbac.js';
-import { hashPassword, generateTempPassword, validatePasswordStrength } from '../../utils/password.js';
+import { hashPassword, validatePasswordStrength } from '../../utils/password.js';
 import { revokeAllUserSessions } from '../../utils/session.js';
 import { auditFor } from '../../utils/audit.js';
 
@@ -404,11 +404,20 @@ export async function onRequestPost(context) {
     }
 
     /* ── reset-password ─────────────────────────────────────────────── */
+    /* CEO-set, not auto-generated (approved policy change, 2026-08-24) —
+       leaving a system-generated password nobody chose is the exact gap
+       must_change_password already exists to close on CREATE; a RESET
+       should hold to the same bar rather than handing back a string the
+       CEO has to relay some other way. generateTempPassword()/the old
+       temporaryPassword response field are gone from this action. */
     if (body.action === 'reset-password') {
       if (!can(auth.user.role, 'users.reset_password')) {
         return json(env, { error: 'Your role does not permit this action.' }, 403);
       }
       if (!isNonEmptyString(body.userId, 60)) return json(env, { error: 'userId is required.' }, 422);
+      if (!isNonEmptyString(body.newPassword, 200)) {
+        return json(env, { error: 'A new password is required.' }, 422);
+      }
 
       var t = await db.from('admin_users').select('id, role, username').eq('id', body.userId).maybeSingle();
       if (t.error) throw t.error;
@@ -417,18 +426,32 @@ export async function onRequestPost(context) {
         return json(env, { error: 'You cannot manage that user.' }, 403);
       }
 
-      var temp = generateTempPassword();
-      var newPw = await hashPassword(temp);
+      var weakReset = validatePasswordStrength(body.newPassword);
+      if (weakReset) return json(env, { error: weakReset }, 422);
+
+      var newPw = await hashPassword(body.newPassword);
       var r = await db.from('admin_users').update({
         password_hash: newPw.hash, password_salt: newPw.salt, password_algo: newPw.algo,
         must_change_password: true
       }).eq('id', body.userId);
       if (r.error) throw r.error;
 
+      /* Old password stops working the instant the row above commits —
+         verifyPassword only ever checks the CURRENT hash, there is no
+         grace window. Sessions revoked so an already-logged-in device
+         cannot keep riding the old credential; any not-yet-verified login
+         OTP is consumed so it cannot complete a login that started under
+         the old password. */
       await revokeAllUserSessions(env, body.userId);
+      await db.from('admin_email_otp')
+        .update({ consumed_at: new Date().toISOString() })
+        .eq('admin_user_id', body.userId).eq('purpose', 'login').is('consumed_at', null);
+
+      /* Never the password itself — only who/when/target, same as every
+         other audit entry in this file. */
       await audit('reset_password', 'admin_user', body.userId, { username: t.data.username });
 
-      return json(env, { ok: true, temporaryPassword: temp });
+      return json(env, { ok: true });
     }
 
     return json(env, { error: "action must be 'create', 'update', 'set-reports-to', 'set-status' or 'reset-password'." }, 422);

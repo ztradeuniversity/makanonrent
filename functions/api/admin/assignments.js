@@ -156,13 +156,17 @@ export async function onRequestPost(context) {
       return json(env, { ok: true, assignmentId: ins.data.id }, 201);
     }
 
+    /* "Remove" in the UI IS this action — 'revoke' was already the real
+       removal (active=false, history kept), just under a less clear
+       name. No second action was created; the UI now labels the exact
+       same operation "Remove". */
     if (body.action === 'revoke') {
       if (!isNonEmptyString(body.assignmentId, 60)) {
         return json(env, { error: 'assignmentId is required.' }, 422);
       }
 
       var row = await db.from('admin_area_assignments')
-        .select('id, user_id, node_id, active, admin_users!admin_area_assignments_user_id_fkey(role)')
+        .select('id, user_id, node_id, scope_level, active, admin_users!admin_area_assignments_user_id_fkey(role)')
         .eq('id', body.assignmentId).maybeSingle();
       if (row.error) throw row.error;
       if (!row.data) return json(env, { error: 'No such assignment.' }, 404);
@@ -170,19 +174,145 @@ export async function onRequestPost(context) {
         return json(env, { error: 'You cannot change that assignment.' }, 403);
       }
 
+      /* City/main removal cascades to every active descendant row for
+         THIS SAME user (node_id prefix match, same scheme rbac.js's
+         isWithinScope uses) — removing "Lahore" must not leave "Lahore /
+         Johar Town" looking like it's still assigned. A specific
+         sub-location removes only itself. Never touches another user's
+         rows even if they hold the identical node_id. */
+      var toRevoke = [body.assignmentId];
+      if (row.data.scope_level !== 'sub') {
+        var desc = await db.from('admin_area_assignments')
+          .select('id').eq('user_id', row.data.user_id).eq('active', true)
+          .like('node_id', row.data.node_id + '/%');
+        if (desc.error) throw desc.error;
+        toRevoke = toRevoke.concat((desc.data || []).map(function (d) { return d.id; }));
+      }
+
       /* Revoke, never delete: the assignment history explains who was
          responsible for an area at the time a verification was signed. */
       var upd = await db.from('admin_area_assignments')
         .update({ active: false, revoked_at: new Date().toISOString() })
-        .eq('id', body.assignmentId);
+        .in('id', toRevoke);
       if (upd.error) throw upd.error;
 
       await audit('revoke_area', 'admin_area_assignment', body.assignmentId,
-        { userId: row.data.user_id, nodeId: row.data.node_id });
-      return json(env, { ok: true });
+        { userId: row.data.user_id, nodeId: row.data.node_id, cascadedCount: toRevoke.length });
+      return json(env, { ok: true, removedCount: toRevoke.length });
     }
 
-    return json(env, { error: "action must be 'assign' or 'revoke'." }, 422);
+    /* Bulk — "Remove all assigned locations". Same revoke semantics,
+       every active row for one user in one audited action instead of a
+       loop of individual clicks. */
+    if (body.action === 'revoke-all') {
+      if (!isNonEmptyString(body.userId, 60)) return json(env, { error: 'userId is required.' }, 422);
+
+      var bulkTarget = await db.from('admin_users').select('id, role').eq('id', body.userId).maybeSingle();
+      if (bulkTarget.error) throw bulkTarget.error;
+      if (!bulkTarget.data) return json(env, { error: 'No such user.' }, 404);
+      if (!canManageRole(auth.user.role, bulkTarget.data.role)) {
+        return json(env, { error: 'You cannot change that user\'s assignments.' }, 403);
+      }
+
+      var bulkRows = await db.from('admin_area_assignments')
+        .select('id').eq('user_id', body.userId).eq('active', true);
+      if (bulkRows.error) throw bulkRows.error;
+      var bulkIds = (bulkRows.data || []).map(function (r) { return r.id; });
+
+      if (bulkIds.length) {
+        var bulkUpd = await db.from('admin_area_assignments')
+          .update({ active: false, revoked_at: new Date().toISOString() })
+          .in('id', bulkIds);
+        if (bulkUpd.error) throw bulkUpd.error;
+      }
+
+      await audit('revoke_area', 'admin_area_assignment', body.userId, { userId: body.userId, bulk: true, count: bulkIds.length });
+      return json(env, { ok: true, removedCount: bulkIds.length });
+    }
+
+    /* Transfer — moves active responsibility to a new eligible owner
+       without destroying history: the old row(s) are revoked (same
+       cascade as 'revoke') and a fresh active row is inserted for the
+       recipient, exactly like a normal 'assign' would. Two audited
+       actions under one request rather than a UI-level revoke+assign,
+       so a half-completed transfer (revoked but never re-assigned) can
+       never happen from a network failure between two separate calls. */
+    if (body.action === 'transfer') {
+      if (!isNonEmptyString(body.assignmentId, 60)) return json(env, { error: 'assignmentId is required.' }, 422);
+      if (!isNonEmptyString(body.toUserId, 60)) return json(env, { error: 'toUserId is required.' }, 422);
+
+      var src = await db.from('admin_area_assignments')
+        .select('id, user_id, node_id, scope_level, active, admin_users!admin_area_assignments_user_id_fkey(role)')
+        .eq('id', body.assignmentId).maybeSingle();
+      if (src.error) throw src.error;
+      if (!src.data) return json(env, { error: 'No such assignment.' }, 404);
+      if (!canManageRole(auth.user.role, src.data.admin_users.role)) {
+        return json(env, { error: 'You cannot change that assignment.' }, 403);
+      }
+      if (body.toUserId === src.data.user_id) {
+        return json(env, { error: 'Cannot transfer an assignment to the same owner.' }, 422);
+      }
+
+      var recip = await db.from('admin_users').select('id, role, status').eq('id', body.toUserId).maybeSingle();
+      if (recip.error) throw recip.error;
+      if (!recip.data || recip.data.status !== 'active') {
+        return json(env, { error: 'Transfer recipient must be an active team member.' }, 422);
+      }
+      if (!canManageRole(auth.user.role, recip.data.role)) {
+        return json(env, { error: 'You cannot assign areas to that recipient.' }, 403);
+      }
+      if (auth.user.role !== 'ceo') {
+        var xferScope = await getScopeNodeIds(env, auth.user);
+        if (!isWithinScope(xferScope, src.data.node_id)) {
+          return json(env, { error: 'That area is outside your own assigned scope.' }, 403);
+        }
+      }
+
+      /* Same cascade rule as revoke: transferring a city/main moves its
+         whole active subtree, not just the top row. */
+      var xferRows = [{ id: src.data.id, node_id: src.data.node_id, scope_level: src.data.scope_level }];
+      if (src.data.scope_level !== 'sub') {
+        var xferDesc = await db.from('admin_area_assignments')
+          .select('id, node_id, scope_level').eq('user_id', src.data.user_id).eq('active', true)
+          .like('node_id', src.data.node_id + '/%');
+        if (xferDesc.error) throw xferDesc.error;
+        xferRows = xferRows.concat(xferDesc.data || []);
+      }
+
+      var oldIds = xferRows.map(function (r) { return r.id; });
+      var revokeXfer = await db.from('admin_area_assignments')
+        .update({ active: false, revoked_at: new Date().toISOString() }).in('id', oldIds);
+      if (revokeXfer.error) throw revokeXfer.error;
+
+      var newIds = [];
+      var xferErrors = [];
+      for (var xi = 0; xi < xferRows.length; xi++) {
+        var xr = xferRows[xi];
+        var xins = await db.from('admin_area_assignments').insert({
+          user_id: body.toUserId, node_id: xr.node_id, scope_level: xr.scope_level,
+          scope_role: recip.data.role, assigned_by: auth.user.id, active: true
+        }).select('id').single();
+        /* uq_area_one_active_manager can legitimately block one node in a
+           larger transfer (recipient already manages it another way) —
+           reported per-node rather than aborting the whole transfer,
+           since the old rows are already revoked and cannot silently
+           un-revoke themselves. */
+        if (xins.error) {
+          if (String(xins.error.message || '').indexOf('uq_area_one_active_manager') === -1) throw xins.error;
+          xferErrors.push(xr.node_id);
+        } else {
+          newIds.push(xins.data.id);
+        }
+      }
+
+      await audit('transfer_area', 'admin_area_assignment', body.assignmentId, {
+        fromUserId: src.data.user_id, toUserId: body.toUserId, nodeId: src.data.node_id,
+        transferredCount: newIds.length, conflicts: xferErrors
+      });
+      return json(env, { ok: true, transferredCount: newIds.length, conflicts: xferErrors });
+    }
+
+    return json(env, { error: "action must be 'assign', 'revoke', 'revoke-all' or 'transfer'." }, 422);
   } catch (e) {
     return json(env, { error: (e && e.message) || 'Assignment request failed.' }, 500);
   }

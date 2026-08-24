@@ -708,7 +708,7 @@
         '<button class="ad-btn is-sm" type="button" data-edit>Edit</button> ' +
         '<button class="ad-btn is-sm" type="button" data-toggle="' + (u.status === 'active' ? 'disabled' : 'active') + '">' +
           (u.status === 'active' ? 'Disable' : 'Enable') + '</button> ' +
-        '<button class="ad-btn is-sm" type="button" data-reset>Reset password</button> ' +
+        '<button class="ad-btn is-sm" type="button" data-open-reset>Reset password</button> ' +
         '<button class="ad-btn is-sm is-danger" type="button" data-delete>Delete</button>';
     } else {
       actions += '<span class="ad-pill">View only</span>';
@@ -770,6 +770,17 @@
         reportsToField +
         '</div><div class="ad-actions">' +
         '<button class="ad-btn is-primary is-sm" type="button" data-save-edit>Save</button>' +
+        '<button class="ad-btn is-sm" type="button" data-cancel-edit>Cancel</button>' +
+        '</div></td></tr>';
+    } else if (mode === 'reset') {
+      row += '<tr class="ad-detail-row"><td colspan="7">' +
+        '<p style="margin:0 0 10px;color:var(--muted);">Set a new password for this team member. ' +
+        'The previous password will stop working immediately.</p>' +
+        '<div class="ad-row">' +
+        '<div class="ad-field"><label>New Password</label><input class="ad-input" type="password" minlength="10" autocomplete="new-password" data-reset-new /></div>' +
+        '<div class="ad-field"><label>Confirm New Password</label><input class="ad-input" type="password" minlength="10" autocomplete="new-password" data-reset-confirm /></div>' +
+        '</div><div class="ad-actions">' +
+        '<button class="ad-btn is-primary is-sm" type="button" data-do-reset>Reset Password</button> ' +
         '<button class="ad-btn is-sm" type="button" data-cancel-edit>Cancel</button>' +
         '</div></td></tr>';
     }
@@ -932,7 +943,8 @@
     if (!row || !row.hasAttribute('data-user')) return;
     var userId = row.getAttribute('data-user');
     var toggle = e.target.closest('[data-toggle]');
-    var reset = e.target.closest('[data-reset]');
+    var openReset = e.target.closest('[data-open-reset]');
+    var doReset = e.target.closest('[data-do-reset]');
     var view = e.target.closest('[data-view]');
     var edit = e.target.closest('[data-edit]');
     var del = e.target.closest('[data-delete]');
@@ -946,10 +958,25 @@
         });
         A.msg($('adUserMsg'), 'Account updated. Any active sessions were revoked.', 'is-ok');
         await loadTeam();
-      } else if (reset) {
-        if (!win.confirm('Reset this password? Their sessions end immediately.')) return;
-        var res = await A.post(API.adminUsers, { action: 'reset-password', userId: userId });
-        A.msg($('adUserMsg'), 'New temporary password (shown once): ' + res.temporaryPassword, 'is-ok');
+      } else if (openReset) {
+        teamExpanded[userId] = teamExpanded[userId] === 'reset' ? null : 'reset';
+        renderTeamList();
+      } else if (doReset) {
+        var detailRowReset = row.nextElementSibling;
+        var newPwEl = detailRowReset.querySelector('[data-reset-new]');
+        var confirmPwEl = detailRowReset.querySelector('[data-reset-confirm]');
+        if (newPwEl.value.length < 10) {
+          A.msg($('adUserMsg'), 'Password must be at least 10 characters.', 'is-error');
+          return;
+        }
+        if (newPwEl.value !== confirmPwEl.value) {
+          A.msg($('adUserMsg'), 'Passwords do not match.', 'is-error');
+          return;
+        }
+        await A.post(API.adminUsers, { action: 'reset-password', userId: userId, newPassword: newPwEl.value });
+        A.msg($('adUserMsg'), 'Password reset successfully.', 'is-ok');
+        teamExpanded[userId] = null;
+        await loadTeam();
       } else if (del) {
         if (!win.confirm('Delete this team member? This stops their access immediately. Their audit history is kept, not erased — this matches the console-wide "no hard deletes" policy.')) return;
 
@@ -1076,6 +1103,7 @@
           '<span class="ad-chevron' + (expanded ? ' is-open' : '') + '" aria-hidden="true">&#9656;</span></button>' +
           '<div class="ad-grow"><b>' + esc(rows[0].userName || 'Unknown') + '</b>' +
           '<small>' + esc(rows[0].userRole || '') + ' · ' + esc(assignSummary(rows)) + '</small></div>' +
+          '<button class="ad-btn is-sm is-danger" type="button" data-remove-all="' + esc(userId) + '">Remove all</button>' +
         '</div>';
 
         var detail = '<div class="ad-detail-grid" id="assignRows-' + esc(userId) + '"' + (expanded ? '' : ' hidden') + '>' +
@@ -1083,13 +1111,15 @@
             return '<div class="ad-verify-row" data-assignment="' + esc(a.id) + '">' +
               '<div class="ad-grow"><b>' + esc(a.areaName || a.nodeId) + '</b>' +
               '<small>' + esc(a.nodeId) + ' · ' + esc(a.level) + '</small></div>' +
-              '<button class="ad-btn is-sm is-danger" type="button" data-revoke>Revoke</button>' +
+              '<button class="ad-btn is-sm" type="button" data-transfer="' + esc(userId) + '">Transfer</button>' + tipSpan('transfer', 'Transfer') + ' ' +
+              '<button class="ad-btn is-sm is-danger" type="button" data-remove>Remove</button>' + tipSpan('revoke', 'Remove') +
             '</div>';
           }).join('') +
         '</div>';
 
         return head + detail;
       }).join('');
+      bindTooltips($('adAssignmentList'));
     } catch (e) {
       $('adAssignmentList').innerHTML = '<div class="ad-empty">' + esc(e.message) + '</div>';
     }
@@ -1270,13 +1300,51 @@
       return;
     }
 
-    var btn = e.target.closest('[data-revoke]');
-    if (!btn) return;
-    var id = btn.closest('[data-assignment]').getAttribute('data-assignment');
+    var removeBtn = e.target.closest('[data-remove]');
+    var transferBtn = e.target.closest('[data-transfer]');
+    var removeAllBtn = e.target.closest('[data-remove-all]');
+
     try {
-      await A.post(API.adminAssignments, { action: 'revoke', assignmentId: id });
-      A.msg($('adAssignMsg'), 'Assignment revoked.', 'is-ok');
-      await loadAssignments();
+      if (removeBtn) {
+        var assignRow = removeBtn.closest('[data-assignment]');
+        var id = assignRow.getAttribute('data-assignment');
+        var areaLabel = assignRow.querySelector('b') ? assignRow.querySelector('b').textContent : 'this location';
+        var typed = win.prompt('Removing "' + areaLabel + '" stops operational access here (history is kept). Type REMOVE to confirm:');
+        if (typed !== 'REMOVE') return;
+        var res = await A.post(API.adminAssignments, { action: 'revoke', assignmentId: id });
+        A.msg($('adAssignMsg'), (res.removedCount > 1 ? res.removedCount + ' locations removed (including sub-locations).' : 'Location removed.'), 'is-ok');
+        await loadAssignments();
+      } else if (removeAllBtn) {
+        var groupUserId = removeAllBtn.getAttribute('data-remove-all');
+        var groupHead = removeAllBtn.closest('[data-assign-group]');
+        var summaryText = groupHead ? groupHead.querySelector('small').textContent : '';
+        var typedAll = win.prompt('This removes ALL active area assignments for this member (' + summaryText + '). History is kept. Type REMOVE to confirm:');
+        if (typedAll !== 'REMOVE') return;
+        var resAll = await A.post(API.adminAssignments, { action: 'revoke-all', userId: groupUserId });
+        A.msg($('adAssignMsg'), resAll.removedCount + ' location(s) removed.', 'is-ok');
+        await loadAssignments();
+      } else if (transferBtn) {
+        var xferAssignRow = transferBtn.closest('[data-assignment]');
+        var xferId = xferAssignRow.getAttribute('data-assignment');
+        var fromUserId = transferBtn.getAttribute('data-transfer');
+        var fromUser = (teamCache || []).find(function (u) { return u.id === fromUserId; });
+        var eligibleXfer = (teamCache || []).filter(function (u) {
+          return u.status === 'active' && u.id !== fromUserId && (fromUser ? u.role === fromUser.role : true);
+        });
+        if (!eligibleXfer.length) {
+          A.msg($('adAssignMsg'), 'No eligible active recipient with the same role is available.', 'is-error');
+          return;
+        }
+        var xferName = win.prompt('Transfer to which team member?\n' + eligibleXfer.map(function (u) { return u.fullName + ' (' + u.username + ')'; }).join('\n'));
+        if (!xferName) return;
+        var xferUser = eligibleXfer.find(function (u) { return u.fullName === xferName.trim() || u.username === xferName.trim(); });
+        if (!xferUser) { A.msg($('adAssignMsg'), 'No exact match for "' + xferName + '" among eligible recipients.', 'is-error'); return; }
+        if (!win.confirm('Transfer this assignment (and any sub-locations under it) to ' + xferUser.fullName + '?')) return;
+        var xres = await A.post(API.adminAssignments, { action: 'transfer', assignmentId: xferId, toUserId: xferUser.id });
+        A.msg($('adAssignMsg'), 'Transferred ' + xres.transferredCount + ' location(s) to ' + xferUser.fullName + '.' +
+          (xres.conflicts && xres.conflicts.length ? ' (' + xres.conflicts.length + ' skipped — already assigned elsewhere)' : ''), 'is-ok');
+        await loadAssignments();
+      }
     } catch (err) {
       A.msg($('adAssignMsg'), err.message, 'is-error');
     }
