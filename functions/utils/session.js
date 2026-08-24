@@ -90,7 +90,7 @@ export async function resolveSession(env, request) {
 
   var db = getServiceClient(env);
   var res = await db.from('admin_sessions')
-    .select('id, user_id, expires_at, revoked_at, admin_users!inner(id, username, full_name, role, frozen_role, status, must_change_password)')
+    .select('id, user_id, expires_at, revoked_at, admin_users!inner(id, username, full_name, role, frozen_role, status, must_change_password, reports_to_user_id)')
     .eq('token_hash', await hashToken(token))
     .maybeSingle();
 

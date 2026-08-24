@@ -12,7 +12,7 @@
 import { json, preflight } from '../../utils/cors.js';
 import { getServiceClient } from '../../utils/supabase.js';
 import { isNonEmptyString } from '../../utils/validate.js';
-import { requireAuth, requireCapability, canManageRole, getScopeNodeIds, isWithinScope } from '../../utils/rbac.js';
+import { requireAuth, requireCapability, canManageRole, getScopeNodeIds, isWithinScope, getVisibleSubordinateIds, cascadeInvalidateChildren } from '../../utils/rbac.js';
 import { auditFor } from '../../utils/audit.js';
 
 export async function onRequestOptions(context) {
@@ -113,6 +113,17 @@ export async function onRequestPost(context) {
       if (!canManageRole(auth.user.role, target.data.role)) {
         return json(env, { error: 'You cannot assign areas to that user.' }, 403);
       }
+      /* Role-level authority alone is not enough (a Manager and an
+         unrelated system-wide Field Officer both pass canManageRole) —
+         the target must actually be IN this caller's own hierarchy.
+         Same shared definition users.js uses to decide what the caller
+         can even see, so the picker and this check can never disagree. */
+      if (auth.user.role !== 'ceo') {
+        var hierarchyIds = await getVisibleSubordinateIds(env, auth.user);
+        if (hierarchyIds.indexOf(body.userId) === -1) {
+          return json(env, { error: 'That team member is outside your own hierarchy.' }, 403);
+        }
+      }
       /* A stale client-supplied userId (a removed/disabled member the UI
          no longer lists) must be rejected here, server-side — hiding it
          from selectors is not enforcement. */
@@ -173,6 +184,12 @@ export async function onRequestPost(context) {
       if (!canManageRole(auth.user.role, row.data.admin_users.role)) {
         return json(env, { error: 'You cannot change that assignment.' }, 403);
       }
+      if (auth.user.role !== 'ceo') {
+        var revokeHierarchyIds = await getVisibleSubordinateIds(env, auth.user);
+        if (revokeHierarchyIds.indexOf(row.data.user_id) === -1) {
+          return json(env, { error: 'That team member is outside your own hierarchy.' }, 403);
+        }
+      }
 
       /* City/main removal cascades to every active descendant row for
          THIS SAME user (node_id prefix match, same scheme rbac.js's
@@ -198,6 +215,16 @@ export async function onRequestPost(context) {
 
       await audit('revoke_area', 'admin_area_assignment', body.assignmentId,
         { userId: row.data.user_id, nodeId: row.data.node_id, cascadedCount: toRevoke.length });
+
+      /* If the account that JUST LOST this area itself delegates areas
+         downward (assistant_ceo/manager), the loss may have pushed one of
+         THEIR subordinates' areas outside that now-smaller scope —
+         CHILD_SCOPE ⊆ PARENT_SCOPE must keep holding after a reduction,
+         not just at the moment it was granted. Keyed on the assignment's
+         OWNER (row.data.user_id), not the caller: a superior revoking a
+         subordinate's area is the common case here, not a self-revoke. */
+      await cascadeInvalidateChildren(env, audit, row.data.user_id);
+
       return json(env, { ok: true, removedCount: toRevoke.length });
     }
 
@@ -213,6 +240,12 @@ export async function onRequestPost(context) {
       if (!canManageRole(auth.user.role, bulkTarget.data.role)) {
         return json(env, { error: 'You cannot change that user\'s assignments.' }, 403);
       }
+      if (auth.user.role !== 'ceo') {
+        var bulkHierarchyIds = await getVisibleSubordinateIds(env, auth.user);
+        if (bulkHierarchyIds.indexOf(body.userId) === -1) {
+          return json(env, { error: 'That team member is outside your own hierarchy.' }, 403);
+        }
+      }
 
       var bulkRows = await db.from('admin_area_assignments')
         .select('id').eq('user_id', body.userId).eq('active', true);
@@ -227,6 +260,12 @@ export async function onRequestPost(context) {
       }
 
       await audit('revoke_area', 'admin_area_assignment', body.userId, { userId: body.userId, bulk: true, count: bulkIds.length });
+
+      /* Same cascade rationale as single revoke — the account whose whole
+         area set was just cleared may itself have subordinates who now
+         hold areas outside a scope that no longer exists at all. */
+      await cascadeInvalidateChildren(env, audit, body.userId);
+
       return json(env, { ok: true, removedCount: bulkIds.length });
     }
 
@@ -265,6 +304,13 @@ export async function onRequestPost(context) {
         var xferScope = await getScopeNodeIds(env, auth.user);
         if (!isWithinScope(xferScope, src.data.node_id)) {
           return json(env, { error: 'That area is outside your own assigned scope.' }, 403);
+        }
+        /* Both ends of the transfer must be this caller's own hierarchy —
+           otherwise a scoped role could launder an area between two
+           accounts neither of which reports to them. */
+        var xferHierarchyIds = await getVisibleSubordinateIds(env, auth.user);
+        if (xferHierarchyIds.indexOf(src.data.user_id) === -1 || xferHierarchyIds.indexOf(body.toUserId) === -1) {
+          return json(env, { error: 'Both the current and new owner must be within your own hierarchy.' }, 403);
         }
       }
 
@@ -309,6 +355,13 @@ export async function onRequestPost(context) {
         fromUserId: src.data.user_id, toUserId: body.toUserId, nodeId: src.data.node_id,
         transferredCount: newIds.length, conflicts: xferErrors
       });
+
+      /* The FROM side just lost this area — same cascade rationale as a
+         plain revoke, since a transfer is a revoke on that side under the
+         hood. The TO side only ever gains scope from a transfer, which
+         cannot orphan anything, so no cascade check is needed there. */
+      await cascadeInvalidateChildren(env, audit, src.data.user_id);
+
       return json(env, { ok: true, transferredCount: newIds.length, conflicts: xferErrors });
     }
 

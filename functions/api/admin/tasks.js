@@ -9,7 +9,7 @@
 import { json, preflight } from '../../utils/cors.js';
 import { getServiceClient } from '../../utils/supabase.js';
 import { isNonEmptyString } from '../../utils/validate.js';
-import { requireAuth, requireCapability, canManageRole, can, getManagedManagerIds, getScopeNodeIds, isWithinScope } from '../../utils/rbac.js';
+import { requireAuth, requireCapability, canManageRole, can, getManagedManagerIds, getScopeNodeIds, isWithinScope, getVisibleSubordinateIds } from '../../utils/rbac.js';
 import { auditFor } from '../../utils/audit.js';
 import { sendQueuedEmail } from '../../utils/mailer.js';
 
@@ -137,6 +137,18 @@ export async function onRequestPost(context) {
       if (!t.data) return json(env, { error: 'No such user.' }, 404);
       if (!canManageRole(auth.user.role, t.data.role)) {
         return json(env, { error: 'You cannot assign tasks to that user.' }, 403);
+      }
+      /* Role-level authority alone would let an Assistant CEO assign a
+         task to any Manager/FO system-wide — the target must be within
+         THIS caller's own hierarchy (same shared definition as the Team
+         list and area assignment use, so none of the three can disagree
+         about who "belongs" to whom). tasks.assign is ceo/assistant_ceo
+         only, so this never runs for 'manager'. */
+      if (auth.user.role !== 'ceo') {
+        var taskHierarchyIds = await getVisibleSubordinateIds(env, auth.user);
+        if (taskHierarchyIds.indexOf(body.assignedTo) === -1) {
+          return json(env, { error: 'That team member is outside your own hierarchy.' }, 403);
+        }
       }
       if (t.data.status !== 'active') {
         return json(env, { error: 'That team member is not active and cannot receive new tasks.' }, 409);

@@ -13,7 +13,7 @@
 import { json, preflight } from '../../utils/cors.js';
 import { getServiceClient } from '../../utils/supabase.js';
 import { isNonEmptyString } from '../../utils/validate.js';
-import { requireAuth, requireCapability, canManageRole, can, getManagedManagerIds, getScopeNodeIds, isWithinScope } from '../../utils/rbac.js';
+import { requireAuth, requireCapability, canManageRole, can, getVisibleSubordinateIds } from '../../utils/rbac.js';
 import { hashPassword, validatePasswordStrength } from '../../utils/password.js';
 import { revokeAllUserSessions } from '../../utils/session.js';
 import { auditFor } from '../../utils/audit.js';
@@ -26,14 +26,6 @@ var FROZEN_ROLE = {
   ceo: 'exec', assistant_ceo: 'city_manager', manager: 'area_manager', field_officer: 'field_officer'
 };
 
-/* Downward visibility only, same shape as canManageRole but for LISTING
-   rather than acting: a role may see everyone it is entitled to manage,
-   never a peer or a superior — that would leak the org chart upward. */
-var VISIBLE_ROLES = {
-  assistant_ceo: ['manager', 'field_officer'],
-  manager: ['field_officer']
-};
-
 export async function onRequestGet(context) {
   var env = context.env;
   var auth = await requireCapability(context, 'users.list');
@@ -41,36 +33,68 @@ export async function onRequestGet(context) {
 
   try {
     var db = getServiceClient(env);
+    var url = new URL(context.request.url);
+
+    /* Removed/archived history (governance pass, audited 2026-08-24):
+       CEO-only — an archived member must NEVER reappear in any active
+       operational list (Team, selectors, hierarchy), but Doc 18 Article
+       2.4 still requires the CEO be able to inspect who they were and
+       when they left. A separate query branch, never merged into the
+       active list above, so "?archived=1" cannot accidentally leak a
+       removed member back into a selector that forgot to filter. */
+    if (url.searchParams.get('archived')) {
+      if (auth.user.role !== 'ceo') {
+        return json(env, { error: 'Only the CEO can view removed team member history.' }, 403);
+      }
+      var arcRes = await db.from('admin_users')
+        .select('id, username, full_name, email, role, status, created_at, archived_at')
+        .eq('status', 'archived')
+        .order('archived_at', { ascending: false });
+      if (arcRes.error) throw arcRes.error;
+
+      var arcRows = arcRes.data || [];
+      var arcIds = arcRows.map(function (u) { return u.id; });
+      var reportCounts = {};
+      if (arcIds.length) {
+        var vRes = await db.from('property_verifications').select('verified_by').in('verified_by', arcIds);
+        if (!vRes.error) {
+          (vRes.data || []).forEach(function (r) { reportCounts[r.verified_by] = (reportCounts[r.verified_by] || 0) + 1; });
+        }
+      }
+
+      return json(env, {
+        removed: arcRows.map(function (u) {
+          return {
+            id: u.id, username: u.username, fullName: u.full_name, email: u.email, role: u.role,
+            joinedAt: u.created_at, removedAt: u.archived_at,
+            historicalReportCount: reportCounts[u.id] || 0
+          };
+        })
+      });
+    }
+
     var q = db.from('admin_users')
       .select('id, username, full_name, email, role, status, last_login_at, last_verification_at, created_at, reports_to_user_id')
       .neq('status', 'archived')
       .order('role', { ascending: true })
       .order('full_name', { ascending: true });
 
-    /* Assistant CEO hierarchy (migration 0014, approved 2026-08-24):
-       VISIBLE_ROLES alone made an Assistant CEO see EVERY manager/FO
-       system-wide, not just its own. Managers are scoped to the explicit
-       reports_to_user_id link. Field Officers have no equivalent explicit
-       link (approved scope: "FO visibility remains subject to existing
-       scope and reporting rules"), so they're scoped by the SAME
-       area-overlap mechanism already used for properties/tasks — an FO
-       whose own active area assignment falls within the Assistant CEO's
-       own assigned territory. An Assistant CEO with no managers assigned
-       legitimately sees nobody, not everybody. */
-    if (auth.user.role === 'assistant_ceo') {
-      var managerIds = await getManagedManagerIds(env, auth.user.id);
-      var aceoScope = await getScopeNodeIds(env, auth.user);
-      var foRows = await db.from('admin_area_assignments')
-        .select('user_id, node_id, admin_users!admin_area_assignments_user_id_fkey!inner(role, status)')
-        .eq('active', true).eq('admin_users.role', 'field_officer').eq('admin_users.status', 'active');
-      var foIds = (!foRows.error ? (foRows.data || []) : [])
-        .filter(function (r) { return isWithinScope(aceoScope, r.node_id); })
-        .map(function (r) { return r.user_id; });
-      var visibleIds = managerIds.concat(foIds);
+    /* Hierarchy governance pass (audited 2026-08-24): VISIBLE_ROLES alone
+       made both an Assistant CEO AND an Area Manager see every account of
+       that role SYSTEM-WIDE, not just their own — confirmed root cause of
+       a Manager seeing (and being able to hand areas to) Field Officers
+       who report to someone else entirely. getVisibleSubordinateIds is
+       the single shared definition of "my hierarchy" also used to
+       AUTHORISE area/task assignment targets (assignments.js, tasks.js),
+       so this list and what those endpoints will actually accept can
+       never drift apart. An Assistant CEO/Manager with nobody assigned
+       yet legitimately sees nobody, not everybody. */
+    /* CEO (the only other role holding users.list) is intentionally left
+       unfiltered here — global authority, matches getScopeNodeIds' null
+       convention for scope. */
+    if (auth.user.role === 'assistant_ceo' || auth.user.role === 'manager') {
+      var visibleIds = await getVisibleSubordinateIds(env, auth.user);
       q = visibleIds.length ? q.in('id', visibleIds) : q.eq('id', '00000000-0000-0000-0000-000000000000');
-    } else {
-      var visible = VISIBLE_ROLES[auth.user.role];
-      if (visible) q = q.in('role', visible);
     }
 
     var res = await q;

@@ -66,6 +66,35 @@
 
   /* ── TODAY ──────────────────────────────────────────────────────── */
   async function loadToday() {
+    /* FO Dashboard content (1A): assigned areas + who they report to.
+       ME.areas/ME.reportsTo already come from /api/admin/me at boot — no
+       second fetch, no second scope resolution. Only shown for the two
+       roles this is actually about; CEO is global (ME.areas is null) and
+       Assistant CEO's own area assignment isn't the "field work" framing
+       this card is for. */
+    if (ME && (ME.user.role === 'manager' || ME.user.role === 'field_officer')) {
+      $('adMyAreasCard').hidden = false;
+      $('adMyReportsTo').textContent = ME.reportsTo || 'CEO';
+      var areas = ME.areas || [];
+      $('adMyAreasList').innerHTML = areas.length
+        ? areas.map(function (a) {
+            return '<div class="ad-verify-row"><div class="ad-grow"><b>' + esc(a.name || a.nodeId) + '</b>' +
+              '<small>' + esc(a.nodeId) + ' · ' + esc(a.level) + '</small></div></div>';
+          }).join('')
+        : '<div class="ad-empty">No areas assigned yet.</div>';
+    }
+
+    /* "My team & areas" overview (Assistant CEO / Manager only — CEO has
+       its own global monitoring tab, and a Field Officer delegates to
+       nobody). Every figure is read from data already fetched elsewhere
+       in the console (users.list — now correctly hierarchy-scoped — and
+       the review queue), never a stored or hardcoded count, so it cannot
+       drift from what the Team/Verify tabs themselves show. */
+    if (ME && (ME.user.role === 'assistant_ceo' || ME.user.role === 'manager')) {
+      $('adOverviewCard').hidden = false;
+      loadMyOverview();
+    }
+
     try {
       loadPerformance();
       var res = await A.get(API.adminTasks + '?date=' + A.todayISO());
@@ -98,6 +127,39 @@
 
   function stat(value, label, accent) {
     return '<div class="ad-stat' + (accent ? ' is-accent' : '') + '"><b>' + esc(value) + '</b><span>' + esc(label) + '</span></div>';
+  }
+
+  async function loadMyOverview() {
+    try {
+      var usersRes = await A.get(API.adminUsers);
+      var users = usersRes.users || [];
+      var managers = users.filter(function (u) { return u.role === 'manager' && u.status === 'active'; }).length;
+      var fos = users.filter(function (u) { return u.role === 'field_officer' && u.status === 'active'; }).length;
+
+      var areas = (ME && ME.areas) || [];
+      var cities = areas.filter(function (a) { return a.level === 'city'; }).length;
+      var mains = areas.filter(function (a) { return a.level === 'main'; }).length;
+      var subs = areas.filter(function (a) { return a.level === 'sub'; }).length;
+
+      var reviewPending = 0;
+      if (can('verification.review')) {
+        try {
+          var reviewRes = await A.get(API.adminVerifications + '?reviewQueue=1');
+          reviewPending = (reviewRes.reports || []).length;
+        } catch (e) { /* stat card degrades gracefully, not a hard error */ }
+      }
+
+      var parts = [];
+      if (ME.user.role === 'assistant_ceo') parts.push(stat(managers, 'Area Managers'));
+      parts.push(stat(fos, 'Field Officers'));
+      parts.push(stat(cities, 'Cities'));
+      parts.push(stat(mains, 'Main locations'));
+      parts.push(stat(subs, 'Sub locations'));
+      parts.push(stat(reviewPending, 'Reports awaiting review', true));
+      $('adOverviewStats').innerHTML = parts.join('');
+    } catch (e) {
+      $('adOverviewStats').innerHTML = '<div class="ad-empty">' + esc(e.message) + '</div>';
+    }
   }
 
   /* ── PERFORMANCE (rendered inside Today) ────────────────────────── */
@@ -160,20 +222,35 @@
     } catch (e) { /* surfaced by the list itself */ }
   });
 
-  /* ── VERIFY ─────────────────────────────────────────────────────── */
+  /* ── VERIFY — this IS the Field Visit / Field Report submission flow.
+     property_verifications (existing, migration 0004) already stores
+     findings/GPS/media for every role including field_officer; this only
+     adds the UI to actually reach those fields — comments, GPS capture
+     and evidence upload were accepted by the API long before there was
+     any way to send them. ───────────────────────────────────────────── */
   var verifySelection = {};
+  var verifyExpanded = {};   // propertyId -> true when its findings/media panel is open
 
   async function loadVerify() {
     verifySelection = {};
+    verifyExpanded = {};
     updateVerifyCount();
     try {
       var res = await A.get(API.adminVerifications);
+      $('adVerifyList').__lastProps = res.properties;
       $('adVerifyList').innerHTML = res.properties.length
         ? res.properties.map(renderVerifyRow).join('')
         : '<div class="ad-empty">No properties in your assigned areas yet.</div>';
+      bindTooltips($('adVerifyList'));
     } catch (e) {
       $('adVerifyList').innerHTML = '<div class="ad-empty">' + esc(e.message) + '</div>';
     }
+
+    $('adMyReportsCard').hidden = !can('properties.verify');
+    if (can('properties.verify')) await loadMyReports();
+
+    $('adReviewCard').hidden = !can('verification.review');
+    if (can('verification.review')) await loadReviewQueue();
   }
 
   function renderVerifyRow(p) {
@@ -187,30 +264,140 @@
         '<span class="ad-pill is-warn">You added this — another person must verify it</span>' +
       '</div>';
     }
-    return '<div class="ad-verify-row" data-prop="' + esc(p.id) + '">' +
+    var expanded = !!verifyExpanded[p.id];
+    var sel = verifySelection[p.id] || {};
+    var proofCount = (sel.proof || []).length;
+    var head = '<div class="ad-verify-row" data-prop="' + esc(p.id) + '">' +
       '<div class="ad-grow"><b>' + esc(p.businessCode) + '</b>' +
       '<small>' + esc(p.areaName) + ', ' + esc(p.cityName) + '</small></div>' +
       '<div class="ad-choice">' +
-        '<label><input type="radio" name="v-' + esc(p.id) + '" value="available" />Available</label>' +
-        '<label class="is-no"><input type="radio" name="v-' + esc(p.id) + '" value="unavailable" />Unavailable</label>' +
+        '<label><input type="radio" name="v-' + esc(p.id) + '" value="available"' + (sel.status === 'available' ? ' checked' : '') + ' />Available</label>' +
+        '<label class="is-no"><input type="radio" name="v-' + esc(p.id) + '" value="unavailable"' + (sel.status === 'unavailable' ? ' checked' : '') + ' />Unavailable</label>' +
       '</div>' +
-      '<input class="ad-input" style="max-width:150px" type="tel" placeholder="Phone" data-phone="' + esc(p.id) + '" />' +
+      '<input class="ad-input" style="max-width:150px" type="tel" placeholder="Phone" data-phone="' + esc(p.id) + '" value="' + esc(sel.phoneNumber || '') + '" />' +
+      '<button class="ad-btn is-sm" type="button" data-toggle-findings="' + esc(p.id) + '">Add findings' +
+        (sel.comments || sel.gps || proofCount ? ' (' + [sel.comments ? '1 note' : null, sel.gps ? 'GPS' : null, proofCount ? proofCount + ' file(s)' : null].filter(Boolean).join(', ') + ')' : '') +
+      '</button>' +
     '</div>';
+
+    var panel = '';
+    if (expanded) {
+      panel = '<div class="ad-detail-grid" style="margin-bottom:14px;">' +
+        '<div class="ad-field"><label class="ad-label-tip">Field Findings / Notes' +
+          tipSpan('findings', 'Field Findings') +
+          '</label><textarea class="ad-input" rows="3" data-findings="' + esc(p.id) +
+          '" placeholder="What you observed — property/location condition, issues, anything the reviewer needs to know.">' + esc(sel.comments || '') + '</textarea></div>' +
+        '<div class="ad-kv-row">' +
+          '<button class="ad-btn is-sm" type="button" data-capture-gps="' + esc(p.id) + '">Capture GPS</button>' +
+          '<span>' + (sel.gps ? esc(sel.gps.lat.toFixed(5)) + ', ' + esc(sel.gps.lng.toFixed(5)) : 'Not captured') + '</span>' +
+        '</div>' +
+        '<div class="ad-field"><label>Photo / video evidence</label>' +
+          '<input type="file" accept="image/*,video/*" multiple data-evidence-input="' + esc(p.id) + '" />' +
+          '<small data-evidence-status="' + esc(p.id) + '">' + (proofCount ? proofCount + ' file(s) attached.' : '') + '</small>' +
+        '</div>' +
+      '</div>';
+    }
+    return head + panel;
   }
 
   $('adVerifyList').addEventListener('change', function (e) {
     var row = e.target.closest('[data-prop]');
-    if (!row) return;
-    var id = row.getAttribute('data-prop');
-    var picked = row.querySelector('input[type=radio]:checked');
-    if (picked) {
-      verifySelection[id] = verifySelection[id] || {};
-      verifySelection[id].status = picked.value;
+    if (row) {
+      var id = row.getAttribute('data-prop');
+      var picked = row.querySelector('input[type=radio]:checked');
+      if (picked) {
+        verifySelection[id] = verifySelection[id] || {};
+        verifySelection[id].status = picked.value;
+      }
+      var phone = row.querySelector('[data-phone]');
+      if (phone && verifySelection[id]) verifySelection[id].phoneNumber = phone.value.trim();
+      updateVerifyCount();
+      return;
     }
-    var phone = row.querySelector('[data-phone]');
-    if (phone && verifySelection[id]) verifySelection[id].phoneNumber = phone.value.trim();
-    updateVerifyCount();
+
+    var findingsEl = e.target.closest('[data-findings]');
+    if (findingsEl) {
+      var fid = findingsEl.getAttribute('data-findings');
+      verifySelection[fid] = verifySelection[fid] || {};
+      verifySelection[fid].comments = findingsEl.value;
+      return;
+    }
+
+    var evidenceInput = e.target.closest('[data-evidence-input]');
+    if (evidenceInput) { uploadEvidence(evidenceInput); return; }
   });
+
+  $('adVerifyList').addEventListener('click', function (e) {
+    var toggleBtn = e.target.closest('[data-toggle-findings]');
+    if (toggleBtn) {
+      var tid = toggleBtn.getAttribute('data-toggle-findings');
+      verifyExpanded[tid] = !verifyExpanded[tid];
+      $('adVerifyList').innerHTML = ($('adVerifyList').__lastProps || []).map(renderVerifyRow).join('');
+      bindTooltips($('adVerifyList'));
+      return;
+    }
+    var gpsBtn = e.target.closest('[data-capture-gps]');
+    if (gpsBtn) { captureGps(gpsBtn.getAttribute('data-capture-gps')); return; }
+  });
+
+  function captureGps(propertyId) {
+    if (!navigator.geolocation) {
+      A.msg($('adVerifyMsg'), 'This browser does not support location capture.', 'is-error');
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(function (pos) {
+      verifySelection[propertyId] = verifySelection[propertyId] || {};
+      verifySelection[propertyId].gps = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      verifyExpanded[propertyId] = true;
+      $('adVerifyList').innerHTML = ($('adVerifyList').__lastProps || []).map(renderVerifyRow).join('');
+      bindTooltips($('adVerifyList'));
+    }, function () {
+      A.msg($('adVerifyMsg'), 'Could not get your location — check location permissions.', 'is-error');
+    }, { enableHighAccuracy: true, timeout: 15000 });
+  }
+
+  /* Uploads straight to R2 through the existing presign endpoint (the
+     SAME one the public Submit Property wizard uses) — no second
+     uploader, no bytes through this server. sha256 is computed client-
+     side for the Evidence Service's anti-reuse check. */
+  async function uploadEvidence(inputEl) {
+    var propertyId = inputEl.getAttribute('data-evidence-input');
+    var statusEl = doc.querySelector('[data-evidence-status="' + propertyId + '"]');
+    var files = Array.prototype.slice.call(inputEl.files || []);
+    if (!files.length) return;
+
+    verifySelection[propertyId] = verifySelection[propertyId] || {};
+    verifySelection[propertyId].proof = verifySelection[propertyId].proof || [];
+
+    for (var i = 0; i < files.length; i++) {
+      var file = files[i];
+      if (statusEl) statusEl.textContent = 'Uploading ' + file.name + '…';
+      try {
+        var kind = file.type.indexOf('video') === 0 ? 'property-video' : 'property-image';
+        var presigned = await A.post(API.presign, {
+          draftId: 'verify-' + propertyId, filename: file.name, contentType: file.type, kind: kind, sizeBytes: file.size
+        });
+        var buf = await file.arrayBuffer();
+        var digest = await crypto.subtle.digest('SHA-256', buf);
+        var sha256 = Array.prototype.map.call(new Uint8Array(digest), function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+
+        var put = await fetch(presigned.uploadUrl, { method: 'PUT', headers: { 'Content-Type': file.type }, body: file });
+        if (!put.ok) throw new Error('Upload failed (' + put.status + ').');
+
+        verifySelection[propertyId].proof.push({
+          kind: kind === 'property-video' ? 'video' : 'image',
+          key: presigned.key, url: presigned.publicUrl, sha256: sha256, byteSize: file.size,
+          capturedAt: new Date().toISOString()
+        });
+      } catch (err) {
+        if (statusEl) statusEl.textContent = 'Failed: ' + file.name + ' (' + err.message + ')';
+        return;
+      }
+    }
+    if (statusEl) statusEl.textContent = verifySelection[propertyId].proof.length + ' file(s) attached.';
+    var countEl = doc.querySelector('[data-toggle-findings="' + propertyId + '"]');
+    if (countEl) countEl.textContent = countEl.textContent;   // label recomputed on next full render
+  }
 
   function updateVerifyCount() {
     var n = Object.keys(verifySelection).filter(function (k) { return verifySelection[k].status; }).length;
@@ -222,10 +409,12 @@
     var items = Object.keys(verifySelection)
       .filter(function (k) { return verifySelection[k].status; })
       .map(function (k) {
+        var s = verifySelection[k];
         return {
-          propertyId: k,
-          status: verifySelection[k].status,
-          phoneNumber: verifySelection[k].phoneNumber || null
+          propertyId: k, status: s.status, phoneNumber: s.phoneNumber || null,
+          comments: s.comments || null,
+          gps: s.gps || null,
+          proof: s.proof || []
         };
       });
     if (!items.length) return;
@@ -242,6 +431,72 @@
       A.msg($('adVerifyMsg'), e.message, 'is-error');
     }
     this.disabled = false;
+  });
+
+  /* ── MY FIELD REPORTS (any role that can submit — mainly Field Officer's
+     own view of what happened to their submissions) ────────────────── */
+  async function loadMyReports() {
+    try {
+      var res = await A.get(API.adminVerifications + '?mine=1');
+      $('adMyReportsList').innerHTML = res.submissions.length
+        ? res.submissions.map(function (s) {
+            var reviewPill = !s.review
+              ? '<span class="ad-pill is-warn">Pending review</span>'
+              : s.review.decision === 'returned'
+                ? '<span class="ad-pill is-danger">Returned: ' + esc(s.review.comment || '') + '</span>'
+                : '<span class="ad-pill is-ok">Reviewed</span>';
+            return '<div class="ad-verify-row">' +
+              '<div class="ad-grow"><b>' + esc(s.businessCode) + '</b>' +
+              '<small>' + esc(s.areaName) + ', ' + esc(s.cityName) + ' · ' + esc(s.status) + ' · ' + esc(A.fmtDateTime(s.verifiedAt)) + '</small></div>' +
+              reviewPill +
+            '</div>';
+          }).join('')
+        : '<div class="ad-empty">No field reports submitted yet.</div>';
+    } catch (e) {
+      $('adMyReportsList').innerHTML = '<div class="ad-empty">' + esc(e.message) + '</div>';
+    }
+  }
+
+  /* ── FIELD REPORT REVIEW (Manager / Assistant CEO / CEO) ───────────── */
+  async function loadReviewQueue() {
+    try {
+      var res = await A.get(API.adminVerifications + '?reviewQueue=1');
+      $('adReviewList').innerHTML = res.reports.length
+        ? res.reports.map(function (r) {
+            return '<div class="ad-verify-row" style="align-items:flex-start;" data-review="' + esc(r.id) + '">' +
+              '<div class="ad-grow">' +
+                '<b>' + esc(r.businessCode) + '</b> — ' + esc(r.status) +
+                '<small style="display:block;">' + esc(r.areaName) + ', ' + esc(r.cityName) + ' · ' + esc(r.fieldOfficer.name) + ' · ' + esc(A.fmtDateTime(r.verifiedAt)) + '</small>' +
+                (r.comments ? '<small style="display:block;white-space:pre-wrap;">' + esc(r.comments) + '</small>' : '') +
+                (r.proof && r.proof.length ? '<small style="display:block;">' + r.proof.length + ' media file(s) attached.</small>' : '') +
+              '</div>' +
+              '<button class="ad-btn is-sm is-primary" type="button" data-review-decide="reviewed">Mark reviewed</button>' +
+              '<button class="ad-btn is-sm is-danger" type="button" data-review-decide="returned">Return for correction</button>' +
+            '</div>';
+          }).join('')
+        : '<div class="ad-empty">No field reports awaiting review.</div>';
+    } catch (e) {
+      $('adReviewList').innerHTML = '<div class="ad-empty">' + esc(e.message) + '</div>';
+    }
+  }
+
+  $('adReviewList').addEventListener('click', async function (e) {
+    var btn = e.target.closest('[data-review-decide]');
+    if (!btn) return;
+    var verificationId = btn.closest('[data-review]').getAttribute('data-review');
+    var decision = btn.getAttribute('data-review-decide');
+    var comment = null;
+    if (decision === 'returned') {
+      comment = win.prompt('Reason for returning this report for correction:');
+      if (!comment) return;
+    }
+    try {
+      await A.post(API.adminVerifications, { action: 'review', verificationId: verificationId, decision: decision, comment: comment });
+      A.msg($('adReviewMsg'), decision === 'returned' ? 'Returned for correction.' : 'Marked reviewed.', 'is-ok');
+      await loadReviewQueue();
+    } catch (err) {
+      A.msg($('adReviewMsg'), err.message, 'is-error');
+    }
   });
 
   /* ── APPROVALS ──────────────────────────────────────────────────── */
@@ -646,7 +901,8 @@
     reportsTo: 'Defines who this team member reports to operationally.',
     transfer: 'Moves active operational responsibility to another eligible team member while preserving history.',
     revoke: 'Removes the current active assignment without deleting historical records.',
-    search: 'Find a team member by name, username, or email.'
+    search: 'Find a team member by name, username, or email.',
+    findings: 'Record what you observed during the field visit — property/location condition, issues, anything the reviewer needs to know.'
   };
   var teamFilters = { q: '', role: '', status: '' };
   var teamExpanded = {};   // userId -> 'view' | 'edit'
@@ -736,6 +992,31 @@
     }
 
     if (mode === 'view') {
+      /* Hierarchical review tree (governance pass): who reports DOWNWARD
+         to this account, with what they're each currently holding — the
+         same reports_to_user_id link and admin_area_assignments data
+         already loaded for this tab, just read one level down. Only
+         Assistant CEO/Manager rows have anyone reporting to them, so a
+         Field Officer's view never shows an (always empty) section. */
+      var directReports = (u.role === 'assistant_ceo' || u.role === 'manager')
+        ? (teamCache || []).filter(function (x) { return x.reportsToUserId === u.id && x.status !== 'archived'; })
+        : [];
+      var reportsBlock = '';
+      if (directReports.length) {
+        reportsBlock = '<div class="ad-kv-row" style="align-items:flex-start;flex-direction:column;">' +
+          '<span>' + (u.role === 'assistant_ceo' ? 'Area Managers' : 'Field Officers') + ' reporting to ' + esc(u.fullName) + '</span>' +
+          '<div style="padding-left:8px;margin-top:4px;">' +
+          directReports.map(function (r) {
+            var rAreas = assignByUserCache[r.id] || [];
+            return '<div style="margin-bottom:4px;">▸ <b>' + esc(r.fullName) + '</b> (' + esc(A.roleLabel(r.role)) + ')' +
+              '<small style="display:block;padding-left:14px;">' +
+              (rAreas.length ? esc(assignSummary(rAreas)) : 'No areas assigned yet') +
+              (r.status !== 'active' ? ' · ' + esc(r.status) : '') +
+              '</small></div>';
+          }).join('') +
+          '</div></div>';
+      }
+
       row += '<tr class="ad-detail-row"><td colspan="7"><div class="ad-detail-grid">' +
         '<div class="ad-kv-row"><span>Role</span><span>' + esc(A.roleLabel(u.role)) + '</span></div>' +
         '<div class="ad-kv-row"><span>Username</span><span>' + esc(u.username) + '</span></div>' +
@@ -745,6 +1026,7 @@
         '<div class="ad-kv-row"><span>Created</span><span>' + esc(A.fmtDateTime(u.createdAt)) + '</span></div>' +
         '<div class="ad-kv-row"><span>Last login</span><span>' + esc(A.fmtDateTime(u.lastLoginAt)) + '</span></div>' +
         '<div class="ad-kv-row"><span>Last verification</span><span>' + esc(A.fmtDateTime(u.lastVerificationAt)) + '</span></div>' +
+        reportsBlock +
       '</div></td></tr>';
     } else if (mode === 'edit') {
       var reportsToField = '';
@@ -852,6 +1134,9 @@
        than let them hit a 403. */
     $('adTaskCard').hidden = !can('tasks.assign');
 
+    $('adRemovedCard').hidden = !(ME && ME.user.role === 'ceo');
+    if (ME && ME.user.role === 'ceo') loadRemovedTeam();
+
     try {
       var res = await A.get(API.adminUsers);
       teamCache = res.users;
@@ -897,6 +1182,42 @@
         teamGroupExpanded[role] = !teamGroupExpanded[role];
         renderTeamList();
       });
+      $('adRemovedToggle').addEventListener('click', function () {
+        var open = $('adRemovedList').hidden;
+        $('adRemovedList').hidden = !open;
+        this.setAttribute('aria-expanded', String(open));
+        this.querySelector('.ad-chevron').classList.toggle('is-open', open);
+      });
+    }
+  }
+
+  /* ── REMOVED TEAM MEMBERS (CEO-only history view, governance pass) ──
+     Collapsed by default, never merged into the active Team list above —
+     an archived account must stay invisible everywhere operational
+     (selectors, hierarchy, active list) while still being inspectable
+     here: who they were, when they joined, when they left, and how much
+     recorded field work is attributed to them. Nothing here reactivates
+     them or edits history — read-only. */
+  async function loadRemovedTeam() {
+    try {
+      var res = await A.get(API.adminUsers + '?archived=1');
+      $('adRemovedCount').textContent = res.removed.length + ' former account(s)';
+      $('adRemovedList').innerHTML = res.removed.length
+        ? '<div class="ad-table-wrap"><table class="ad-table"><thead><tr>' +
+            '<th>Name</th><th>Role</th><th>Joined</th><th>Removed</th><th>Historical reports</th>' +
+          '</tr></thead><tbody>' +
+          res.removed.map(function (u) {
+            return '<tr>' +
+              '<td><b>' + esc(u.fullName) + '</b><small style="display:block;">' + esc(u.username) + '</small></td>' +
+              '<td>Former ' + esc(A.roleLabel(u.role)) + '</td>' +
+              '<td>' + esc(A.fmtDate(u.joinedAt)) + '</td>' +
+              '<td>' + esc(A.fmtDate(u.removedAt)) + '</td>' +
+              '<td class="num">' + u.historicalReportCount + '</td>' +
+            '</tr>';
+          }).join('') + '</tbody></table></div>'
+        : '<div class="ad-empty">No removed team members.</div>';
+    } catch (e) {
+      $('adRemovedList').innerHTML = '<div class="ad-empty">' + esc(e.message) + '</div>';
     }
   }
 
@@ -1155,6 +1476,63 @@
   var LOC = win.MOR_LOC, BANK = win.MOR_BANK;
   var areaPickerReady = false;
 
+  /* ── scope containment for the picker itself (governance pass, audited
+     2026-08-24) ──────────────────────────────────────────────────────
+     LOC/BANK hold the WHOLE Location Data Bank — correct for a CEO, wrong
+     for anyone delegating downward: an Assistant CEO or Manager must only
+     ever see, in this picker, the areas already granted to THEM (ME.areas,
+     loaded once at boot by /api/admin/me — the same list the "My assigned
+     areas" card on Today uses). The server already rejects an out-of-scope
+     assign (assignments.js isWithinScope), so this is not the enforcement
+     boundary — it is what stops the picker from OFFERING a choice that is
+     guaranteed to fail, which is exactly what let an Assistant CEO scoped
+     to one small area still see and attempt to grant "Lahore — whole
+     city". CEO gets null (unrestricted), matching rbac.getScopeNodeIds'
+     own convention. */
+  function myScopeNodeIds() {
+    if (!ME || ME.user.role === 'ceo') return null;
+    return (ME.areas || []).map(function (a) { return a.nodeId; });
+  }
+  /* Full ownership: nodeId is either an exact scope entry or a descendant
+     of one (caller owns an ancestor, so implicitly owns all of nodeId). */
+  function withinMyScope(nodeId) {
+    var scope = myScopeNodeIds();
+    if (scope === null) return true;
+    for (var i = 0; i < scope.length; i++) {
+      var s = scope[i];
+      if (nodeId === s || nodeId.indexOf(s + '/') === 0) return true;
+    }
+    return false;
+  }
+  /* Partial ownership: caller owns nodeId fully, OR owns some more
+     specific slice underneath it (a main inside a city they don't fully
+     hold, a sub inside a main they don't fully hold) — enough reason for
+     nodeId to still appear in the tree so that slice is reachable. */
+  function hasCoverageUnder(nodeId) {
+    var scope = myScopeNodeIds();
+    if (scope === null) return true;
+    if (withinMyScope(nodeId)) return true;
+    var prefix = nodeId + '/';
+    for (var i = 0; i < scope.length; i++) {
+      if (scope[i].indexOf(prefix) === 0) return true;
+    }
+    return false;
+  }
+  function scopedListCities() {
+    var all = LOC.listCities() || [];
+    return myScopeNodeIds() === null ? all : all.filter(function (c) { return hasCoverageUnder(c.id); });
+  }
+  function scopedGetMainAreas(cityId) {
+    var all = LOC.getMainAreas(cityId) || [];
+    if (myScopeNodeIds() === null || withinMyScope(cityId)) return all;
+    return all.filter(function (m) { return hasCoverageUnder(m.id); });
+  }
+  function scopedGetSubAreas(mainId) {
+    var all = LOC.getSubAreas(mainId) || [];
+    if (myScopeNodeIds() === null || withinMyScope(mainId)) return all;
+    return all.filter(function (s) { return withinMyScope(s.id); });
+  }
+
   /* Multi-city / multi-main / multi-sub picker (replaces the old
      single-select City/Main <select> pair — audited gap: a CEO assigning
      one manager across several cities previously had to repeat the whole
@@ -1178,18 +1556,28 @@
      whole city; a main with no sub checked (or with every one of its own
      subs checked) assigns the whole main rather than each sub
      individually — one area-assignment row instead of dozens for the
-     identical operational scope. */
+     identical operational scope.
+
+     A scoped (non-CEO) caller who checks a city they only PARTLY own (a
+     specific main/sub, not the whole city) cannot fall through to "assign
+     the whole city" — the server would reject it and the picker would
+     look broken. In that case checking the city means "grant everything
+     I hold here": every main scopedGetMainAreas already limited them to. */
   function computeSelection() {
     var out = [];
     Object.keys(citySel).filter(function (id) { return citySel[id]; }).forEach(function (cityId) {
-      var mains = LOC.getMainAreas(cityId) || [];
+      var mains = scopedGetMainAreas(cityId);
       var checkedMains = mains.filter(function (m) { return mainSel[m.id]; });
       if (!checkedMains.length) {
-        out.push({ id: cityId, name: cityName(cityId), level: 'city' });
+        if (withinMyScope(cityId)) {
+          out.push({ id: cityId, name: cityName(cityId), level: 'city' });
+        } else {
+          mains.forEach(function (m) { out.push({ id: m.id, name: m.name, level: 'main' }); });
+        }
         return;
       }
       checkedMains.forEach(function (m) {
-        var subs = LOC.getSubAreas(m.id) || [];
+        var subs = scopedGetSubAreas(m.id);
         var checkedSubs = subs.filter(function (s) { return subSel[s.id]; });
         if (!checkedSubs.length || (subs.length && checkedSubs.length === subs.length)) {
           out.push({ id: m.id, name: m.name, level: 'main' });
@@ -1216,10 +1604,10 @@
 
     var tree = Object.keys(citySel).filter(function (id) { return citySel[id]; }).map(function (cityId) {
       var wholeCity = cities.some(function (c) { return c.id === cityId; });
-      var mainsUnder = (LOC.getMainAreas(cityId) || []).filter(function (m) { return mainSel[m.id]; });
+      var mainsUnder = scopedGetMainAreas(cityId).filter(function (m) { return mainSel[m.id]; });
       var lines = mainsUnder.map(function (m) {
         var wholeMain = mains.some(function (x) { return x.id === m.id; });
-        var subsUnder = (LOC.getSubAreas(m.id) || []);
+        var subsUnder = scopedGetSubAreas(m.id);
         var checkedSubsUnder = subsUnder.filter(function (s) { return subSel[s.id]; });
         var subLine = wholeMain
           ? (subsUnder.length ? '<small style="padding-left:34px;display:block;">All sub-locations</small>' : '')
@@ -1244,24 +1632,25 @@
 
   function renderCities() {
     var q = citySearchQ.trim().toLowerCase();
-    var list = (LOC.listCities() || []).filter(function (c) { return !q || c.name.toLowerCase().indexOf(q) > -1; });
+    var list = scopedListCities().filter(function (c) { return !q || c.name.toLowerCase().indexOf(q) > -1; });
     $('adAssignCities').innerHTML = list.length
       ? list.map(function (c) {
           return '<label class="ad-sub"><input type="checkbox" data-city="' + esc(c.id) + '"' +
             (citySel[c.id] ? ' checked' : '') + ' /><span>' + esc(c.name) + '</span></label>';
         }).join('')
-      : '<div class="ad-empty">No city matches that.</div>';
+      : '<div class="ad-empty">' + (myScopeNodeIds() !== null && !myScopeNodeIds().length
+          ? 'You have no assigned areas to delegate from yet.' : 'No city matches that.') + '</div>';
   }
 
   function renderHierarchy() {
     var selectedCityIds = Object.keys(citySel).filter(function (id) { return citySel[id]; });
     $('adAssignHierarchy').innerHTML = selectedCityIds.map(function (cityId) {
-      var mains = LOC.getMainAreas(cityId) || [];
+      var mains = scopedGetMainAreas(cityId);
       var mainRows = mains.length ? mains.map(function (m) {
         var checked = !!mainSel[m.id];
         var subBlock = '';
         if (checked) {
-          var subs = LOC.getSubAreas(m.id) || [];
+          var subs = scopedGetSubAreas(m.id);
           subBlock = subs.length
             ? '<div class="ad-sub-tools"><button class="ad-btn is-sm" type="button" data-sub-all="' + esc(m.id) + '">Select all</button>' +
               '<button class="ad-btn is-sm" type="button" data-sub-none="' + esc(m.id) + '">Clear</button></div>' +
@@ -1351,7 +1740,7 @@
 
     $('adAssignCitySearch').addEventListener('input', function () { citySearchQ = this.value; renderCities(); });
     $('adAssignCityAll').addEventListener('click', function () {
-      (LOC.listCities() || []).forEach(function (c) { citySel[c.id] = true; });
+      scopedListCities().forEach(function (c) { citySel[c.id] = true; });
       renderCities(); refreshPicker();
     });
     $('adAssignCityNone').addEventListener('click', function () {
@@ -1370,9 +1759,9 @@
            from the intended state too, so nothing orphaned survives to be
            silently sent on Save. */
         delete citySel[cityId];
-        (LOC.getMainAreas(cityId) || []).forEach(function (m) {
+        scopedGetMainAreas(cityId).forEach(function (m) {
           delete mainSel[m.id];
-          (LOC.getSubAreas(m.id) || []).forEach(function (s) { delete subSel[s.id]; });
+          scopedGetSubAreas(m.id).forEach(function (s) { delete subSel[s.id]; });
         });
       }
       refreshPicker();
@@ -1387,7 +1776,7 @@
           mainSel[mainId] = true;
         } else {
           delete mainSel[mainId];
-          (LOC.getSubAreas(mainId) || []).forEach(function (s) { delete subSel[s.id]; });
+          scopedGetSubAreas(mainId).forEach(function (s) { delete subSel[s.id]; });
         }
         refreshPicker();
       } else if (subCb) {
@@ -1401,10 +1790,10 @@
       var allBtn = e.target.closest('[data-sub-all]');
       var noneBtn = e.target.closest('[data-sub-none]');
       if (allBtn) {
-        (LOC.getSubAreas(allBtn.getAttribute('data-sub-all')) || []).forEach(function (s) { subSel[s.id] = true; });
+        scopedGetSubAreas(allBtn.getAttribute('data-sub-all')).forEach(function (s) { subSel[s.id] = true; });
         refreshPicker();
       } else if (noneBtn) {
-        (LOC.getSubAreas(noneBtn.getAttribute('data-sub-none')) || []).forEach(function (s) { delete subSel[s.id]; });
+        scopedGetSubAreas(noneBtn.getAttribute('data-sub-none')).forEach(function (s) { delete subSel[s.id]; });
         refreshPicker();
       }
     });

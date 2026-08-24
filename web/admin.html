@@ -58,6 +58,23 @@
     <!-- ══ TODAY ══ -->
     <section class="ad-panel" id="panel-today" role="tabpanel">
       <div class="ad-stats" id="adTodayStats"></div>
+      <div class="ad-card" id="adOverviewCard" hidden>
+        <div class="ad-card-head">
+          <b>My team &amp; areas
+            <span class="ad-tip" data-tip="Everyone and everywhere currently within your own delegated hierarchy — computed from real assignment and reporting data, never a fixed number."><button type="button" class="ad-tip-btn" aria-label="What is My team and areas?">?</button><span class="ad-tip-bubble" role="tooltip"></span></span>
+          </b>
+        </div>
+        <div class="ad-stats" id="adOverviewStats"></div>
+      </div>
+      <div class="ad-card" id="adMyAreasCard" hidden>
+        <div class="ad-card-head">
+          <b>My assigned areas
+            <span class="ad-tip" data-tip="An area currently authorized for your field work. You cannot act outside these — enforced by the server, not just hidden in the UI."><button type="button" class="ad-tip-btn" aria-label="What is an assigned area?">?</button><span class="ad-tip-bubble" role="tooltip"></span></span>
+          </b>
+          <span>Reports to: <span id="adMyReportsTo">—</span></span>
+        </div>
+        <div id="adMyAreasList"></div>
+      </div>
       <div class="ad-card">
         <div class="ad-card-head"><b>Today's tasks</b><span id="adTaskDate"></span></div>
         <div id="adTaskList"></div>
@@ -72,7 +89,7 @@
     <section class="ad-panel" id="panel-verify" role="tabpanel">
       <div class="ad-card">
         <div class="ad-card-head">
-          <div><b>Verify properties</b><br><span>Check Available or Unavailable, then publish. Unchecked properties stay pending.</span></div>
+          <div><b>Verify properties</b><br><span>Check Available or Unavailable, add findings if useful, then publish. Unchecked properties stay pending.</span></div>
         </div>
         <div id="adVerifyList"></div>
         <div class="ad-actions">
@@ -80,6 +97,25 @@
           <span class="ad-pill" id="adVerifyCount">0 selected</span>
         </div>
         <p class="ad-msg" id="adVerifyMsg" role="status" aria-live="polite"></p>
+      </div>
+
+      <div class="ad-card" id="adMyReportsCard" hidden>
+        <div class="ad-card-head">
+          <b>My field reports</b>
+          <span>What you've submitted, and whether it needs correction.</span>
+        </div>
+        <div id="adMyReportsList"></div>
+      </div>
+
+      <div class="ad-card" id="adReviewCard" hidden>
+        <div class="ad-card-head">
+          <b>Field report review
+            <span class="ad-tip" data-tip="Decide whether a submitted field report is complete, or needs to go back to the Field Officer with a correction reason."><button type="button" class="ad-tip-btn" aria-label="What is Field report review?">?</button><span class="ad-tip-bubble" role="tooltip"></span></span>
+          </b>
+          <span>Submitted reports from your assigned areas awaiting a decision.</span>
+        </div>
+        <div id="adReviewList"></div>
+        <p class="ad-msg" id="adReviewMsg" role="status" aria-live="polite"></p>
       </div>
     </section>
 
@@ -170,6 +206,18 @@
           </select>
         </div>
         <div id="adUserList"></div>
+      </div>
+
+      <div class="ad-card" id="adRemovedCard" hidden>
+        <div class="ad-card-head">
+          <button type="button" class="ad-btn is-sm ad-assign-toggle" id="adRemovedToggle" aria-expanded="false" aria-controls="adRemovedList">
+            <span class="ad-chevron" aria-hidden="true">&#9656;</span></button>
+          <b>Removed team members
+            <span class="ad-tip" data-tip="Former accounts are never active — they cannot log in, hold assignments or receive new work. Their history (reports, reviews, assignments) stays on record; this is a read-only view of who they were and when they left."><button type="button" class="ad-tip-btn" aria-label="What is Removed team members?">?</button><span class="ad-tip-bubble" role="tooltip"></span></span>
+          </b>
+          <span id="adRemovedCount"></span>
+        </div>
+        <div id="adRemovedList" hidden></div>
       </div>
 
       <div class="ad-card">

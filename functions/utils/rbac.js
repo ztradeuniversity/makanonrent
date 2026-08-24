@@ -67,6 +67,14 @@ export var PERMISSIONS = {
   'properties.restore':         ['ceo'],
   'properties.view.any':        ['ceo', 'assistant_ceo'],
 
+  /* Field Report review (migration 0015). A separate capability from
+     properties.approve — reviewing a field VISIT report ("did this FO
+     do the work properly, does it need correction") is not the same
+     authority as approving a PROPERTY LISTING for publication. Field
+     Officer never holds this — they submit reports, they don't review
+     their own or anyone else's. */
+  'verification.review':        ['ceo', 'assistant_ceo', 'manager'],
+
   /* — oversight — */
   'monitor.read':               ['ceo', 'assistant_ceo'],
   'audit.read':                 ['ceo'],
@@ -186,4 +194,107 @@ export async function getManagedManagerIds(env, assistantCeoUserId) {
     .select('id').eq('reports_to_user_id', assistantCeoUserId).eq('role', 'manager').eq('status', 'active');
   if (res.error) throw res.error;
   return (res.data || []).map(function (r) { return r.id; });
+}
+
+/* ── hierarchical visibility/authority (governance pass, audited 2026-08-24) ──
+   Single source of truth for "which subordinate accounts may this caller
+   see or act on" — used both to SCOPE what a list endpoint returns and to
+   AUTHORISE a target user id on a mutating request, so the two can never
+   drift apart (a dropdown that hides someone the API would still accept
+   is exactly the "hidden UI is not enforcement" gap this pass closes).
+
+   Returns null for CEO (global, unrestricted — matches getScopeNodeIds'
+   convention). Returns an array of user ids for assistant_ceo/manager:
+     assistant_ceo → Managers with reports_to_user_id = self (explicit),
+                      union Field Officers whose own active area assignment
+                      falls within this Assistant CEO's assigned territory
+                      (area-overlap — approved 2026-08-24, "FO visibility
+                      remains subject to existing scope and reporting
+                      rules"), union FOs who report to self directly even
+                      before they hold any area (so a freshly-assigned FO
+                      is not invisible to the person who must grant them
+                      their first one).
+     manager        → the same FO rule one tier down: reports_to = self,
+                      union area-overlap with the Manager's own scope.
+   Every other role (field_officer) delegates nothing downward → []. */
+export async function getVisibleSubordinateIds(env, user) {
+  if (user.role === 'ceo') return null;
+  if (user.role !== 'assistant_ceo' && user.role !== 'manager') return [];
+
+  var db = getServiceClient(env);
+  var scope = await getScopeNodeIds(env, user);
+
+  var foRows = await db.from('admin_area_assignments')
+    .select('user_id, node_id, admin_users!admin_area_assignments_user_id_fkey!inner(role, status)')
+    .eq('active', true).eq('admin_users.role', 'field_officer').eq('admin_users.status', 'active');
+  var foIdsByArea = (!foRows.error ? (foRows.data || []) : [])
+    .filter(function (r) { return isWithinScope(scope, r.node_id); })
+    .map(function (r) { return r.user_id; });
+
+  var directRes = await db.from('admin_users')
+    .select('id').eq('reports_to_user_id', user.id).eq('role', 'field_officer').eq('status', 'active');
+  var directFoIds = (!directRes.error ? (directRes.data || []) : []).map(function (r) { return r.id; });
+
+  var foIds = Array.from(new Set(foIdsByArea.concat(directFoIds)));
+
+  if (user.role === 'assistant_ceo') {
+    var managerIds = await getManagedManagerIds(env, user.id);
+    return managerIds.concat(foIds);
+  }
+  return foIds;
+}
+
+/* ── cascade safety: CHILD_SCOPE ⊆ PARENT_SCOPE after a revoke ────────
+   Containment is enforced AT ASSIGN TIME (assignments.js checks the
+   assigner's own scope before inserting), so the only way a subordinate's
+   area can end up outside their superior's territory is the superior
+   later losing that area themselves. Call this AFTER an owner's revoke/
+   revoke-all/transfer-out has already committed: it recomputes that
+   owner's remaining active scope, finds direct reports (assistant_ceo →
+   its Managers; manager → its Field Officers) holding an area no longer
+   inside it, and soft-revokes exactly those rows — never a hard delete,
+   the row and its history stay queryable exactly like a manual Remove.
+   Recurses one hop further per affected child so a Manager's own loss can
+   correctly ripple down to that Manager's Field Officers too. */
+export async function cascadeInvalidateChildren(env, audit, ownerUserId) {
+  var db = getServiceClient(env);
+  var owner = await db.from('admin_users').select('id, role').eq('id', ownerUserId).maybeSingle();
+  if (owner.error || !owner.data) return;
+  if (owner.data.role !== 'assistant_ceo' && owner.data.role !== 'manager') return;
+
+  var scopeRes = await db.from('admin_area_assignments')
+    .select('node_id').eq('user_id', ownerUserId).eq('active', true);
+  if (scopeRes.error) return;
+  var remainingScope = (scopeRes.data || []).map(function (r) { return r.node_id; });
+
+  var childField = owner.data.role === 'assistant_ceo' ? 'manager' : 'field_officer';
+  var childRes = await db.from('admin_users')
+    .select('id').eq('reports_to_user_id', ownerUserId).eq('role', childField).eq('status', 'active');
+  if (childRes.error) return;
+  var childIds = (childRes.data || []).map(function (r) { return r.id; });
+  if (!childIds.length) return;
+
+  var childRowsRes = await db.from('admin_area_assignments')
+    .select('id, user_id, node_id').eq('active', true).in('user_id', childIds);
+  if (childRowsRes.error) return;
+
+  var orphaned = (childRowsRes.data || []).filter(function (r) { return !isWithinScope(remainingScope, r.node_id); });
+  if (!orphaned.length) return;
+
+  var upd = await db.from('admin_area_assignments')
+    .update({ active: false, revoked_at: new Date().toISOString() })
+    .in('id', orphaned.map(function (r) { return r.id; }));
+  if (upd.error) return;
+
+  if (audit) {
+    await audit('cascade_revoke_area', 'admin_area_assignment', ownerUserId, {
+      reason: 'Parent scope reduced below a subordinate\'s delegated area.',
+      affected: orphaned.map(function (r) { return { userId: r.user_id, nodeId: r.node_id }; })
+    });
+  }
+
+  var affectedUserIds = Array.from(new Set(orphaned.map(function (r) { return r.user_id; })));
+  for (var i = 0; i < affectedUserIds.length; i++) {
+    await cascadeInvalidateChildren(env, audit, affectedUserIds[i]);
+  }
 }

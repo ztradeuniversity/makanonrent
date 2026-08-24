@@ -31,6 +31,7 @@ export async function onRequestGet(context) {
   try {
     var db = getServiceClient(env);
     var areas = { data: [] };
+    var reportsToName = null;
 
     if (auth.user.role !== 'ceo') {
       areas = await db.from('admin_area_assignments')
@@ -38,6 +39,12 @@ export async function onRequestGet(context) {
         .eq('user_id', auth.user.id)
         .eq('active', true);
       if (areas.error) throw areas.error;
+
+      if (auth.user.reports_to_user_id) {
+        var parent = await db.from('admin_users').select('full_name, role')
+          .eq('id', auth.user.reports_to_user_id).maybeSingle();
+        if (!parent.error && parent.data) reportsToName = parent.data.full_name;
+      }
     }
 
     return json(env, {
@@ -55,7 +62,8 @@ export async function onRequestGet(context) {
          why these are not collapsed into one representation. */
       areas: auth.user.role === 'ceo' ? null : (areas.data || []).map(function (a) {
         return { nodeId: a.node_id, level: a.scope_level, name: a.locations && a.locations.name };
-      })
+      }),
+      reportsTo: reportsToName
     });
   } catch (e) {
     return json(env, { error: (e && e.message) || 'Could not load your profile.' }, 500);
