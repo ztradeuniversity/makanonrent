@@ -40,6 +40,7 @@ export async function onRequestGet(context) {
     var db = getServiceClient(env);
     var url = new URL(context.request.url);
     var userId = url.searchParams.get('userId');
+    var includeHistory = !!url.searchParams.get('history');
 
     /* Hierarchy scope (governance pass, audited 2026-08-24 — root cause of
        BOTH the Assistant CEO team-tree gap and the delegation-ownership
@@ -76,14 +77,20 @@ export async function onRequestGet(context) {
        member never touched their standing assignments, so they kept
        appearing as if still operational). The row and its history are
        untouched; this only changes what this read returns. */
+    /* history=1 (ISSUE 6/7): a revoked row is normally invisible past this
+       point (.eq('active', true) below) — correct for the OPERATIONAL
+       list, wrong for "Maria's history still shows the delegation" (the
+       original grant must stay inspectable even after it stops being the
+       active one). Same hierarchy scoping either way; only the active
+       filter differs. */
     var q = db.from('admin_area_assignments')
-      .select('id, user_id, node_id, scope_level, created_at, assigned_by, ' +
+      .select('id, user_id, node_id, scope_level, created_at, assigned_by, active, revoked_at, ' +
         'admin_users!admin_area_assignments_user_id_fkey!inner(full_name, role, status), ' +
         'assigner:admin_users!admin_area_assignments_assigned_by_fkey(full_name), ' +
         'locations!inner(name)')
-      .eq('active', true)
       .eq('admin_users.status', 'active')
       .order('node_id', { ascending: true });
+    if (!includeHistory) q = q.eq('active', true);
     if (userId) {
       q = q.eq('user_id', userId);
     } else if (auth.user.role !== 'ceo') {
@@ -93,16 +100,17 @@ export async function onRequestGet(context) {
     var res = await q;
     if (res.error) throw res.error;
 
-    /* Delegation-ownership annotation (ISSUE 2): for each row, if some
-       OTHER user within the same caller's hierarchy holds this exact
-       node actively too, the row is annotated with who it was delegated
+    /* Delegation-ownership annotation (ISSUE 2/6): for each row, if some
+       OTHER user within the same caller's hierarchy ACTIVELY holds this
+       exact node too, the row is annotated with who it was delegated
        onward to — so a superior's own original grant is never deleted or
-       hidden, just marked "no longer the operational owner". Computed
-       from the SAME result set already fetched above; no second query,
-       no second source of truth. Only meaningful for callers who can see
-       more than one tier (ceo/assistant_ceo) — a Manager's own rows have
-       no subordinate rows to compare against unless FOs are in the same
-       result set, which they now correctly are. */
+       hidden, just marked "no longer the operational owner" (and, in
+       history mode, a revoked row whose node is now active for someone
+       else reads as "transferred to X" rather than a bare removal).
+       Computed from the SAME result set already fetched above; no second
+       query, no second source of truth. Only ACTIVE siblings count as a
+       current holder — two revoked rows for the same node were never
+       simultaneously "the" owner of anything. */
     var rows = res.data || [];
     var byNode = {};
     rows.forEach(function (a) {
@@ -113,14 +121,16 @@ export async function onRequestGet(context) {
 
     return json(env, {
       assignments: rows.map(function (a) {
-        var siblings = byNode[a.node_id].filter(function (x) { return x.id !== a.id; });
+        var activeSiblings = byNode[a.node_id].filter(function (x) { return x.id !== a.id && x.active; });
         /* "Delegated onward" = someone LOWER in the hierarchy (higher
-           roleRank) holds the identical node — never the reverse, so a
-           Manager's row never claims to be "delegated to" their own
-           Assistant CEO. */
-        var delegatedTo = siblings.find(function (x) {
+           roleRank) actively holds the identical node — never the
+           reverse, so a Manager's row never claims to be "delegated to"
+           their own Assistant CEO. For a REVOKED row this instead reads
+           as "transferred to" (see delegatedTo above), since the row is
+           no longer the row that caused it — just the one it explains. */
+        var delegatedTo = activeSiblings.find(function (x) {
           return (roleRank[x.admin_users.role] || 0) > (roleRank[a.admin_users.role] || 0);
-        });
+        }) || (!a.active ? activeSiblings[0] : null);
         return {
           id: a.id, userId: a.user_id, nodeId: a.node_id, level: a.scope_level,
           areaName: a.locations && a.locations.name,
@@ -128,6 +138,8 @@ export async function onRequestGet(context) {
           userRole: a.admin_users && a.admin_users.role,
           createdAt: a.created_at,
           assignedByName: a.assigner && a.assigner.full_name || null,
+          active: a.active,
+          revokedAt: a.revoked_at,
           delegatedTo: delegatedTo
             ? { userId: delegatedTo.user_id, name: delegatedTo.admin_users.full_name, role: delegatedTo.admin_users.role }
             : null
@@ -228,8 +240,20 @@ export async function onRequestPost(context) {
     /* "Remove" in the UI IS this action — 'revoke' was already the real
        removal (active=false, history kept), just under a less clear
        name. No second action was created; the UI now labels the exact
-       same operation "Remove". */
+       same operation "Remove".
+
+       CEO-ONLY (hard business rule, audited 2026-08-24): removing an area
+       from the operational system entirely — as opposed to delegating it
+       onward, which 'transfer' already covers — is CEO authority
+       exclusively. An Assistant CEO or Manager may still MOVE an area
+       they hold to someone else in their own hierarchy (transfer), but
+       may never simply take it out of circulation. Checked before the
+       assignment is even looked up, so a non-CEO caller gets a flat
+       denial rather than a scope-dependent one. */
     if (body.action === 'revoke') {
+      if (auth.user.role !== 'ceo') {
+        return json(env, { error: 'Only the CEO can remove an area assignment. Use Transfer to move it to someone else instead.' }, 403);
+      }
       if (!isNonEmptyString(body.assignmentId, 60)) {
         return json(env, { error: 'assignmentId is required.' }, 422);
       }
@@ -241,12 +265,6 @@ export async function onRequestPost(context) {
       if (!row.data) return json(env, { error: 'No such assignment.' }, 404);
       if (!canManageRole(auth.user.role, row.data.admin_users.role)) {
         return json(env, { error: 'You cannot change that assignment.' }, 403);
-      }
-      if (auth.user.role !== 'ceo') {
-        var revokeHierarchyIds = await getVisibleSubordinateIds(env, auth.user);
-        if (revokeHierarchyIds.indexOf(row.data.user_id) === -1) {
-          return json(env, { error: 'That team member is outside your own hierarchy.' }, 403);
-        }
       }
 
       /* City/main removal cascades to every active descendant row for
@@ -288,8 +306,12 @@ export async function onRequestPost(context) {
 
     /* Bulk — "Remove all assigned locations". Same revoke semantics,
        every active row for one user in one audited action instead of a
-       loop of individual clicks. */
+       loop of individual clicks. CEO-only for the same reason 'revoke'
+       is — see the comment there. */
     if (body.action === 'revoke-all') {
+      if (auth.user.role !== 'ceo') {
+        return json(env, { error: 'Only the CEO can remove area assignments. Use Transfer to move them to someone else instead.' }, 403);
+      }
       if (!isNonEmptyString(body.userId, 60)) return json(env, { error: 'userId is required.' }, 422);
 
       var bulkTarget = await db.from('admin_users').select('id, role').eq('id', body.userId).maybeSingle();
@@ -297,12 +319,6 @@ export async function onRequestPost(context) {
       if (!bulkTarget.data) return json(env, { error: 'No such user.' }, 404);
       if (!canManageRole(auth.user.role, bulkTarget.data.role)) {
         return json(env, { error: 'You cannot change that user\'s assignments.' }, 403);
-      }
-      if (auth.user.role !== 'ceo') {
-        var bulkHierarchyIds = await getVisibleSubordinateIds(env, auth.user);
-        if (bulkHierarchyIds.indexOf(body.userId) === -1) {
-          return json(env, { error: 'That team member is outside your own hierarchy.' }, 403);
-        }
       }
 
       var bulkRows = await db.from('admin_area_assignments')

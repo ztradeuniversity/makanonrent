@@ -78,8 +78,16 @@
       var areas = ME.areas || [];
       $('adMyAreasList').innerHTML = areas.length
         ? areas.map(function (a) {
+            /* Transfer/assignment source (ISSUE 10): who granted this and
+               when — the same assigned_by/created_at every other lineage
+               display in this pass reads, just surfaced here too so a
+               Manager/FO isn't limited to guessing where an area came
+               from. */
+            var lineage = a.assignedByName
+              ? ' · Assigned by ' + esc(a.assignedByName) + (a.assignedAt ? ' on ' + esc(A.fmtDateTime(a.assignedAt)) : '')
+              : '';
             return '<div class="ad-verify-row"><div class="ad-grow"><b>' + esc(a.name || a.nodeId) + '</b>' +
-              '<small>' + esc(a.nodeId) + ' · ' + esc(a.level) + '</small></div></div>';
+              '<small>' + esc(a.nodeId) + ' · ' + esc(a.level) + lineage + '</small></div></div>';
           }).join('')
         : '<div class="ad-empty">No areas assigned yet.</div>';
     }
@@ -922,6 +930,7 @@
     reportsTo: 'Defines who this team member reports to operationally.',
     transfer: 'Moves active operational responsibility to another eligible team member while preserving history.',
     revoke: 'Removes the current active assignment without deleting historical records.',
+    history: 'Shows areas previously assigned to this member that were later transferred elsewhere or removed — the original record is kept, not deleted.',
     search: 'Find a team member by name, username, or email.',
     findings: 'Record what you observed during the field visit — property/location condition, issues, anything the reviewer needs to know.'
   };
@@ -1511,6 +1520,9 @@
   var assignByUserCache = {};   // userId -> current active assignment rows (for Edit areas preload/diff)
   var editingUserId = null;   // set while the picker below is editing an EXISTING member's areas
   var editingOriginal = [];   // that member's assignment rows as of when Edit was opened
+  var xferOpenId = null;   // assignmentId -> the ONE transfer picker currently open, or null
+  var historyOpenFor = {};   // userId -> true when their revoked-area history panel is open
+  var historyCache = {};     // userId -> revoked rows, fetched on demand (ISSUE 6/7)
 
   function assignSummary(rows) {
     var cities = rows.filter(function (a) { return a.level === 'city'; }).length;
@@ -1547,6 +1559,14 @@
       });
       assignByUserCache = byUser;
 
+      /* Remove/Remove-all are CEO-only (ISSUE 4, hard business rule,
+         audited 2026-08-24) — the server now rejects both outright for
+         anyone else, so hiding them here isn't the enforcement boundary,
+         it's just not offering an action guaranteed to 403. Transfer
+         stays available to Assistant CEO/Manager — moving an area within
+         your own hierarchy is delegation, not removal. */
+      var isCeo = ME && ME.user.role === 'ceo';
+
       $('adAssignmentList').innerHTML = order.map(function (userId) {
         var rows = byUser[userId];
         var expanded = !!assignExpanded[userId];
@@ -1557,8 +1577,30 @@
           '<div class="ad-grow"><b>' + esc(rows[0].userName || 'Unknown') + '</b>' +
           '<small>' + esc(rows[0].userRole || '') + ' · ' + esc(assignSummary(rows)) + '</small></div>' +
           '<button class="ad-btn is-sm" type="button" data-edit-areas="' + esc(userId) + '">Edit areas</button> ' +
-          '<button class="ad-btn is-sm is-danger" type="button" data-remove-all="' + esc(userId) + '">Remove all</button>' +
+          '<button class="ad-btn is-sm" type="button" data-toggle-history="' + esc(userId) + '">History</button>' + tipSpan('history', 'History') + ' ' +
+          (isCeo ? '<button class="ad-btn is-sm is-danger" type="button" data-remove-all="' + esc(userId) + '">Remove all</button>' : '') +
         '</div>';
+
+        /* Transfer/removal history (ISSUE 6/7): "Maria's history still
+           shows the delegation" even after her row is revoked. Fetched
+           on demand (data-toggle-history) via ?history=1 rather than
+           bundled into every load — most groups will never be opened. */
+        var historyBlock = '';
+        if (historyOpenFor[userId]) {
+          var histRows = (historyCache[userId] || []).filter(function (a) { return !a.active; });
+          historyBlock = '<div class="ad-detail-grid" style="border-top:1px dashed var(--line);margin-top:8px;padding-top:8px;">' +
+            (histRows.length
+              ? histRows.map(function (a) {
+                  var when = a.revokedAt ? A.fmtDateTime(a.revokedAt) : '—';
+                  var outcome = a.delegatedTo
+                    ? 'Transferred to ' + esc(a.delegatedTo.name) + ' (' + esc(A.roleLabel(a.delegatedTo.role)) + ')'
+                    : 'Removed';
+                  return '<div class="ad-verify-row is-blocked"><div class="ad-grow"><b>' + esc(a.areaName || a.nodeId) + '</b>' +
+                    '<small>' + outcome + ' · ' + esc(when) + '</small></div></div>';
+                }).join('')
+              : '<div class="ad-empty">No transfer or removal history for this member.</div>') +
+          '</div>';
+        }
 
         var detail = '<div class="ad-detail-grid" id="assignRows-' + esc(userId) + '"' + (expanded ? '' : ' hidden') + '>' +
           rows.map(function (a) {
@@ -1578,14 +1620,52 @@
             var delegatedNote = a.delegatedTo
               ? '<span class="ad-pill is-warn">Delegated to ' + esc(a.delegatedTo.name) + ' (' + esc(A.roleLabel(a.delegatedTo.role)) + ')</span>'
               : '';
-            return '<div class="ad-verify-row" data-assignment="' + esc(a.id) + '" style="align-items:flex-start;">' +
+
+            /* Inline transfer picker (ISSUE 2/11, governance pass, audited
+               2026-08-24): replaces a prompt() + exact-name-string-match
+               flow whose recipient list was ALSO filtered to `role ===
+               fromUser.role` — the confirmed root cause of "No exact
+               match for Ahmad Jan" (a Field Officer can never match a
+               Manager's own role, so he was excluded before the name
+               comparison ever ran). Eligible recipients now come from
+               `manageable` — the exact same hierarchy+role scoping
+               users.js already computed for this teamCache — so the
+               dropdown can only ever contain someone the transfer API
+               will actually accept. A <select> also makes "no exact
+               match" structurally impossible: every option is a valid id. */
+            var xferBlock = '';
+            if (xferOpenId === a.id) {
+              var eligible = (teamCache || []).filter(function (u) {
+                return u.manageable && u.status === 'active' && u.id !== userId;
+              });
+              xferBlock = '<div class="ad-field" style="width:100%;margin-top:8px;">' +
+                (eligible.length
+                  ? '<label>Transfer "' + esc(a.areaName || a.nodeId) + '" to</label>' +
+                    '<select class="ad-select" data-xfer-recipient>' +
+                      eligible.map(function (u) {
+                        return '<option value="' + esc(u.id) + '">' + esc(u.fullName) + ' (' + esc(A.roleLabel(u.role)) + ')</option>';
+                      }).join('') +
+                    '</select>' +
+                    '<div class="ad-actions" style="margin-top:8px;">' +
+                      '<button class="ad-btn is-sm is-primary" type="button" data-xfer-confirm="' + esc(a.id) + '">Confirm transfer</button> ' +
+                      '<button class="ad-btn is-sm" type="button" data-xfer-cancel>Cancel</button>' +
+                    '</div>'
+                  : '<div class="ad-empty">No eligible ' + (rows[0].userRole === 'manager' ? 'Field Officer' : 'team member') +
+                    ' found in your authorized team.</div>' +
+                    '<div class="ad-actions" style="margin-top:8px;"><button class="ad-btn is-sm" type="button" data-xfer-cancel>Close</button></div>') +
+              '</div>';
+            }
+
+            return '<div class="ad-verify-row" data-assignment="' + esc(a.id) + '" style="align-items:flex-start;flex-wrap:wrap;">' +
               '<div class="ad-grow"><b>' + esc(a.areaName || a.nodeId) + '</b>' +
               '<small>' + esc(a.nodeId) + ' · ' + esc(a.level) + '</small>' + lineage + '</div>' +
               delegatedNote + ' ' +
-              '<button class="ad-btn is-sm" type="button" data-transfer="' + esc(userId) + '">Transfer</button>' + tipSpan('transfer', 'Transfer') + ' ' +
-              '<button class="ad-btn is-sm is-danger" type="button" data-remove>Remove</button>' + tipSpan('revoke', 'Remove') +
+              '<button class="ad-btn is-sm" type="button" data-toggle-transfer="' + esc(a.id) + '">Transfer</button>' + tipSpan('transfer', 'Transfer') + ' ' +
+              (isCeo ? '<button class="ad-btn is-sm is-danger" type="button" data-remove>Remove</button>' + tipSpan('revoke', 'Remove') : '') +
+              xferBlock +
             '</div>';
           }).join('') +
+          historyBlock +
         '</div>';
 
         return head + detail;
@@ -2040,10 +2120,29 @@
       return;
     }
 
+    var historyToggle = e.target.closest('[data-toggle-history]');
+    if (historyToggle) {
+      var hUserId = historyToggle.getAttribute('data-toggle-history');
+      historyOpenFor[hUserId] = !historyOpenFor[hUserId];
+      if (historyOpenFor[hUserId] && !historyCache[hUserId]) {
+        try {
+          var hRes = await A.get(API.adminAssignments + '?userId=' + encodeURIComponent(hUserId) + '&history=1');
+          historyCache[hUserId] = hRes.assignments || [];
+        } catch (err) {
+          A.msg($('adAssignMsg'), err.message, 'is-error');
+          historyOpenFor[hUserId] = false;
+        }
+      }
+      await loadAssignments();
+      return;
+    }
+
     var removeBtn = e.target.closest('[data-remove]');
-    var transferBtn = e.target.closest('[data-transfer]');
     var removeAllBtn = e.target.closest('[data-remove-all]');
     var editAreasBtn = e.target.closest('[data-edit-areas]');
+    var toggleXferBtn = e.target.closest('[data-toggle-transfer]');
+    var xferConfirmBtn = e.target.closest('[data-xfer-confirm]');
+    var xferCancelBtn = e.target.closest('[data-xfer-cancel]');
 
     try {
       if (editAreasBtn) {
@@ -2051,6 +2150,9 @@
         beginEditAreas(editUserId, assignByUserCache[editUserId] || []);
         return;
       }
+      /* Remove/Remove-all buttons only render for the CEO in the first
+         place (ISSUE 4) — these two branches are effectively unreachable
+         for anyone else, and the server rejects them regardless. */
       if (removeBtn) {
         var assignRow = removeBtn.closest('[data-assignment]');
         var id = assignRow.getAttribute('data-assignment');
@@ -2059,6 +2161,7 @@
         if (typed !== 'REMOVE') return;
         var res = await A.post(API.adminAssignments, { action: 'revoke', assignmentId: id });
         A.msg($('adAssignMsg'), (res.removedCount > 1 ? res.removedCount + ' locations removed (including sub-locations).' : 'Location removed.'), 'is-ok');
+        historyCache = {};   // this member's history just changed — force a fresh fetch next time History is opened
         await loadAssignments();
       } else if (removeAllBtn) {
         var groupUserId = removeAllBtn.getAttribute('data-remove-all');
@@ -2068,28 +2171,30 @@
         if (typedAll !== 'REMOVE') return;
         var resAll = await A.post(API.adminAssignments, { action: 'revoke-all', userId: groupUserId });
         A.msg($('adAssignMsg'), resAll.removedCount + ' location(s) removed.', 'is-ok');
+        historyCache = {};
         await loadAssignments();
-      } else if (transferBtn) {
-        var xferAssignRow = transferBtn.closest('[data-assignment]');
-        var xferId = xferAssignRow.getAttribute('data-assignment');
-        var fromUserId = transferBtn.getAttribute('data-transfer');
-        var fromUser = (teamCache || []).find(function (u) { return u.id === fromUserId; });
-        var eligibleXfer = (teamCache || []).filter(function (u) {
-          return u.status === 'active' && u.id !== fromUserId && (fromUser ? u.role === fromUser.role : true);
-        });
-        if (!eligibleXfer.length) {
-          A.msg($('adAssignMsg'), 'No eligible active recipient with the same role is available.', 'is-error');
-          return;
-        }
-        var xferName = win.prompt('Transfer to which team member?\n' + eligibleXfer.map(function (u) { return u.fullName + ' (' + u.username + ')'; }).join('\n'));
-        if (!xferName) return;
-        var xferUser = eligibleXfer.find(function (u) { return u.fullName === xferName.trim() || u.username === xferName.trim(); });
-        if (!xferUser) { A.msg($('adAssignMsg'), 'No exact match for "' + xferName + '" among eligible recipients.', 'is-error'); return; }
-        if (!win.confirm('Transfer this assignment (and any sub-locations under it) to ' + xferUser.fullName + '?')) return;
-        var xres = await A.post(API.adminAssignments, { action: 'transfer', assignmentId: xferId, toUserId: xferUser.id });
-        A.msg($('adAssignMsg'), 'Transferred ' + xres.transferredCount + ' location(s) to ' + xferUser.fullName + '.' +
+      } else if (toggleXferBtn) {
+        var toggleId = toggleXferBtn.getAttribute('data-toggle-transfer');
+        xferOpenId = xferOpenId === toggleId ? null : toggleId;
+        await loadAssignments();
+      } else if (xferCancelBtn) {
+        xferOpenId = null;
+        await loadAssignments();
+      } else if (xferConfirmBtn) {
+        var xferId = xferConfirmBtn.getAttribute('data-xfer-confirm');
+        var xferRow = xferConfirmBtn.closest('[data-assignment]');
+        var select = xferRow.querySelector('[data-xfer-recipient]');
+        var toUserId = select && select.value;
+        if (!toUserId) return;
+        var toUser = (teamCache || []).find(function (u) { return u.id === toUserId; });
+        if (!win.confirm('Transfer this assignment (and any sub-locations under it) to ' + (toUser ? toUser.fullName : 'this recipient') + '?')) return;
+        var xres = await A.post(API.adminAssignments, { action: 'transfer', assignmentId: xferId, toUserId: toUserId });
+        A.msg($('adAssignMsg'), 'Transferred ' + xres.transferredCount + ' location(s) to ' + (toUser ? toUser.fullName : 'the recipient') + '.' +
           (xres.conflicts && xres.conflicts.length ? ' (' + xres.conflicts.length + ' skipped — already assigned elsewhere)' : ''), 'is-ok');
+        xferOpenId = null;
+        historyCache = {};   // both source and recipient history just changed
         await loadAssignments();
+        await loadTeam();   // the source's nested-team view (ISSUE 1) and any picker delegation state must reflect the new owner immediately
       }
     } catch (err) {
       A.msg($('adAssignMsg'), err.message, 'is-error');

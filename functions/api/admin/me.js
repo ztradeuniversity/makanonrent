@@ -34,8 +34,16 @@ export async function onRequestGet(context) {
     var reportsToName = null;
 
     if (auth.user.role !== 'ceo') {
+      /* assignedByName/createdAt (ISSUE 10, governance pass, audited
+         2026-08-24): a Manager's or Field Officer's OWN "My assigned
+         areas" card previously showed only the area itself — no trace of
+         who delegated it or when, even though that data has always been
+         on the row (assigned_by/created_at). Same FK-hint disambiguation
+         assignments.js already uses (two FKs to admin_users on this
+         table). */
       areas = await db.from('admin_area_assignments')
-        .select('node_id, scope_level, locations!inner(name)')
+        .select('node_id, scope_level, created_at, locations!inner(name), ' +
+          'assigner:admin_users!admin_area_assignments_assigned_by_fkey(full_name)')
         .eq('user_id', auth.user.id)
         .eq('active', true);
       if (areas.error) throw areas.error;
@@ -61,7 +69,11 @@ export async function onRequestGet(context) {
          with nothing assigned yet — a real and different state, which is
          why these are not collapsed into one representation. */
       areas: auth.user.role === 'ceo' ? null : (areas.data || []).map(function (a) {
-        return { nodeId: a.node_id, level: a.scope_level, name: a.locations && a.locations.name };
+        return {
+          nodeId: a.node_id, level: a.scope_level, name: a.locations && a.locations.name,
+          assignedByName: a.assigner && a.assigner.full_name || null,
+          assignedAt: a.created_at
+        };
       }),
       reportsTo: reportsToName
     });
