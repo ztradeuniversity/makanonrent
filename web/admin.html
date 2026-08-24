@@ -183,34 +183,29 @@
              The free-text node path this replaced accepted any string, so a
              typo produced a 404 and the manager silently ended up with no
              scope at all — which reads as "the console is empty" rather
-             than "the area was never assigned". -->
-        <div class="ad-row">
-          <div class="ad-field">
-            <label for="adAssignUser">Team member</label>
-            <select class="ad-select" id="adAssignUser"></select>
-          </div>
-          <div class="ad-field">
-            <label for="adAssignCity">City</label>
-            <select class="ad-select" id="adAssignCity"><option value="">Select city</option></select>
-          </div>
-          <div class="ad-field">
-            <label for="adAssignMain">Main Location</label>
-            <select class="ad-select" id="adAssignMain" disabled><option value="">Select a city first</option></select>
-          </div>
+             than "the area was never assigned". Cities and Main Locations
+             are checkbox multi-select (like Sub Locations already were),
+             not single <select> dropdowns — a CEO assigning one manager
+             across several cities no longer needs to submit one area at a
+             time. -->
+        <div class="ad-field">
+          <label for="adAssignUser">Team member</label>
+          <select class="ad-select" id="adAssignUser"></select>
         </div>
-        <div class="ad-field" id="adAssignSubWrap" hidden>
-          <label>Sub Locations</label>
+        <div class="ad-field">
+          <label>Cities</label>
           <div class="ad-sub-tools">
-            <input class="ad-input ad-sub-search" type="text" id="adAssignSubSearch"
-                   placeholder="Filter sub locations" autocomplete="off" aria-label="Filter sub locations" />
-            <button class="ad-btn is-sm" type="button" id="adAssignSubAll">Select all</button>
-            <button class="ad-btn is-sm" type="button" id="adAssignSubNone">Clear</button>
+            <input class="ad-input ad-sub-search" type="text" id="adAssignCitySearch"
+                   placeholder="Filter cities" autocomplete="off" aria-label="Filter cities" />
+            <button class="ad-btn is-sm" type="button" id="adAssignCityAll">Select all</button>
+            <button class="ad-btn is-sm" type="button" id="adAssignCityNone">Clear</button>
           </div>
-          <div class="ad-sublist" id="adAssignSubs" role="group" aria-label="Sub locations"></div>
+          <div class="ad-sublist" id="adAssignCities" role="group" aria-label="Cities"></div>
         </div>
-        <p class="ad-assign-scope" id="adAssignScope" aria-live="polite"></p>
+        <div id="adAssignHierarchy"></div>
+        <div class="ad-detail-grid" id="adAssignReview"></div>
         <div class="ad-actions">
-          <button class="ad-btn is-primary" type="button" id="adAssignArea" disabled>Assign area</button>
+          <button class="ad-btn is-primary" type="button" id="adAssignArea" disabled>Assign selected areas</button>
         </div>
         <p class="ad-msg" id="adAssignMsg" role="status" aria-live="polite"></p>
         <div id="adAssignmentList" style="margin-top:14px;"></div>

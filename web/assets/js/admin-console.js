@@ -1142,88 +1142,138 @@
   var LOC = win.MOR_LOC, BANK = win.MOR_BANK;
   var areaPickerReady = false;
 
-  function assignEls() {
-    return {
-      city: $('adAssignCity'), main: $('adAssignMain'),
-      subWrap: $('adAssignSubWrap'), subs: $('adAssignSubs'),
-      search: $('adAssignSubSearch'), scope: $('adAssignScope'),
-      btn: $('adAssignArea')
-    };
+  /* Multi-city / multi-main / multi-sub picker (replaces the old
+     single-select City/Main <select> pair — audited gap: a CEO assigning
+     one manager across several cities previously had to repeat the whole
+     flow once per city). State is three plain maps keyed by node id;
+     LOC.listCities()/getMainAreas()/getSubAreas() remain the single
+     source of truth for what a city/main/sub actually is — nothing here
+     duplicates location data, only which of it is checked. */
+  var citySel = {};   // cityId -> true
+  var mainSel = {};   // mainId -> true (only meaningful while its city is selected)
+  var subSel = {};    // subId -> true (only meaningful while its main is selected)
+  var citySearchQ = '';
+
+  function cityName(id) {
+    var c = (LOC.listCities() || []).find(function (x) { return x.id === id; });
+    return c ? c.name : id;
   }
 
-  function fillSelect(sel, items, placeholder) {
-    sel.innerHTML = '<option value="">' + placeholder + '</option>' +
-      items.map(function (n) {
-        return '<option value="' + esc(n.id) + '">' + esc(n.name) + '</option>';
-      }).join('');
-  }
-
-  /* What pressing Assign will actually do, stated before it happens.
-     Sub selections win; with none, the Main Location is assigned; with no
-     Main, the whole city. All three are depths the assignments API
-     already accepts — levelFromNodeId derives the tier from the path. */
-  function selectedNodes() {
-    var el = assignEls();
-    var checked = Array.prototype.filter.call(
-      el.subs.querySelectorAll('input[type=checkbox]'), function (c) { return c.checked; });
-    if (checked.length) {
-      return checked.map(function (c) {
-        return { id: c.value, name: c.getAttribute('data-name'), level: 'sub' };
+  /* Resolves the current checkbox state into the exact node set the API
+     call will send — the SAME state the review panel renders, so what the
+     CEO sees is what gets saved. A city with no main checked assigns the
+     whole city; a main with no sub checked (or with every one of its own
+     subs checked) assigns the whole main rather than each sub
+     individually — one area-assignment row instead of dozens for the
+     identical operational scope. */
+  function computeSelection() {
+    var out = [];
+    Object.keys(citySel).filter(function (id) { return citySel[id]; }).forEach(function (cityId) {
+      var mains = LOC.getMainAreas(cityId) || [];
+      var checkedMains = mains.filter(function (m) { return mainSel[m.id]; });
+      if (!checkedMains.length) {
+        out.push({ id: cityId, name: cityName(cityId), level: 'city' });
+        return;
+      }
+      checkedMains.forEach(function (m) {
+        var subs = LOC.getSubAreas(m.id) || [];
+        var checkedSubs = subs.filter(function (s) { return subSel[s.id]; });
+        if (!checkedSubs.length || (subs.length && checkedSubs.length === subs.length)) {
+          out.push({ id: m.id, name: m.name, level: 'main' });
+        } else {
+          checkedSubs.forEach(function (s) { out.push({ id: s.id, name: s.name, level: 'sub' }); });
+        }
       });
-    }
-    if (el.main.value) {
-      return [{ id: el.main.value, name: el.main.selectedOptions[0].textContent, level: 'main' }];
-    }
-    if (el.city.value) {
-      return [{ id: el.city.value, name: el.city.selectedOptions[0].textContent, level: 'city' }];
-    }
-    return [];
-  }
-
-  function refreshAssignScope() {
-    var el = assignEls();
-    var nodes = selectedNodes();
-    var who = $('adAssignUser').value;
-    el.btn.disabled = !who || !nodes.length;
-
-    if (!nodes.length) { el.scope.textContent = ''; return; }
-    if (nodes[0].level === 'sub') {
-      el.scope.textContent = nodes.length === 1
-        ? 'Will assign 1 sub location: ' + nodes[0].name
-        : 'Will assign ' + nodes.length + ' sub locations.';
-    } else if (nodes[0].level === 'main') {
-      el.scope.textContent = 'Will assign the whole main location “' + nodes[0].name +
-        '” (covers every sub location inside it).';
-    } else {
-      el.scope.textContent = 'Will assign the whole city “' + nodes[0].name + '”.';
-    }
-  }
-
-  function renderSubs() {
-    var el = assignEls();
-    var mainId = el.main.value;
-    if (!mainId) { el.subWrap.hidden = true; el.subs.innerHTML = ''; refreshAssignScope(); return; }
-
-    var q = (el.search.value || '').trim().toLowerCase();
-    var list = LOC.getSubAreas(mainId).filter(function (s) {
-      return !q || s.name.toLowerCase().indexOf(q) > -1;
     });
+    return out;
+  }
 
-    el.subWrap.hidden = false;
-    el.subs.innerHTML = list.length
-      ? list.map(function (s) {
-          return '<label class="ad-sub"><input type="checkbox" value="' + esc(s.id) +
-            '" data-name="' + esc(s.name) + '" /><span>' + esc(s.name) + '</span></label>';
+  function renderReview() {
+    var nodes = computeSelection();
+    var cities = nodes.filter(function (n) { return n.level === 'city'; });
+    var mains = nodes.filter(function (n) { return n.level === 'main'; });
+    var subs = nodes.filter(function (n) { return n.level === 'sub'; });
+
+    $('adAssignArea').disabled = !$('adAssignUser').value || !nodes.length;
+
+    if (!nodes.length) {
+      $('adAssignReview').innerHTML = '<div class="ad-empty">Nothing selected yet.</div>';
+      return;
+    }
+
+    var tree = Object.keys(citySel).filter(function (id) { return citySel[id]; }).map(function (cityId) {
+      var wholeCity = cities.some(function (c) { return c.id === cityId; });
+      var mainsUnder = (LOC.getMainAreas(cityId) || []).filter(function (m) { return mainSel[m.id]; });
+      var lines = mainsUnder.map(function (m) {
+        var wholeMain = mains.some(function (x) { return x.id === m.id; });
+        var subsUnder = (LOC.getSubAreas(m.id) || []);
+        var checkedSubsUnder = subsUnder.filter(function (s) { return subSel[s.id]; });
+        var subLine = wholeMain
+          ? (subsUnder.length ? '<small style="padding-left:34px;display:block;">All sub-locations</small>' : '')
+          : checkedSubsUnder.map(function (s) {
+              return '<small style="padding-left:34px;display:block;">✓ ' + esc(s.name) + '</small>';
+            }).join('');
+        return '<div>✓ ' + esc(m.name) + '</div>' + subLine;
+      }).join('');
+      return '<div class="ad-kv-row" style="align-items:flex-start;flex-direction:column;">' +
+        '<b>' + esc(cityName(cityId)) + (wholeCity ? ' — whole city' : '') + '</b>' +
+        (lines ? '<div style="padding-left:18px;">' + lines + '</div>' : '') +
+      '</div>';
+    }).join('');
+
+    $('adAssignReview').innerHTML = tree +
+      '<div class="ad-kv-row"><span>Summary</span><span><b>' +
+        cities.length + '</b> ' + (cities.length === 1 ? 'city' : 'cities') + ' · <b>' +
+        mains.length + '</b> main location' + (mains.length === 1 ? '' : 's') + ' · <b>' +
+        subs.length + '</b> sub location' + (subs.length === 1 ? '' : 's') +
+      '</span></div>';
+  }
+
+  function renderCities() {
+    var q = citySearchQ.trim().toLowerCase();
+    var list = (LOC.listCities() || []).filter(function (c) { return !q || c.name.toLowerCase().indexOf(q) > -1; });
+    $('adAssignCities').innerHTML = list.length
+      ? list.map(function (c) {
+          return '<label class="ad-sub"><input type="checkbox" data-city="' + esc(c.id) + '"' +
+            (citySel[c.id] ? ' checked' : '') + ' /><span>' + esc(c.name) + '</span></label>';
         }).join('')
-      : '<div class="ad-empty">' + (q ? 'No sub location matches that.'
-          : 'This main location has no sub locations yet — assigning it covers the whole area.') + '</div>';
-    refreshAssignScope();
+      : '<div class="ad-empty">No city matches that.</div>';
+  }
+
+  function renderHierarchy() {
+    var selectedCityIds = Object.keys(citySel).filter(function (id) { return citySel[id]; });
+    $('adAssignHierarchy').innerHTML = selectedCityIds.map(function (cityId) {
+      var mains = LOC.getMainAreas(cityId) || [];
+      var mainRows = mains.length ? mains.map(function (m) {
+        var checked = !!mainSel[m.id];
+        var subBlock = '';
+        if (checked) {
+          var subs = LOC.getSubAreas(m.id) || [];
+          subBlock = subs.length
+            ? '<div class="ad-sub-tools"><button class="ad-btn is-sm" type="button" data-sub-all="' + esc(m.id) + '">Select all</button>' +
+              '<button class="ad-btn is-sm" type="button" data-sub-none="' + esc(m.id) + '">Clear</button></div>' +
+              '<div class="ad-sublist" style="margin:6px 0 10px 20px;">' + subs.map(function (s) {
+                return '<label class="ad-sub"><input type="checkbox" data-sub="' + esc(s.id) + '" data-sub-main="' + esc(m.id) + '"' +
+                  (subSel[s.id] ? ' checked' : '') + ' /><span>' + esc(s.name) + '</span></label>';
+              }).join('') + '</div>'
+            : '<div class="ad-empty" style="margin-left:20px;">No sub locations published — this main location is assigned whole.</div>';
+        }
+        return '<label class="ad-sub"><input type="checkbox" data-main="' + esc(m.id) + '" data-main-city="' + esc(cityId) + '"' +
+          (checked ? ' checked' : '') + ' /><span>' + esc(m.name) + '</span></label>' + subBlock;
+      }).join('') : '<div class="ad-empty">No main locations published — assigning ' + esc(cityName(cityId)) + ' covers the whole city.</div>';
+
+      return '<div class="ad-field"><label>Main Locations — ' + esc(cityName(cityId)) + '</label>' + mainRows + '</div>';
+    }).join('');
+  }
+
+  function refreshPicker() {
+    renderHierarchy();
+    renderReview();
   }
 
   async function initAreaPicker() {
-    var el = assignEls();
     if (!LOC || !BANK) {
-      el.scope.textContent = 'The location engine did not load; area assignment is unavailable.';
+      $('adAssignReview').innerHTML = '<div class="ad-empty">The location engine did not load; area assignment is unavailable.</div>';
       return;
     }
     /* Local bank first so the picker is usable instantly, then the
@@ -1234,35 +1284,76 @@
     try { await BANK.pullCitiesFromApi(); } catch (e) {}
     try { await BANK.pullFromApi(); } catch (e) {}
 
-    fillSelect(el.city, LOC.listCities(), 'Select city');
+    renderCities();
 
-    el.city.addEventListener('change', function () {
-      var mains = this.value ? LOC.getMainAreas(this.value) : [];
-      el.main.disabled = !mains.length;
-      fillSelect(el.main, mains,
-        this.value ? (mains.length ? 'Whole city' : 'No main locations published') : 'Select a city first');
-      renderSubs();
+    $('adAssignCitySearch').addEventListener('input', function () { citySearchQ = this.value; renderCities(); });
+    $('adAssignCityAll').addEventListener('click', function () {
+      (LOC.listCities() || []).forEach(function (c) { citySel[c.id] = true; });
+      renderCities(); refreshPicker();
     });
-    el.main.addEventListener('change', renderSubs);
-    el.search.addEventListener('input', renderSubs);
-    el.subs.addEventListener('change', refreshAssignScope);
-    $('adAssignUser').addEventListener('change', refreshAssignScope);
+    $('adAssignCityNone').addEventListener('click', function () {
+      citySel = {}; mainSel = {}; subSel = {};
+      renderCities(); refreshPicker();
+    });
 
-    $('adAssignSubAll').addEventListener('click', function () {
-      el.subs.querySelectorAll('input[type=checkbox]').forEach(function (c) { c.checked = true; });
-      refreshAssignScope();
+    $('adAssignCities').addEventListener('change', function (e) {
+      var cb = e.target.closest('[data-city]');
+      if (!cb) return;
+      var cityId = cb.getAttribute('data-city');
+      if (cb.checked) {
+        citySel[cityId] = true;
+      } else {
+        /* Deselecting a city cascades: every main/sub it owns is dropped
+           from the intended state too, so nothing orphaned survives to be
+           silently sent on Save. */
+        delete citySel[cityId];
+        (LOC.getMainAreas(cityId) || []).forEach(function (m) {
+          delete mainSel[m.id];
+          (LOC.getSubAreas(m.id) || []).forEach(function (s) { delete subSel[s.id]; });
+        });
+      }
+      refreshPicker();
     });
-    $('adAssignSubNone').addEventListener('click', function () {
-      el.subs.querySelectorAll('input[type=checkbox]').forEach(function (c) { c.checked = false; });
-      refreshAssignScope();
+
+    $('adAssignHierarchy').addEventListener('change', function (e) {
+      var mainCb = e.target.closest('[data-main]');
+      var subCb = e.target.closest('[data-sub]');
+      if (mainCb) {
+        var mainId = mainCb.getAttribute('data-main');
+        if (mainCb.checked) {
+          mainSel[mainId] = true;
+        } else {
+          delete mainSel[mainId];
+          (LOC.getSubAreas(mainId) || []).forEach(function (s) { delete subSel[s.id]; });
+        }
+        refreshPicker();
+      } else if (subCb) {
+        var subId = subCb.getAttribute('data-sub');
+        if (subCb.checked) subSel[subId] = true; else delete subSel[subId];
+        refreshPicker();
+      }
     });
+
+    $('adAssignHierarchy').addEventListener('click', function (e) {
+      var allBtn = e.target.closest('[data-sub-all]');
+      var noneBtn = e.target.closest('[data-sub-none]');
+      if (allBtn) {
+        (LOC.getSubAreas(allBtn.getAttribute('data-sub-all')) || []).forEach(function (s) { subSel[s.id] = true; });
+        refreshPicker();
+      } else if (noneBtn) {
+        (LOC.getSubAreas(noneBtn.getAttribute('data-sub-none')) || []).forEach(function (s) { delete subSel[s.id]; });
+        refreshPicker();
+      }
+    });
+
+    $('adAssignUser').addEventListener('change', renderReview);
   }
 
   $('adAssignArea').addEventListener('click', async function () {
     var userId = $('adAssignUser').value;
-    var nodes = selectedNodes();
+    var nodes = computeSelection();
     if (!userId || !nodes.length) {
-      A.msg($('adAssignMsg'), 'Choose a team member and a location.', 'is-error');
+      A.msg($('adAssignMsg'), 'Choose a team member and at least one location.', 'is-error');
       return;
     }
 
@@ -1272,7 +1363,10 @@
     /* One call per node, through the existing endpoint — the API assigns a
        single area per request and enforces "one active manager per area"
        in the database. Each is reported independently so a clash on one
-       sub location never hides the ones that did succeed. */
+       sub location never hides the ones that did succeed. The FULL
+       current selection is (re)computed and sent every time (not just
+       whatever last changed), so Save always reflects exactly what the
+       review panel showed. */
     var done = 0, taken = [], failed = [];
     for (var i = 0; i < nodes.length; i++) {
       try {
@@ -1291,9 +1385,12 @@
     A.msg($('adAssignMsg'), parts.join(' · ') || 'Nothing to assign.',
       failed.length || (!done && taken.length) ? 'is-error' : 'is-ok');
 
-    if (done) {
-      assignEls().subs.querySelectorAll('input[type=checkbox]').forEach(function (c) { c.checked = false; });
-      refreshAssignScope();
+    /* Selection state is left as-is on failure (per spec: "preserve the
+       user's current selection state where safe") and only cleared once
+       everything actually saved. */
+    if (done && !failed.length && !taken.length) {
+      citySel = {}; mainSel = {}; subSel = {};
+      renderCities(); refreshPicker();
     }
     this.disabled = false;
     await loadAssignments();
