@@ -870,7 +870,15 @@
         areaPickerReady = true;
         await initAreaPicker();
       }
-      refreshAssignScope();
+      /* Real regression caught by testing before it ever shipped: this
+         called the old single-select refreshAssignScope(), removed when
+         the multi-select picker replaced it — every loadTeam() call threw
+         here, caught by this function's own try/catch, and silently
+         replaced the whole Team Manager list with an error message. Not
+         re-rendering the picker at all here is correct: renderReview()
+         already re-runs after every checkbox change and after
+         beginEditAreas() preloads state; nothing needs a stale review
+         redrawn on every unrelated loadTeam() call. */
 
       await loadAssignments();
     } catch (e) {
@@ -1067,6 +1075,9 @@
   });
 
   var assignExpanded = {};   // userId -> true when expanded
+  var assignByUserCache = {};   // userId -> current active assignment rows (for Edit areas preload/diff)
+  var editingUserId = null;   // set while the picker below is editing an EXISTING member's areas
+  var editingOriginal = [];   // that member's assignment rows as of when Edit was opened
 
   function assignSummary(rows) {
     var cities = rows.filter(function (a) { return a.level === 'city'; }).length;
@@ -1101,6 +1112,7 @@
         if (!byUser[a.userId]) { byUser[a.userId] = []; order.push(a.userId); }
         byUser[a.userId].push(a);
       });
+      assignByUserCache = byUser;
 
       $('adAssignmentList').innerHTML = order.map(function (userId) {
         var rows = byUser[userId];
@@ -1111,6 +1123,7 @@
           '<span class="ad-chevron' + (expanded ? ' is-open' : '') + '" aria-hidden="true">&#9656;</span></button>' +
           '<div class="ad-grow"><b>' + esc(rows[0].userName || 'Unknown') + '</b>' +
           '<small>' + esc(rows[0].userRole || '') + ' · ' + esc(assignSummary(rows)) + '</small></div>' +
+          '<button class="ad-btn is-sm" type="button" data-edit-areas="' + esc(userId) + '">Edit areas</button> ' +
           '<button class="ad-btn is-sm is-danger" type="button" data-remove-all="' + esc(userId) + '">Remove all</button>' +
         '</div>';
 
@@ -1271,6 +1284,56 @@
     renderReview();
   }
 
+  /* Area Edit (new this pass): reuses the SAME picker/state/Save path as
+     a fresh assignment — no second picker, no second reconciliation
+     model. The only difference from "assign new" is that citySel/mainSel/
+     subSel are PRELOADED from the member's current active rows, and Save
+     additionally revokes whatever was in editingOriginal but is no
+     longer in the resolved selection (see the Save handler). */
+  function beginEditAreas(userId, rows) {
+    citySel = {}; mainSel = {}; subSel = {};
+    editingUserId = userId;
+    editingOriginal = rows.slice();
+
+    rows.forEach(function (a) {
+      var parts = String(a.nodeId).split('/');
+      citySel[parts[0]] = true;
+      if (a.level === 'main' || a.level === 'sub') mainSel[parts.slice(0, 2).join('/')] = true;
+      if (a.level === 'sub') subSel[a.nodeId] = true;
+    });
+
+    var userSelEl = $('adAssignUser');
+    userSelEl.value = userId;
+    userSelEl.disabled = true;   // editing an existing member's areas — not a place to also reassign to someone else
+
+    var banner = $('adAssignEditBanner');
+    banner.hidden = false;
+    banner.textContent = 'Editing area assignments for ' + (rows[0] ? rows[0].userName : 'this member') +
+      '. Changes are not saved until you click "Assign selected areas". ';
+    var cancelBtn = doc.createElement('button');
+    cancelBtn.type = 'button'; cancelBtn.className = 'ad-btn is-sm'; cancelBtn.textContent = 'Cancel edit';
+    cancelBtn.addEventListener('click', cancelEditAreas);
+    banner.appendChild(cancelBtn);
+
+    renderCities();
+    refreshPicker();
+    $('adAssignArea').textContent = 'Save area changes';
+    banner.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  function cancelEditAreas() {
+    editingUserId = null;
+    editingOriginal = [];
+    citySel = {}; mainSel = {}; subSel = {};
+    $('adAssignUser').disabled = false;
+    $('adAssignUser').value = '';
+    $('adAssignEditBanner').hidden = true;
+    $('adAssignEditBanner').textContent = '';
+    $('adAssignArea').textContent = 'Assign selected areas';
+    renderCities();
+    refreshPicker();
+  }
+
   async function initAreaPicker() {
     if (!LOC || !BANK) {
       $('adAssignReview').innerHTML = '<div class="ad-empty">The location engine did not load; area assignment is unavailable.</div>';
@@ -1352,13 +1415,25 @@
   $('adAssignArea').addEventListener('click', async function () {
     var userId = $('adAssignUser').value;
     var nodes = computeSelection();
-    if (!userId || !nodes.length) {
+    var isEdit = !!editingUserId;
+    if (!userId || (!nodes.length && !isEdit)) {
       A.msg($('adAssignMsg'), 'Choose a team member and at least one location.', 'is-error');
       return;
     }
 
+    /* Reconcile against the ORIGINAL active rows only in edit mode — a
+       fresh assignment has no original to diff against, every selected
+       node is new. Matched by nodeId: a node present in both is already
+       correctly active and must NOT be re-POSTed to 'assign' (migration
+       0014's uq_area_assignment_active_user_node would reject it as a
+       duplicate-for-the-same-user, not the "someone else already has
+       this area" case the existing 409 handling below expects). */
+    var nodeIds = nodes.map(function (n) { return n.id; });
+    var toAdd = isEdit ? nodes.filter(function (n) { return !editingOriginal.some(function (o) { return o.nodeId === n.id; }); }) : nodes;
+    var toRemove = isEdit ? editingOriginal.filter(function (o) { return nodeIds.indexOf(o.nodeId) === -1; }) : [];
+
     this.disabled = true;
-    A.msg($('adAssignMsg'), 'Assigning…');
+    A.msg($('adAssignMsg'), isEdit ? 'Saving area changes…' : 'Assigning…');
 
     /* One call per node, through the existing endpoint — the API assigns a
        single area per request and enforces "one active manager per area"
@@ -1368,32 +1443,50 @@
        whatever last changed), so Save always reflects exactly what the
        review panel showed. */
     var done = 0, taken = [], failed = [];
-    for (var i = 0; i < nodes.length; i++) {
+    for (var i = 0; i < toAdd.length; i++) {
       try {
-        await A.post(API.adminAssignments, { action: 'assign', userId: userId, nodeId: nodes[i].id });
+        await A.post(API.adminAssignments, { action: 'assign', userId: userId, nodeId: toAdd[i].id });
         done++;
       } catch (e) {
-        if (e.status === 409) taken.push(nodes[i].name);
-        else failed.push(nodes[i].name + ' (' + e.message + ')');
+        if (e.status === 409) taken.push(toAdd[i].name);
+        else failed.push(toAdd[i].name + ' (' + e.message + ')');
+      }
+    }
+
+    /* Removals — revoke (not delete) whatever fell out of the new
+       selection. 'revoke' already cascades to descendants server-side,
+       harmless no-op for a sub-level row. History is preserved exactly
+       as a manual Remove click would preserve it; this is the same
+       action under the hood, just batched. */
+    var removed = 0, removeFailed = [];
+    for (var j = 0; j < toRemove.length; j++) {
+      try {
+        await A.post(API.adminAssignments, { action: 'revoke', assignmentId: toRemove[j].id });
+        removed++;
+      } catch (e) {
+        removeFailed.push(toRemove[j].nodeId + ' (' + e.message + ')');
       }
     }
 
     var parts = [];
-    if (done) parts.push(done + (done === 1 ? ' area assigned' : ' areas assigned'));
+    if (done) parts.push(done + (done === 1 ? ' area added' : ' areas added'));
+    if (removed) parts.push(removed + (removed === 1 ? ' area removed' : ' areas removed'));
     if (taken.length) parts.push('already has a manager: ' + taken.join(', '));
-    if (failed.length) parts.push('failed: ' + failed.join('; '));
-    A.msg($('adAssignMsg'), parts.join(' · ') || 'Nothing to assign.',
-      failed.length || (!done && taken.length) ? 'is-error' : 'is-ok');
+    if (failed.length) parts.push('failed to add: ' + failed.join('; '));
+    if (removeFailed.length) parts.push('failed to remove: ' + removeFailed.join('; '));
+    var anyFailure = failed.length || removeFailed.length || (!done && !removed && taken.length);
+    A.msg($('adAssignMsg'), parts.join(' · ') || 'No changes to save.', anyFailure ? 'is-error' : 'is-ok');
 
     /* Selection state is left as-is on failure (per spec: "preserve the
        user's current selection state where safe") and only cleared once
        everything actually saved. */
-    if (done && !failed.length && !taken.length) {
-      citySel = {}; mainSel = {}; subSel = {};
-      renderCities(); refreshPicker();
+    if (!anyFailure) {
+      if (isEdit) cancelEditAreas();
+      else { citySel = {}; mainSel = {}; subSel = {}; renderCities(); refreshPicker(); }
     }
     this.disabled = false;
     await loadAssignments();
+    await loadTeam();   // Team location summaries reflect the same assignments
   });
 
   $('adAssignmentList').addEventListener('click', async function (e) {
@@ -1408,8 +1501,14 @@
     var removeBtn = e.target.closest('[data-remove]');
     var transferBtn = e.target.closest('[data-transfer]');
     var removeAllBtn = e.target.closest('[data-remove-all]');
+    var editAreasBtn = e.target.closest('[data-edit-areas]');
 
     try {
+      if (editAreasBtn) {
+        var editUserId = editAreasBtn.getAttribute('data-edit-areas');
+        beginEditAreas(editUserId, assignByUserCache[editUserId] || []);
+        return;
+      }
       if (removeBtn) {
         var assignRow = removeBtn.closest('[data-assignment]');
         var id = assignRow.getAttribute('data-assignment');
