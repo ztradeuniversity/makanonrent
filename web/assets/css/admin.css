@@ -348,3 +348,10 @@
 }
 .ad-team-group-head .ad-pill { text-transform: none; letter-spacing: 0; }
 .ad-detail-grid { display: grid; gap: 6px; margin-bottom: 14px; }
+
+.ad-assign-toggle {
+  width: 32px; height: 32px; padding: 0; display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.ad-chevron { display: inline-block; transition: transform .15s ease; font-size: 12px; }
+.ad-chevron.is-open { transform: rotate(90deg); }

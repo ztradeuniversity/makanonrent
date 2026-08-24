@@ -9,7 +9,7 @@
    by a shared secret header, same convention as bootstrap.js. */
 import { json, preflight } from '../../utils/cors.js';
 import { getServiceClient } from '../../utils/supabase.js';
-import { sendEmail, renderTemplate } from '../../utils/mailer.js';
+import { sendEmail, renderTemplate, sendQueuedEmail } from '../../utils/mailer.js';
 import { dispatchAlertsForListing } from '../../utils/alert-match.js';
 
 export async function onRequestOptions(context) { return preflight(context.env); }
@@ -54,9 +54,18 @@ export async function onRequestPost(context) {
         var n = pending.data[j];
         var live = await db.from('listings').select('id').eq('id', n.entity_id).eq('lifecycle_state', 'published').maybeSingle();
         if (live.data) {
-          await db.from('email_delivery_queue').insert({ to_email: n.email, template: 'notify_available', payload: { entityId: n.entity_id, listingId: n.entity_id } });
-          await db.from('property_notify_requests').update({ fulfilled_at: new Date().toISOString() }).eq('id', n.id);
-          notified++;
+          /* Same fix as alert-match.js — synchronous send via
+             sendQueuedEmail(), not queue-and-hope. This sweep only runs
+             when a Cron Trigger calls this endpoint at all, but the
+             per-listing "notify about THIS one" request otherwise had the
+             identical never-sent bug the saved-search path had. */
+          var d = await sendQueuedEmail(env, db, {
+            toEmail: n.email, template: 'notify_available', payload: { entityId: n.entity_id, listingId: n.entity_id }
+          });
+          if (d.sent) {
+            await db.from('property_notify_requests').update({ fulfilled_at: new Date().toISOString() }).eq('id', n.id);
+            notified++;
+          }
         }
       }
     }

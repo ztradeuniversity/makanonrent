@@ -219,6 +219,82 @@ export async function onRequestPost(context) {
         return json(env, { error: 'You cannot manage that user.' }, 403);
       }
 
+      /* Removal (archive) must resolve any active area assignments first —
+         audited root cause of "removed member still owns properties": area
+         assignment is how a property's operational owner is derived here
+         (there is no per-property assignee column), so an archived user
+         left with an active admin_area_assignments row keeps looking like
+         the responsible manager for every property in that area. Disable
+         is exempt on purpose (spec 3A): it only blocks login, history and
+         standing assignments are meant to survive it. */
+      if (body.status === 'archived') {
+        var active = await db.from('admin_area_assignments')
+          .select('id, node_id, scope_level, locations!inner(name)')
+          .eq('user_id', body.userId).eq('active', true);
+        if (active.error) throw active.error;
+        var activeRows = active.data || [];
+
+        if (activeRows.length && !body.resolution) {
+          return json(env, {
+            error: 'This member still has active area assignments. Choose how to resolve them before removing.',
+            needsResolution: true,
+            assignments: activeRows.map(function (a) {
+              return { id: a.id, nodeId: a.node_id, level: a.scope_level, areaName: a.locations && a.locations.name };
+            })
+          }, 409);
+        }
+
+        if (activeRows.length && body.resolution === 'transfer') {
+          if (!isNonEmptyString(body.transferToUserId, 60)) {
+            return json(env, { error: 'transferToUserId is required to transfer assignments.' }, 422);
+          }
+          if (body.transferToUserId === body.userId) {
+            return json(env, { error: 'Cannot transfer to the same member being removed.' }, 422);
+          }
+          var recipient = await db.from('admin_users').select('id, role, status').eq('id', body.transferToUserId).maybeSingle();
+          if (recipient.error) throw recipient.error;
+          if (!recipient.data || recipient.data.status !== 'active') {
+            return json(env, { error: 'Transfer recipient must be an active team member.' }, 422);
+          }
+          if (recipient.data.role !== target.data.role) {
+            return json(env, { error: 'Transfer recipient must hold the same role as the member being removed.' }, 422);
+          }
+          if (!canManageRole(auth.user.role, recipient.data.role)) {
+            return json(env, { error: 'You cannot assign areas to that recipient.' }, 403);
+          }
+
+          for (var i = 0; i < activeRows.length; i++) {
+            var row = activeRows[i];
+            var ins2 = await db.from('admin_area_assignments').insert({
+              user_id: body.transferToUserId, node_id: row.node_id, scope_level: row.scope_level,
+              scope_role: recipient.data.role, assigned_by: auth.user.id, active: true
+            });
+            /* uq_area_one_active_manager (migration 0004) legitimately
+               blocks a second active manager on the same area — surfaced
+               to the CEO rather than silently skipped, since it means the
+               transfer is incomplete and needs a manual pick for that one
+               area. Field Officer/Assistant CEO transfers are unaffected
+               (that constraint is manager-only). */
+            if (ins2.error && String(ins2.error.message || '').indexOf('uq_area_one_active_manager') === -1) {
+              throw ins2.error;
+            }
+            if (!ins2.error) {
+              await db.from('admin_area_assignments')
+                .update({ active: false, revoked_at: new Date().toISOString() }).eq('id', row.id);
+            }
+          }
+          await audit('transfer_assignments', 'admin_user', body.userId,
+            { toUserId: body.transferToUserId, count: activeRows.length });
+        } else if (activeRows.length && body.resolution === 'unassign') {
+          await db.from('admin_area_assignments')
+            .update({ active: false, revoked_at: new Date().toISOString() })
+            .eq('user_id', body.userId).eq('active', true);
+          await audit('unassign_areas', 'admin_user', body.userId, { count: activeRows.length });
+        } else if (activeRows.length) {
+          return json(env, { error: "resolution must be 'transfer' or 'unassign'." }, 422);
+        }
+      }
+
       var patch = { status: body.status };
       if (body.status === 'archived') patch.archived_at = new Date().toISOString();
 

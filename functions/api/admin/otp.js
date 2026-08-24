@@ -69,8 +69,10 @@ export async function onRequestPost(context) {
         request: context.request
       });
 
+      /* 500, not 502 — see functions/api/admin/login.js for why: Cloudflare's
+         edge replaces 502/503/504 bodies with its own error page. */
       if (!delivery.sent) {
-        return json(env, { error: 'Could not send the verification code right now. Please try again in a moment.' }, 502);
+        return json(env, { error: 'Could not send the verification code right now. Please try again in a moment.' }, 500);
       }
       return json(env, { ok: true, otpId: ins.data.id });
     }

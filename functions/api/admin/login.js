@@ -183,8 +183,15 @@ async function stepCredentials(env, db, body, request) {
     request: request
   });
 
+  /* 500, not 502/503/504 — Cloudflare's edge intercepts those specific
+     "gateway" status codes and replaces the body with its OWN generic
+     error page before it reaches the browser, discarding this JSON
+     entirely. Proven live: the client showed the fallback "Request
+     failed (502)" instead of this message, meaning res.json() failed to
+     parse what actually arrived. 500 is what the catch-all below this
+     function already uses successfully in production. */
   if (!delivery.sent) {
-    return json(env, { error: 'Could not send the verification code right now. Please try again in a moment.' }, 502);
+    return json(env, { error: 'Could not send the verification code right now. Please try again in a moment.' }, 500);
   }
 
   return json(env, { ok: true, otpRequired: true, otpId: ins.data.id, maskedEmail: maskEmail(user.email) });

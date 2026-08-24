@@ -631,18 +631,18 @@
   /* ── TEAM ───────────────────────────────────────────────────────── */
   var ROLE_GROUPS = ['manager', 'assistant_ceo', 'field_officer'];
   var ROLE_DESC = {
-    manager: 'Manages properties and field activity within assigned areas.',
-    assistant_ceo: 'Assists the CEO with oversight and the management actions RBAC grants this role.',
-    field_officer: 'Collects property and location information in assigned areas.'
+    manager: 'Supervises Field Officers and reviews their property/location work within assigned areas.',
+    assistant_ceo: 'Oversees assigned Area Managers and reviews operational performance.',
+    field_officer: 'Collects and records property/location information within assigned scope.'
   };
   var ACTION_DESC = {
     view: 'Shows this member’s account details.',
     edit: 'Change this member’s full name or registered email.',
-    reset: 'Invalidates the current password and issues a new one-time login credential.',
-    disable: 'Stops this member from logging in and using the dashboard immediately.',
+    reset: 'Invalidates the current password and creates a new credential.',
+    disable: 'Stops login/access while preserving the member’s history.',
     enable: 'Restores this member’s ability to log in.',
-    'delete': 'Removes this member’s access permanently. Their history is kept for audit — this is not a hard delete.',
-    assign: 'Defines the locations this team member is authorized to manage.'
+    'delete': 'Ends active operational participation and requires assignment resolution (transfer or unassign) before their access is removed. History is kept for audit — this is not a hard delete.',
+    assign: 'Defines which locations this team member is authorized to operate in.'
   };
   var teamFilters = { q: '', role: '', status: '' };
   var teamExpanded = {};   // userId -> 'view' | 'edit'
@@ -876,10 +876,53 @@
         A.msg($('adUserMsg'), 'New temporary password (shown once): ' + res.temporaryPassword, 'is-ok');
       } else if (del) {
         if (!win.confirm('Delete this team member? This stops their access immediately. Their audit history is kept, not erased — this matches the console-wide "no hard deletes" policy.')) return;
-        await A.post(API.adminUsers, { action: 'set-status', userId: userId, status: 'archived' });
+
+        var delPayload = { action: 'set-status', userId: userId, status: 'archived' };
+        try {
+          await A.post(API.adminUsers, delPayload);
+        } catch (blockErr) {
+          if (blockErr.status !== 409 || !blockErr.data || !blockErr.data.needsResolution) throw blockErr;
+
+          var assigns = blockErr.data.assignments || [];
+          var areaList = assigns.map(function (a) { return a.areaName || a.nodeId; }).join(', ');
+          var removedRow = (teamCache || []).find(function (u) { return u.id === userId; });
+          var eligible = (teamCache || []).filter(function (u) {
+            return u.role === (removedRow && removedRow.role) && u.status === 'active' && u.id !== userId;
+          });
+
+          var choice = win.prompt(
+            'This member still has ' + assigns.length + ' active area assignment(s): ' + areaList + '.\n\n' +
+            'Type TRANSFER to move them to another ' + (removedRow ? removedRow.role : 'team member') +
+            (eligible.length ? ' (eligible: ' + eligible.map(function (u) { return u.fullName; }).join(', ') + ')' : ' — no eligible recipient is currently active') +
+            ',\nor type UNASSIGN to return them to CEO-controlled pending (no owner) and continue the delete.',
+            eligible.length ? 'TRANSFER' : 'UNASSIGN'
+          );
+          if (!choice) return;
+          choice = choice.trim().toLowerCase();
+
+          if (choice === 'transfer') {
+            if (!eligible.length) { A.msg($('adUserMsg'), 'No eligible active recipient with the same role — use UNASSIGN instead.', 'is-error'); return; }
+            var toName = win.prompt('Transfer to which team member?\n' + eligible.map(function (u) { return u.fullName + ' (' + u.username + ')'; }).join('\n'));
+            if (!toName) return;
+            var toUser = eligible.find(function (u) { return u.fullName === toName.trim() || u.username === toName.trim(); });
+            if (!toUser) { A.msg($('adUserMsg'), 'No exact match for "' + toName + '" among eligible recipients.', 'is-error'); return; }
+            if (!win.confirm('Transfer ' + assigns.length + ' area assignment(s) from this member to ' + toUser.fullName + '?')) return;
+            delPayload.resolution = 'transfer';
+            delPayload.transferToUserId = toUser.id;
+          } else if (choice === 'unassign') {
+            if (!win.confirm('Return ' + assigns.length + ' area(s) to unassigned/pending and continue the delete?')) return;
+            delPayload.resolution = 'unassign';
+          } else {
+            return;
+          }
+
+          await A.post(API.adminUsers, delPayload);
+        }
+
         A.msg($('adUserMsg'), 'Team member deleted. Access is revoked; their history is retained for audit.', 'is-ok');
         delete teamExpanded[userId];
         await loadTeam();
+        await loadAssignments();
       } else if (view) {
         teamExpanded[userId] = teamExpanded[userId] === 'view' ? null : 'view';
         renderTeamList();
@@ -906,18 +949,65 @@
     }
   });
 
+  var assignExpanded = {};   // userId -> true when expanded
+
+  function assignSummary(rows) {
+    var cities = rows.filter(function (a) { return a.level === 'city'; }).length;
+    var mains = rows.filter(function (a) { return a.level === 'main'; }).length;
+    var subs = rows.filter(function (a) { return a.level === 'sub'; }).length;
+    if (cities || mains) {
+      var parts = [];
+      if (cities) parts.push(cities + ' cit' + (cities === 1 ? 'y' : 'ies'));
+      if (mains) parts.push(mains + ' main location' + (mains === 1 ? '' : 's'));
+      if (subs) parts.push(subs + ' sub location' + (subs === 1 ? '' : 's'));
+      return parts.join(' · ');
+    }
+    return rows.length + ' location' + (rows.length === 1 ? '' : 's') + ' assigned';
+  }
+
   async function loadAssignments() {
     try {
       var res = await A.get(API.adminAssignments);
-      $('adAssignmentList').innerHTML = res.assignments.length
-        ? res.assignments.map(function (a) {
+      if (!res.assignments.length) {
+        $('adAssignmentList').innerHTML = '<div class="ad-empty">No areas assigned yet.</div>';
+        return;
+      }
+
+      /* Grouped by user, collapsed by default — the flat per-assignment
+         list this replaced became unreadable past a handful of rows
+         (29+ sub-locations for one manager was the reported case). No
+         new data: same /api/admin/assignments response, just grouped
+         client-side. */
+      var byUser = {};
+      var order = [];
+      res.assignments.forEach(function (a) {
+        if (!byUser[a.userId]) { byUser[a.userId] = []; order.push(a.userId); }
+        byUser[a.userId].push(a);
+      });
+
+      $('adAssignmentList').innerHTML = order.map(function (userId) {
+        var rows = byUser[userId];
+        var expanded = !!assignExpanded[userId];
+        var head = '<div class="ad-verify-row" data-assign-group="' + esc(userId) + '">' +
+          '<button class="ad-btn is-sm ad-assign-toggle" type="button" data-toggle-user="' + esc(userId) + '" ' +
+          'aria-expanded="' + expanded + '" aria-controls="assignRows-' + esc(userId) + '">' +
+          '<span class="ad-chevron' + (expanded ? ' is-open' : '') + '" aria-hidden="true">&#9656;</span></button>' +
+          '<div class="ad-grow"><b>' + esc(rows[0].userName || 'Unknown') + '</b>' +
+          '<small>' + esc(rows[0].userRole || '') + ' · ' + esc(assignSummary(rows)) + '</small></div>' +
+        '</div>';
+
+        var detail = '<div class="ad-detail-grid" id="assignRows-' + esc(userId) + '"' + (expanded ? '' : ' hidden') + '>' +
+          rows.map(function (a) {
             return '<div class="ad-verify-row" data-assignment="' + esc(a.id) + '">' +
               '<div class="ad-grow"><b>' + esc(a.areaName || a.nodeId) + '</b>' +
-              '<small>' + esc(a.nodeId) + ' · ' + esc(a.level) + ' · ' + esc(a.userName) + '</small></div>' +
+              '<small>' + esc(a.nodeId) + ' · ' + esc(a.level) + '</small></div>' +
               '<button class="ad-btn is-sm is-danger" type="button" data-revoke>Revoke</button>' +
             '</div>';
-          }).join('')
-        : '<div class="ad-empty">No areas assigned yet.</div>';
+          }).join('') +
+        '</div>';
+
+        return head + detail;
+      }).join('');
     } catch (e) {
       $('adAssignmentList').innerHTML = '<div class="ad-empty">' + esc(e.message) + '</div>';
     }
@@ -1090,6 +1180,14 @@
   });
 
   $('adAssignmentList').addEventListener('click', async function (e) {
+    var toggle = e.target.closest('[data-toggle-user]');
+    if (toggle) {
+      var uid = toggle.getAttribute('data-toggle-user');
+      assignExpanded[uid] = !assignExpanded[uid];
+      await loadAssignments();
+      return;
+    }
+
     var btn = e.target.closest('[data-revoke]');
     if (!btn) return;
     var id = btn.closest('[data-assignment]').getAttribute('data-assignment');

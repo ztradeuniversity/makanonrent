@@ -263,11 +263,15 @@ export async function transition(env, opts) {
      on a timer so a subscriber is emailed on publication rather than up to
      an interval later.
 
-     dispatchAlertsForListing never throws and only ENQUEUES onto
-     email_delivery_queue (no outbound HTTP), so a Resend outage, a missing
-     key or a matcher bug cannot fail or slow the publication that just
-     succeeded. Anything that goes wrong is reported alongside the result
-     and the queued row is retried by the worker. */
+     dispatchAlertsForListing never throws. It DOES now make outbound
+     Resend HTTP calls (via sendQueuedEmail, fixed 2026-08-24 — queueing
+     alone was never actually delivered, nothing drains
+     email_delivery_queue without a Cron Trigger that isn't configured),
+     so a publish with many matching subscribers takes proportionally
+     longer, and a Resend outage adds latency without failing the
+     publish. A failed send still leaves its email_delivery_queue row for
+     audit/retry; anything that goes wrong is reported alongside the
+     result. */
   var alerts = null;
   var pushed = null;
   if (toState === 'published') {

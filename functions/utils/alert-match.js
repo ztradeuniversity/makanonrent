@@ -16,6 +16,7 @@
      - a property field that is NULL/absent can never satisfy a stated
        criterion. Unknown is not a yes — emailing someone about a property
        that merely might have parking is worse than staying silent. */
+import { sendQueuedEmail } from './mailer.js';
 
 /* Canonical requirement keys, same list as MOR_CONFIG.propertyNeeds.
    car_parking lives on units.car_porch; the rest are tags in
@@ -131,17 +132,28 @@ export async function loadListingForMatch(db, listingId) {
 }
 
 /* Matches a newly published listing against every open saved search and
-   enqueues one email per match onto the existing email_delivery_queue.
+   sends one email per match — synchronously, via the same sendQueuedEmail()
+   that fixed this exact bug for admin OTP/task email (audited 2026-08-24):
+   this function previously only ever INSERTED into email_delivery_queue,
+   and the only consumer, email-worker.js, has no Cron Trigger configured
+   in production, so every "Notify Me" email sat pending forever. No new
+   send path — sendQueuedEmail still writes the same queue row first (audit
+   trail, and a target for the worker once a Cron Trigger exists), then
+   attempts real delivery immediately.
 
    Ordering matters for the duplicate guard: the property_alert_sends row
    is inserted FIRST, and only a successful insert (i.e. this pairing was
-   not already recorded) leads to an enqueue. A repeat run, a concurrent
-   run, or a listing that is unpublished and published again therefore
-   cannot produce a second email for the same person and property.
+   not already recorded) leads to a send attempt. A repeat run, a
+   concurrent run, or a listing that is unpublished and published again
+   therefore cannot produce a second email for the same person and
+   property — this is unchanged. A send that fails after the claim (Resend
+   down, etc.) is not retried automatically, same as the original code's
+   handling of a failed queue insert; the queue row itself (status:'failed',
+   last_error set) is the audit trail for that.
 
    Never throws: publication must succeed even if alerting cannot. */
 export async function dispatchAlertsForListing(env, db, listingId, opts) {
-  var out = { matched: 0, queued: 0, skipped: 0, errors: [] };
+  var out = { matched: 0, queued: 0, sent: 0, failed: 0, skipped: 0, errors: [] };
   try {
     var row = await loadListingForMatch(db, listingId);
     if (!row) return out;
@@ -169,8 +181,8 @@ export async function dispatchAlertsForListing(env, db, listingId, opts) {
       /* Unique-index collision = already emailed for this pairing. */
       if (claim.error) { out.skipped++; continue; }
 
-      var q = await db.from('email_delivery_queue').insert({
-        to_email: r.email,
+      var delivery = await sendQueuedEmail(env, db, {
+        toEmail: r.email,
         template: 'notify_available',
         payload: {
           listingId: row.id,
@@ -178,12 +190,13 @@ export async function dispatchAlertsForListing(env, db, listingId, opts) {
           url: siteUrl ? siteUrl + '/property.html?id=' + encodeURIComponent(row.id) : null
         }
       });
-      if (q.error) { out.errors.push(q.error.message); continue; }
+      out.queued++;
+      if (!delivery.sent) { out.failed++; out.errors.push(delivery.error); continue; }
 
       await db.from('property_notify_requests')
         .update({ fulfilled_at: new Date().toISOString() })
         .eq('id', r.id);
-      out.queued++;
+      out.sent++;
     }
   } catch (e) {
     out.errors.push((e && e.message) || 'alert dispatch failed');
