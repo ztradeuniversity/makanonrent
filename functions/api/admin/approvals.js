@@ -20,6 +20,8 @@ import { getWorkflowConfig, currentStage, nextStage, STAGE_STATE } from '../../u
 import { transition } from '../../utils/lifecycle.js';
 import { publish } from '../../utils/notify.js';
 import { auditFor } from '../../utils/audit.js';
+import { resolveOwnerEmailForProperty } from '../../utils/owner-auth.js';
+import { sendQueuedEmail } from '../../utils/mailer.js';
 
 export async function onRequestOptions(context) {
   return preflight(context.env);
@@ -131,7 +133,7 @@ export async function onRequestPost(context) {
     var cfg = await getWorkflowConfig(env);
 
     var lres = await db.from('listings')
-      .select('id, status, approval_state, archived_at, units!inner(property_id, properties!inner(id, area_node_id, added_by_admin_id))')
+      .select('id, status, approval_state, archived_at, units!inner(property_id, properties!inner(id, area_node_id, added_by_admin_id, business_code, city_name, area_name))')
       .eq('id', body.listingId).maybeSingle();
     if (lres.error) throw lres.error;
     if (!lres.data) return json(env, { error: 'No such listing.' }, 404);
@@ -223,6 +225,7 @@ export async function onRequestPost(context) {
     if (upd.error) throw upd.error;
 
     var warning;
+    var lifecycleFailed = false;
     if (lifecycleTarget) {
       var t = await transition(env, {
         listingId: body.listingId,
@@ -240,6 +243,7 @@ export async function onRequestPost(context) {
         warning = 'Decision recorded, but the property could not move to ' +
                   lifecycleTarget + ': ' + t.error;
         published = false;
+        lifecycleFailed = true;
       } else {
         warning = t.warning;
       }
@@ -271,6 +275,48 @@ export async function onRequestPost(context) {
           entityType: 'listing', entityId: body.listingId,
           areaNodeId: prop.area_node_id, actorId: auth.user.id
         });
+      }
+    }
+
+    /* Owner-facing email — separate from the notify.js bus above, which
+       is in-app-only and audience-resolved to internal admin roles
+       (assigned_managers/assistant_ceos/ceo), never a property owner
+       (audited 2026-08-24: no existing path emailed an owner on review).
+       Reuses the SAME resolveOwnerEmailForProperty→sendQueuedEmail chain
+       Notify Me and admin OTP/task mail already use — no second mailer,
+       no second queue. Never blocks or fails the approval/rejection that
+       already succeeded above; a missing owner email (nobody claimed the
+       property yet) or a send failure is a normal, silent no-op here,
+       same as the bus events' own best-effort delivery. */
+    if (!lifecycleFailed && (published || body.decision === 'reject' || body.decision === 'return')) {
+      try {
+        var ownerInfo = await resolveOwnerEmailForProperty(env, prop.id);
+        if (ownerInfo) {
+          var locationName = [prop.area_name, prop.city_name].filter(Boolean).join(', ') || null;
+          var siteUrl = (env.SITE_URL || '').replace(/\/+$/, '');
+          var ownerPayload = {
+            ownerName: ownerInfo.name, reference: prop.business_code || null, locationName: locationName
+          };
+          var ownerDelivery;
+          if (published) {
+            ownerPayload.url = siteUrl ? siteUrl + '/property.html?id=' + encodeURIComponent(body.listingId) : null;
+            ownerDelivery = await sendQueuedEmail(env, db, {
+              toEmail: ownerInfo.email, template: 'owner_property_published', payload: ownerPayload
+            });
+          } else {
+            ownerPayload.reason = body.comment || null;
+            ownerDelivery = await sendQueuedEmail(env, db, {
+              toEmail: ownerInfo.email,
+              template: body.decision === 'return' ? 'owner_property_returned' : 'owner_property_rejected',
+              payload: ownerPayload
+            });
+          }
+          if (!ownerDelivery.sent) {
+            await audit('owner_email_failed', 'listing', body.listingId, { error: ownerDelivery.error });
+          }
+        }
+      } catch (ownerErr) {
+        await audit('owner_email_failed', 'listing', body.listingId, { error: (ownerErr && ownerErr.message) || 'owner email failed' });
       }
     }
 

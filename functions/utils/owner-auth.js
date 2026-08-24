@@ -195,6 +195,40 @@ export async function resolveOwner(env, request) {
   };
 }
 
+/* ── property → the owner email bound to it (reverse of mine.js) ──────
+   mine.js resolves forward: signed-in owner → contact → owner_profiles →
+   property_ownership_claims → their properties. Notification-on-approval
+   needs the reverse: a property_id known at review time → the SAME chain
+   walked backward → the verified email on file. No parallel identity, no
+   new table — same three tables mine.js already trusts as the source of
+   truth for "who owns this".
+
+   A property can carry more than one ownership claim; the earliest is
+   used (the original submitter), matching how a property is singular-
+   owned in every current flow. Returns null rather than throwing when no
+   claim/contact/email exists — callers must treat "nobody to notify" as
+   a normal, non-fatal outcome, not an error. */
+export async function resolveOwnerEmailForProperty(env, propertyId) {
+  var db = getServiceClient(env);
+
+  var claim = await db.from('property_ownership_claims')
+    .select('owner_profile_id')
+    .eq('property_id', propertyId)
+    .order('created_at', { ascending: true })
+    .limit(1).maybeSingle();
+  if (claim.error || !claim.data) return null;
+
+  var profile = await db.from('owner_profiles')
+    .select('contact_id').eq('id', claim.data.owner_profile_id).maybeSingle();
+  if (profile.error || !profile.data) return null;
+
+  var contact = await db.from('contacts')
+    .select('full_name, email').eq('id', profile.data.contact_id).maybeSingle();
+  if (contact.error || !contact.data || !contact.data.email) return null;
+
+  return { email: contact.data.email, name: contact.data.full_name || null };
+}
+
 /* ── identity → the existing contact record ────────────────────────── */
 /* Returns the contacts row this signed-in person IS, creating or claiming
    one as needed. This is the ONLY place auth_user_id is written.

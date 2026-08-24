@@ -78,6 +78,39 @@ export function renderTemplate(template, payload) {
     l.push('', 'Sign in to your dashboard to see the full details and log your progress.');
     return { subject: 'New task assigned: ' + (payload.title || 'Task'), text: l.join('\n') };
   }
+  if (template === 'owner_property_published') {
+    var pl = [
+      'Hi ' + (payload.ownerName || 'there') + ',',
+      '',
+      'Good news — your property listing on MakanOnRent has been approved and is now live.'
+    ];
+    if (payload.reference) pl.push('', 'Reference: ' + payload.reference);
+    if (payload.title) pl.push('Listing: ' + payload.title);
+    if (payload.locationName) pl.push('Location: ' + payload.locationName);
+    if (payload.url) pl.push('', 'View your live listing: ' + payload.url);
+    pl.push('', 'Thank you for listing with MakanOnRent.');
+    return { subject: 'Your property is now live on MakanOnRent', text: pl.join('\n') };
+  }
+  if (template === 'owner_property_rejected' || template === 'owner_property_returned') {
+    var isReturned = template === 'owner_property_returned';
+    var rl = [
+      'Hi ' + (payload.ownerName || 'there') + ',',
+      '',
+      isReturned
+        ? 'Your property listing on MakanOnRent needs a correction before it can continue through review.'
+        : 'Your property listing on MakanOnRent was not approved.'
+    ];
+    if (payload.reference) rl.push('', 'Reference: ' + payload.reference);
+    if (payload.title) rl.push('Listing: ' + payload.title);
+    if (payload.reason) rl.push('', (isReturned ? 'What needs to change: ' : 'Reason: ') + payload.reason);
+    rl.push('', isReturned
+      ? 'Once corrected, your listing will continue through review — no need to resubmit from scratch.'
+      : 'If you believe this is a mistake, you can contact MakanOnRent for clarification.');
+    return {
+      subject: isReturned ? 'Action needed on your MakanOnRent listing' : 'Update on your MakanOnRent listing',
+      text: rl.join('\n')
+    };
+  }
   if (template === 'notify_available') {
     var lines = [
       'Good news — a verified property matching what you asked for is now available on MakanOnRent.',
