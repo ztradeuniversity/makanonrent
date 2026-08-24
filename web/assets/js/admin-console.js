@@ -92,7 +92,7 @@
                Manager/FO isn't limited to guessing where an area came
                from. */
             var lineage = a.assignedByName
-              ? ' · Assigned by ' + esc(a.assignedByName) + (a.assignedAt ? ' on ' + esc(A.fmtDateTime(a.assignedAt)) : '')
+              ? ' · Assigned by ' + esc(a.assignedByName) + (a.assignedAt ? ' on ' + esc(A.fmtDateTimeSeconds(a.assignedAt)) : '')
               : '';
             return '<div class="ad-verify-row"><div class="ad-grow"><b>' + esc(a.name || a.nodeId) + '</b>' +
               '<small>' + esc(a.nodeId) + ' · ' + esc(a.level) + lineage + '</small></div></div>';
@@ -1820,8 +1820,8 @@
   var editingUserId = null;   // set while the picker below is editing an EXISTING member's areas
   var editingOriginal = [];   // that member's assignment rows as of when Edit was opened
   var xferOpenId = null;   // assignmentId -> the ONE transfer picker currently open, or null
-  var historyOpenFor = {};   // userId -> true when their revoked-area history panel is open
-  var historyCache = {};     // userId -> revoked rows, fetched on demand (ISSUE 6/7)
+  var historyOpenFor = {};    // userId -> true when their full delegation-chain history panel is open
+  var nodeHistoryCache = {};  // userId -> { nodeId: [chronological chain rows across every holder] }, fetched on demand
 
   function assignSummary(rows) {
     var cities = rows.filter(function (a) { return a.level === 'city'; }).length;
@@ -1880,24 +1880,52 @@
           (isCeo ? '<button class="ad-btn is-sm is-danger" type="button" data-remove-all="' + esc(userId) + '">Remove all</button>' : '') +
         '</div>';
 
-        /* Transfer/removal history (ISSUE 6/7): "Maria's history still
-           shows the delegation" even after her row is revoked. Fetched
-           on demand (data-toggle-history) via ?history=1 rather than
-           bundled into every load — most groups will never be opened. */
+        /* Full delegation-chain history (ISSUE 3/3A/3B/3D, Assistant CEO
+           dashboard fix, 2026-08-24): a per-USER history only ever shows
+           what happened to THAT user's own rows — it cannot show what an
+           area did AFTER it left their hands (Manager → FO further down).
+           nodeHistoryCache[userId] holds, per area this user currently or
+           formerly held, the FULL cross-user chronological chain fetched
+           via ?nodeIds=…&history=1 — grouped and labelled ASSIGNED /
+           DELEGATED / TRANSFERRED / REMOVED using chainEvent/endEvent the
+           server already computed from existing columns, no invented data. */
         var historyBlock = '';
         if (historyOpenFor[userId]) {
-          var histRows = (historyCache[userId] || []).filter(function (a) { return !a.active; });
+          var chainByNode = nodeHistoryCache[userId];
+          var EVENT_LABEL = { assigned: 'ASSIGNED', delegated: 'DELEGATED', transferred: 'TRANSFERRED' };
           historyBlock = '<div class="ad-detail-grid" style="border-top:1px dashed var(--line);margin-top:8px;padding-top:8px;">' +
-            (histRows.length
-              ? histRows.map(function (a) {
-                  var when = a.revokedAt ? A.fmtDateTime(a.revokedAt) : '—';
-                  var outcome = a.delegatedTo
-                    ? 'Transferred to ' + esc(a.delegatedTo.name) + ' (' + esc(A.roleLabel(a.delegatedTo.role)) + ')'
-                    : 'Removed';
-                  return '<div class="ad-verify-row is-blocked"><div class="ad-grow"><b>' + esc(a.areaName || a.nodeId) + '</b>' +
-                    '<small>' + outcome + ' · ' + esc(when) + '</small></div></div>';
-                }).join('')
-              : '<div class="ad-empty">No transfer or removal history for this member.</div>') +
+            (!chainByNode
+              ? '<div class="ad-empty">Loading history…</div>'
+              : !Object.keys(chainByNode).length
+                ? '<div class="ad-empty">No assignment history for this member.</div>'
+                : Object.keys(chainByNode).map(function (nid) {
+                    var chain = chainByNode[nid];
+                    var areaName = chain[0].areaName || nid;
+                    var currentActive = chain.find(function (c) { return c.active; });
+                    var events = chain.map(function (c) {
+                      var lines = [];
+                      var fromLabel = c.assignedByName ? esc(c.assignedByName) : 'CEO';
+                      lines.push('<div class="ad-kv-row" style="align-items:flex-start;">' +
+                        '<span><b>' + EVENT_LABEL[c.chainEvent] + '</b><br/>' +
+                        fromLabel + ' → ' + esc(c.userName) + ' (' + esc(A.roleLabel(c.userRole)) + ')</span>' +
+                        '<span>' + esc(A.fmtDateTimeSeconds(c.createdAt)) + '</span>' +
+                      '</div>');
+                      if (c.endEvent === 'removed') {
+                        lines.push('<div class="ad-kv-row" style="align-items:flex-start;">' +
+                          '<span><b>REMOVED</b><br/>' + esc(c.userName) + '</span>' +
+                          '<span>' + esc(A.fmtDateTimeSeconds(c.revokedAt)) + '</span>' +
+                        '</div>');
+                      }
+                      return lines.join('');
+                    }).join('');
+                    return '<div style="margin-bottom:14px;">' +
+                      '<div class="ad-kv-row"><b>' + esc(areaName) + '</b>' +
+                      '<span class="ad-pill ' + (currentActive ? 'is-ok' : 'is-danger') + '">' +
+                        (currentActive ? 'Active — ' + esc(currentActive.userName) : 'No active owner') +
+                      '</span></div>' +
+                      events +
+                    '</div>';
+                  }).join('')) +
           '</div>';
         }
 
@@ -1914,7 +1942,7 @@
                set — never a client-side guess). */
             var lineage = '<small style="display:block;">' +
               (a.assignedByName ? 'Assigned by ' + esc(a.assignedByName) + ' · ' : '') +
-              esc(A.fmtDateTime(a.createdAt)) +
+              esc(A.fmtDateTimeSeconds(a.createdAt)) +
             '</small>';
             var delegatedNote = a.delegatedTo
               ? '<span class="ad-pill is-warn">Delegated to ' + esc(a.delegatedTo.name) + ' (' + esc(A.roleLabel(a.delegatedTo.role)) + ')</span>'
@@ -2423,10 +2451,32 @@
     if (historyToggle) {
       var hUserId = historyToggle.getAttribute('data-toggle-history');
       historyOpenFor[hUserId] = !historyOpenFor[hUserId];
-      if (historyOpenFor[hUserId] && !historyCache[hUserId]) {
+      if (historyOpenFor[hUserId] && !nodeHistoryCache[hUserId]) {
         try {
-          var hRes = await A.get(API.adminAssignments + '?userId=' + encodeURIComponent(hUserId) + '&history=1');
-          historyCache[hUserId] = hRes.assignments || [];
+          /* Step 1: every area this user has EVER touched (active or
+             revoked) — the set of chains worth showing at all. Step 2:
+             for exactly those nodes, the FULL cross-user chronological
+             chain (?nodeIds=…), so a Manager's later handoff to a Field
+             Officer shows up under the Assistant CEO who originally
+             delegated it, not just the Assistant CEO's own single row. */
+          var ownRes = await A.get(API.adminAssignments + '?userId=' + encodeURIComponent(hUserId) + '&history=1');
+          var touchedNodeIds = Array.from(new Set((ownRes.assignments || []).map(function (a) { return a.nodeId; })));
+
+          var chainByNode = {};
+          if (touchedNodeIds.length) {
+            var chainRes = await A.get(API.adminAssignments + '?nodeIds=' + encodeURIComponent(touchedNodeIds.join(',')) + '&history=1');
+            (chainRes.assignments || []).forEach(function (c) {
+              if (!chainByNode[c.nodeId]) chainByNode[c.nodeId] = [];
+              chainByNode[c.nodeId].push(c);
+            });
+            /* Server already returns chronological order per node when
+               nodeIds is used; keep it explicit here too in case a future
+               caller reorders the response. */
+            Object.keys(chainByNode).forEach(function (nid) {
+              chainByNode[nid].sort(function (x, y) { return new Date(x.createdAt) - new Date(y.createdAt); });
+            });
+          }
+          nodeHistoryCache[hUserId] = chainByNode;
         } catch (err) {
           A.msg($('adAssignMsg'), err.message, 'is-error');
           historyOpenFor[hUserId] = false;
@@ -2460,7 +2510,7 @@
         if (typed !== 'REMOVE') return;
         var res = await A.post(API.adminAssignments, { action: 'revoke', assignmentId: id });
         A.msg($('adAssignMsg'), (res.removedCount > 1 ? res.removedCount + ' locations removed (including sub-locations).' : 'Location removed.'), 'is-ok');
-        historyCache = {};   // this member's history just changed — force a fresh fetch next time History is opened
+        nodeHistoryCache = {};   // this member's history just changed — force a fresh fetch next time History is opened
         await loadAssignments();
       } else if (removeAllBtn) {
         var groupUserId = removeAllBtn.getAttribute('data-remove-all');
@@ -2470,7 +2520,7 @@
         if (typedAll !== 'REMOVE') return;
         var resAll = await A.post(API.adminAssignments, { action: 'revoke-all', userId: groupUserId });
         A.msg($('adAssignMsg'), resAll.removedCount + ' location(s) removed.', 'is-ok');
-        historyCache = {};
+        nodeHistoryCache = {};
         await loadAssignments();
       } else if (toggleXferBtn) {
         var toggleId = toggleXferBtn.getAttribute('data-toggle-transfer');
@@ -2491,7 +2541,7 @@
         A.msg($('adAssignMsg'), 'Transferred ' + xres.transferredCount + ' location(s) to ' + (toUser ? toUser.fullName : 'the recipient') + '.' +
           (xres.conflicts && xres.conflicts.length ? ' (' + xres.conflicts.length + ' skipped — already assigned elsewhere)' : ''), 'is-ok');
         xferOpenId = null;
-        historyCache = {};   // both source and recipient history just changed
+        nodeHistoryCache = {};   // both source and recipient history just changed
         await loadAssignments();
         await loadTeam();   // the source's nested-team view (ISSUE 1) and any picker delegation state must reflect the new owner immediately
       }

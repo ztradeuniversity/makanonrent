@@ -202,7 +202,8 @@ export async function getManagedManagerIds(env, assistantCeoUserId) {
   return (res.data || []).map(function (r) { return r.id; });
 }
 
-/* ── hierarchical visibility/authority (governance pass, audited 2026-08-24) ──
+/* ── hierarchical visibility/authority (governance pass, audited 2026-08-24,
+   FO-under-Manager gap closed 2026-08-24) ─────────────────────────────
    Single source of truth for "which subordinate accounts may this caller
    see or act on" — used both to SCOPE what a list endpoint returns and to
    AUTHORISE a target user id on a mutating request, so the two can never
@@ -212,14 +213,17 @@ export async function getManagedManagerIds(env, assistantCeoUserId) {
    Returns null for CEO (global, unrestricted — matches getScopeNodeIds'
    convention). Returns an array of user ids for assistant_ceo/manager:
      assistant_ceo → Managers with reports_to_user_id = self (explicit),
-                      union Field Officers whose own active area assignment
-                      falls within this Assistant CEO's assigned territory
-                      (area-overlap — approved 2026-08-24, "FO visibility
-                      remains subject to existing scope and reporting
-                      rules"), union FOs who report to self directly even
-                      before they hold any area (so a freshly-assigned FO
-                      is not invisible to the person who must grant them
-                      their first one).
+                      union Field Officers who report to any of THOSE
+                      Managers (the actual org-chart chain — confirmed
+                      root cause of "Assistant CEO's Manager shows 0 FOs":
+                      this case was previously MISSING entirely, so an FO
+                      reporting to the Assistant CEO's own Manager, with
+                      no area of their own yet and no direct report to the
+                      Assistant CEO, was invisible), union Field Officers
+                      whose own active area assignment falls within this
+                      Assistant CEO's assigned territory (area-overlap —
+                      approved 2026-08-24), union FOs who report to self
+                      directly even before they hold any area.
      manager        → the same FO rule one tier down: reports_to = self,
                       union area-overlap with the Manager's own scope.
    Every other role (field_officer) delegates nothing downward → []. */
@@ -245,6 +249,17 @@ export async function getVisibleSubordinateIds(env, user) {
 
   if (user.role === 'assistant_ceo') {
     var managerIds = await getManagedManagerIds(env, user.id);
+    /* FOs reporting to any of THIS Assistant CEO's own Managers — the
+       actual reports_to chain, not an area-overlap proxy for it. Without
+       this, a Manager's own dashboard could show a Field Officer their
+       Assistant CEO's dashboard never learns exists. */
+    if (managerIds.length) {
+      var chainRes = await db.from('admin_users')
+        .select('id').in('reports_to_user_id', managerIds).eq('role', 'field_officer').eq('status', 'active');
+      if (!chainRes.error) {
+        (chainRes.data || []).forEach(function (r) { if (foIds.indexOf(r.id) === -1) foIds.push(r.id); });
+      }
+    }
     return managerIds.concat(foIds);
   }
   return foIds;

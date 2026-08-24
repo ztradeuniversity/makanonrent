@@ -91,6 +91,21 @@
     return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
   }
 
+  /* Seconds-precision variant (Assistant CEO dashboard fix, 2026-08-24):
+     delegation/transfer/removal lineage needs to disambiguate events that
+     land in the same minute (a delegate-then-immediately-transfer test
+     sequence, for one) — fmtDateTime() stays minute-precision everywhere
+     else in the console (task due dates, last login) since nothing there
+     asked for seconds. Scoped, not a global format change. */
+  function fmtDateTimeSeconds(iso) {
+    if (!iso) return '—';
+    var d = new Date(iso);
+    if (isNaN(d)) return '—';
+    return d.toLocaleString('en-GB', {
+      day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit'
+    });
+  }
+
   function todayISO() { return new Date().toISOString().slice(0, 10); }
 
   /* Rs formatting reuses the product's PKR-first convention (minor units
@@ -108,6 +123,7 @@
     msg: msg,
     roleLabel: roleLabel,
     fmtDateTime: fmtDateTime,
+    fmtDateTimeSeconds: fmtDateTimeSeconds,
     fmtDate: fmtDate,
     fmtRent: fmtRent,
     todayISO: todayISO,

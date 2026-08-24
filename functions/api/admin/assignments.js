@@ -41,6 +41,16 @@ export async function onRequestGet(context) {
     var url = new URL(context.request.url);
     var userId = url.searchParams.get('userId');
     var includeHistory = !!url.searchParams.get('history');
+    /* nodeIds (Assistant CEO dashboard fix, 2026-08-24, ISSUE 3/3A/3B):
+       a per-USER history (?userId=X&history=1) only ever shows what
+       happened to THAT user's own rows — it cannot show what happened
+       to an area AFTER it left their hands (Manager → FO further down
+       the chain). The full CEO → Assistant CEO → Manager → Field
+       Officer story for one area requires querying by NODE across every
+       user who ever held it, not by a single user_id. Always implies
+       history=1 (a chain with only active rows is not a chain). */
+    var nodeIds = (url.searchParams.get('nodeIds') || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+    if (nodeIds.length) includeHistory = true;
 
     /* Hierarchy scope (governance pass, audited 2026-08-24 — root cause of
        BOTH the Assistant CEO team-tree gap and the delegation-ownership
@@ -91,9 +101,18 @@ export async function onRequestGet(context) {
       .eq('admin_users.status', 'active')
       .order('node_id', { ascending: true });
     if (!includeHistory) q = q.eq('active', true);
-    if (userId) {
+    if (nodeIds.length) {
+      q = q.in('node_id', nodeIds).order('created_at', { ascending: true });
+    } else if (userId) {
       q = q.eq('user_id', userId);
-    } else if (auth.user.role !== 'ceo') {
+    }
+    /* Hierarchy scoping applies REGARDLESS of the nodeIds branch above —
+       a scoped caller auditing one of their own areas' history must
+       still only see actors within their own hierarchy, never a stray
+       row from a completely unrelated part of the org chart that
+       happened to touch the same node_id in the past (locations are
+       reused across the tree; node_id alone is not a security boundary). */
+    if (!userId && auth.user.role !== 'ceo') {
       q = q.in('user_id', allowedIds);
     }
 
@@ -118,10 +137,18 @@ export async function onRequestGet(context) {
       byNode[a.node_id].push(a);
     });
     var roleRank = { ceo: 0, assistant_ceo: 1, manager: 2, field_officer: 3 };
+    /* Chronological order per node, independent of whatever order the
+       query itself came back in — chain classification below depends on
+       "the row right before this one for the same area", which only
+       means anything sorted by time. */
+    Object.keys(byNode).forEach(function (nid) {
+      byNode[nid].sort(function (x, y) { return new Date(x.created_at) - new Date(y.created_at); });
+    });
 
     return json(env, {
       assignments: rows.map(function (a) {
-        var activeSiblings = byNode[a.node_id].filter(function (x) { return x.id !== a.id && x.active; });
+        var siblings = byNode[a.node_id];
+        var activeSiblings = siblings.filter(function (x) { return x.id !== a.id && x.active; });
         /* "Delegated onward" = someone LOWER in the hierarchy (higher
            roleRank) actively holds the identical node — never the
            reverse, so a Manager's row never claims to be "delegated to"
@@ -131,6 +158,39 @@ export async function onRequestGet(context) {
         var delegatedTo = activeSiblings.find(function (x) {
           return (roleRank[x.admin_users.role] || 0) > (roleRank[a.admin_users.role] || 0);
         }) || (!a.active ? activeSiblings[0] : null);
+
+        /* Full-chain classification (ISSUE 3D — ASSIGNED / DELEGATED /
+           TRANSFERRED / REMOVED), derived entirely from existing columns:
+           no new "action type" is stored anywhere, it is read off the
+           SAME rows every other part of this response already uses.
+             - No earlier row for this node at all  → 'assigned' (the
+               original grant).
+             - An earlier row exists, still active as of now           →
+               'delegated' (additive — the previous holder kept theirs).
+             - An earlier row exists, revoked within ~5 minutes of THIS
+               row's creation → 'transferred' (the previous holder lost
+               it at essentially the same moment this one gained it).
+             - Anything else with an earlier row → 'delegated' (safe
+               fallback; the mechanism is ambiguous but a handoff plainly
+               occurred).
+           'removed' is a separate, retroactive fact about a REVOKED row
+           that nobody ever picked up (no later row for the same node) —
+           orthogonal to how the row itself was acquired. */
+        var idx = siblings.indexOf(a);
+        var prior = idx > 0 ? siblings[idx - 1] : null;
+        var chainEvent = 'assigned';
+        if (prior) {
+          if (prior.active) {
+            chainEvent = 'delegated';
+          } else if (prior.revoked_at && Math.abs(new Date(a.created_at) - new Date(prior.revoked_at)) <= 5 * 60000) {
+            chainEvent = 'transferred';
+          } else {
+            chainEvent = 'delegated';
+          }
+        }
+        var hasSuccessor = idx < siblings.length - 1;
+        var endEvent = (!a.active && !hasSuccessor) ? 'removed' : null;
+
         return {
           id: a.id, userId: a.user_id, nodeId: a.node_id, level: a.scope_level,
           areaName: a.locations && a.locations.name,
@@ -140,6 +200,8 @@ export async function onRequestGet(context) {
           assignedByName: a.assigner && a.assigner.full_name || null,
           active: a.active,
           revokedAt: a.revoked_at,
+          chainEvent: chainEvent,
+          endEvent: endEvent,
           delegatedTo: delegatedTo
             ? { userId: delegatedTo.user_id, name: delegatedTo.admin_users.full_name, role: delegatedTo.admin_users.role }
             : null
