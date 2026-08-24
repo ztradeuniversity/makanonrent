@@ -642,10 +642,15 @@
     disable: 'Stops login/access while preserving the member’s history.',
     enable: 'Restores this member’s ability to log in.',
     'delete': 'Ends active operational participation and requires assignment resolution (transfer or unassign) before their access is removed. History is kept for audit — this is not a hard delete.',
-    assign: 'Defines which locations this team member is authorized to operate in.'
+    assign: 'Defines which locations this team member is authorized to operate in.',
+    reportsTo: 'Defines who this team member reports to operationally.',
+    transfer: 'Moves active operational responsibility to another eligible team member while preserving history.',
+    revoke: 'Removes the current active assignment without deleting historical records.',
+    search: 'Find a team member by name, username, or email.'
   };
   var teamFilters = { q: '', role: '', status: '' };
   var teamExpanded = {};   // userId -> 'view' | 'edit'
+  var teamGroupExpanded = {};   // role -> collapsed(false, default)/expanded(true)
   var teamBound = false;
 
   /* Moves each element's `data-tip` attribute into its sibling bubble once,
@@ -719,10 +724,15 @@
       '<td>' + actions + '</td>' +
     '</tr>';
 
+    var hasReportsTo = u.role === 'manager' || u.role === 'field_officer';
     var reportsToName = null;
-    if (u.role === 'manager' && u.reportsToUserId) {
-      var aceo = (teamCache || []).find(function (x) { return x.id === u.reportsToUserId; });
-      reportsToName = aceo ? aceo.fullName : 'Unassigned Assistant CEO';
+    if (hasReportsTo) {
+      if (!u.reportsToUserId) {
+        reportsToName = 'CEO';
+      } else {
+        var parentUser = (teamCache || []).find(function (x) { return x.id === u.reportsToUserId; });
+        reportsToName = parentUser ? parentUser.fullName + ' (' + A.roleLabel(parentUser.role) + ')' : 'Unknown';
+      }
     }
 
     if (mode === 'view') {
@@ -731,25 +741,33 @@
         '<div class="ad-kv-row"><span>Username</span><span>' + esc(u.username) + '</span></div>' +
         '<div class="ad-kv-row"><span>Email</span><span>' + esc(u.email || '—') + '</span></div>' +
         '<div class="ad-kv-row"><span>Status</span><span>' + esc(u.status) + '</span></div>' +
-        (u.role === 'manager' ? '<div class="ad-kv-row"><span>Reports to</span><span>' + esc(reportsToName || 'Not assigned') + '</span></div>' : '') +
+        (hasReportsTo ? '<div class="ad-kv-row"><span>Reports to</span><span>' + esc(reportsToName) + '</span></div>' : '') +
         '<div class="ad-kv-row"><span>Created</span><span>' + esc(A.fmtDateTime(u.createdAt)) + '</span></div>' +
         '<div class="ad-kv-row"><span>Last login</span><span>' + esc(A.fmtDateTime(u.lastLoginAt)) + '</span></div>' +
         '<div class="ad-kv-row"><span>Last verification</span><span>' + esc(A.fmtDateTime(u.lastVerificationAt)) + '</span></div>' +
       '</div></td></tr>';
     } else if (mode === 'edit') {
-      var aceoOpts = '';
-      if (u.role === 'manager') {
-        var aceos = (teamCache || []).filter(function (x) { return x.role === 'assistant_ceo' && x.status === 'active'; });
-        aceoOpts = '<option value="">Not assigned</option>' + aceos.map(function (x) {
-          return '<option value="' + esc(x.id) + '"' + (x.id === u.reportsToUserId ? ' selected' : '') + '>' + esc(x.fullName) + '</option>';
+      var reportsToField = '';
+      if (hasReportsTo) {
+        /* Manager may report to an active Assistant CEO or CEO (blank).
+           Field Officer may report to CEO, an active Assistant CEO, or
+           an active Manager — matches the three explicit options the
+           brief asks for (2A), never inferred from location. */
+        var candidates = (teamCache || []).filter(function (x) {
+          if (x.status !== 'active' || x.id === u.id) return false;
+          return u.role === 'manager' ? x.role === 'assistant_ceo' : (x.role === 'assistant_ceo' || x.role === 'manager');
+        });
+        var opts = '<option value="">CEO</option>' + candidates.map(function (x) {
+          return '<option value="' + esc(x.id) + '"' + (x.id === u.reportsToUserId ? ' selected' : '') + '>' +
+            esc(x.fullName) + ' (' + esc(A.roleLabel(x.role)) + ')</option>';
         }).join('');
+        reportsToField = '<div class="ad-field"><label class="ad-label-tip">Reports to' + tipSpan('reportsTo', 'Reports to') +
+          '</label><select class="ad-select" data-edit-reports-to>' + opts + '</select></div>';
       }
       row += '<tr class="ad-detail-row"><td colspan="7"><div class="ad-row">' +
         '<div class="ad-field"><label>Full name</label><input class="ad-input" type="text" data-edit-fullname value="' + esc(u.fullName) + '" /></div>' +
         '<div class="ad-field"><label>Email</label><input class="ad-input" type="email" data-edit-email value="' + esc(u.email || '') + '" /></div>' +
-        (u.role === 'manager'
-          ? '<div class="ad-field"><label>Reports to (Assistant CEO)</label><select class="ad-select" data-edit-reports-to>' + aceoOpts + '</select></div>'
-          : '') +
+        reportsToField +
         '</div><div class="ad-actions">' +
         '<button class="ad-btn is-primary is-sm" type="button" data-save-edit>Save</button>' +
         '<button class="ad-btn is-sm" type="button" data-cancel-edit>Cancel</button>' +
@@ -777,18 +795,30 @@
     '</tr></thead><tbody>';
     var tail = '</tbody></table></div>';
 
+    var searching = !!teamFilters.q.trim();
     var html = ROLE_GROUPS.map(function (role) {
       var members = rows.filter(function (u) { return u.role === role; });
       if (!members.length) return '';
+      /* Collapsed by default (audited gap: previously every role section
+         and every row rendered open at once). A search match auto-opens
+         its section — collapsing on you while you're actively finding
+         someone would defeat the point of searching — without permanently
+         changing the stored collapsed/expanded preference. */
+      var expanded = searching || !!teamGroupExpanded[role];
       return '<div class="ad-team-group">' +
-        '<div class="ad-team-group-head">' +
+        '<button type="button" class="ad-btn is-sm ad-assign-toggle" data-toggle-group="' + esc(role) + '" ' +
+        'aria-expanded="' + expanded + '" aria-controls="teamGroup-' + esc(role) + '">' +
+        '<span class="ad-chevron' + (expanded ? ' is-open' : '') + '" aria-hidden="true">&#9656;</span></button> ' +
+        '<div class="ad-team-group-head" style="display:inline-flex;">' +
           esc(A.roleLabel(role).toUpperCase()) +
           '<span class="ad-pill">' + members.length + '</span>' +
           '<span class="ad-tip" data-tip="' + esc(ROLE_DESC[role]) + '">' +
             '<button type="button" class="ad-tip-btn" aria-label="What is ' + esc(A.roleLabel(role)) + '?">?</button>' +
             '<span class="ad-tip-bubble" role="tooltip"></span></span>' +
         '</div>' +
-        head + members.map(renderUserRow).join('') + tail +
+        '<div id="teamGroup-' + esc(role) + '"' + (expanded ? '' : ' hidden') + '>' +
+          head + members.map(renderUserRow).join('') + tail +
+        '</div>' +
       '</div>';
     }).join('');
 
@@ -841,6 +871,13 @@
       $('adTeamSearch').addEventListener('input', function () { teamFilters.q = this.value; renderTeamList(); });
       $('adTeamRoleFilter').addEventListener('change', function () { teamFilters.role = this.value; renderTeamList(); });
       $('adTeamStatusFilter').addEventListener('change', function () { teamFilters.status = this.value; renderTeamList(); });
+      $('adUserList').addEventListener('click', function (e) {
+        var groupToggle = e.target.closest('[data-toggle-group]');
+        if (!groupToggle) return;
+        var role = groupToggle.getAttribute('data-toggle-group');
+        teamGroupExpanded[role] = !teamGroupExpanded[role];
+        renderTeamList();
+      });
     }
   }
 
@@ -878,8 +915,21 @@
   });
 
   $('adUserList').addEventListener('click', async function (e) {
-    var row = e.target.closest('[data-user]');
-    if (!row) return;
+    /* ROOT CAUSE of "Save doesn't persist reports-to" (audited
+       2026-08-24): Save/Cancel and the edit inputs live in the SECOND
+       <tr class="ad-detail-row"> — a SIBLING of the <tr data-user="…">
+       row, not a descendant of it. `.closest('[data-user]')` only walks
+       ANCESTORS, so a click starting inside the detail row always
+       resolved `row` to null and the whole handler returned before
+       sending any request — silently, no error, exactly the observed
+       symptom. This affected fullName/email saves identically, not just
+       reports-to; reports-to just made it visible since Save previously
+       "looked" like it worked (the row collapsed) while actually never
+       calling the API. */
+    var clickedRow = e.target.closest('tr');
+    if (!clickedRow) return;
+    var row = clickedRow.classList.contains('ad-detail-row') ? clickedRow.previousElementSibling : clickedRow;
+    if (!row || !row.hasAttribute('data-user')) return;
     var userId = row.getAttribute('data-user');
     var toggle = e.target.closest('[data-toggle]');
     var reset = e.target.closest('[data-reset]');

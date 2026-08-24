@@ -230,7 +230,12 @@ export async function onRequestPost(context) {
       return json(env, { ok: true });
     }
 
-    /* ── set-reports-to (Assistant CEO → Area Manager hierarchy) ──────── */
+    /* ── set-reports-to (reporting hierarchy) ──────────────────────────
+       Manager  → may report to an active Assistant CEO, or nobody (null,
+                  meaning "reports to CEO" in practice — unchanged today).
+       Field Officer → may report to CEO (null), an active Assistant CEO,
+                  or an active Manager — the three options the brief asks
+                  for, explicit rather than inferred from location. */
     if (body.action === 'set-reports-to') {
       if (!can(auth.user.role, 'users.set_reports_to')) {
         return json(env, { error: 'Your role does not permit this action.' }, 403);
@@ -240,8 +245,8 @@ export async function onRequestPost(context) {
       var mgr = await db.from('admin_users').select('id, role').eq('id', body.userId).maybeSingle();
       if (mgr.error) throw mgr.error;
       if (!mgr.data) return json(env, { error: 'No such user.' }, 404);
-      if (mgr.data.role !== 'manager') {
-        return json(env, { error: 'Only an Area Manager can be assigned to an Assistant CEO.' }, 422);
+      if (['manager', 'field_officer'].indexOf(mgr.data.role) === -1) {
+        return json(env, { error: 'Only an Area Manager or Field Officer has a reports-to relationship.' }, 422);
       }
 
       var reportsTo = null;
@@ -249,10 +254,32 @@ export async function onRequestPost(context) {
         if (!isNonEmptyString(body.reportsToUserId, 60)) {
           return json(env, { error: 'reportsToUserId must be a user id or null.' }, 422);
         }
-        var aceo = await db.from('admin_users').select('id, role, status').eq('id', body.reportsToUserId).maybeSingle();
-        if (aceo.error) throw aceo.error;
-        if (!aceo.data || aceo.data.role !== 'assistant_ceo' || aceo.data.status !== 'active') {
-          return json(env, { error: 'reportsToUserId must be an active Assistant CEO.' }, 422);
+        if (body.reportsToUserId === body.userId) {
+          return json(env, { error: 'A team member cannot report to themselves.' }, 422);
+        }
+        var parent = await db.from('admin_users').select('id, role, status, reports_to_user_id').eq('id', body.reportsToUserId).maybeSingle();
+        if (parent.error) throw parent.error;
+        if (!parent.data || parent.data.status !== 'active') {
+          return json(env, { error: 'reportsToUserId must be an active team member.' }, 422);
+        }
+        var validParentRole = mgr.data.role === 'manager'
+          ? parent.data.role === 'assistant_ceo'
+          : (parent.data.role === 'assistant_ceo' || parent.data.role === 'manager');
+        if (!validParentRole) {
+          return json(env, {
+            error: mgr.data.role === 'manager'
+              ? 'An Area Manager may only report to an Assistant CEO.'
+              : 'A Field Officer may only report to an Assistant CEO or an Area Manager.'
+          }, 422);
+        }
+        /* Circular-hierarchy guard: the only cycle this two-tier-deep
+           relationship can form is a Manager whose chosen Assistant CEO
+           chain loops back to a Field Officer that itself already
+           reports to the Manager being edited — one hop is enough to
+           check given the max depth (FO→Manager→AssistantCEO, no deeper
+           chain exists in this schema). */
+        if (parent.data.reports_to_user_id === body.userId) {
+          return json(env, { error: 'That would create a circular reporting relationship.' }, 422);
         }
         reportsTo = body.reportsToUserId;
       }
