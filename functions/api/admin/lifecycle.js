@@ -124,8 +124,11 @@ async function loadReviewDetail(env, db, listing, callerScope) {
      writes, filtered to this caller's own visible scope so a manager
      reviewing a property never learns about an assignment outside the
      area they themselves can see. CEO (callerScope === null) sees all. */
+  /* Disambiguated FK hint — see functions/api/admin/assignments.js for
+     why a bare admin_users!inner(...) embed on this table is ambiguous
+     (two FKs to admin_users: user_id and assigned_by). */
   var assignRes = await db.from('admin_area_assignments')
-    .select('user_id, node_id, scope_role, admin_users!inner(full_name, role)')
+    .select('user_id, node_id, scope_role, admin_users!admin_area_assignments_user_id_fkey(full_name, role)')
     .eq('active', true);
   var assignments = (!assignRes.error && assignRes.data) || [];
   if (callerScope !== null) {

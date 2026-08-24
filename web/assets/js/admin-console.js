@@ -83,7 +83,9 @@
             return '<div class="ad-verify-row">' +
               '<div class="ad-grow"><b>' + esc(t.title) + '</b>' +
               '<small>' + t.completedCount + ' of ' + t.targetCount + ' done · ' +
-              t.pendingCount + ' remaining</small></div>' +
+              t.pendingCount + ' remaining</small>' +
+              (t.notes ? '<small style="display:block;margin-top:4px;white-space:pre-wrap;">' + esc(t.notes) + '</small>' : '') +
+              '</div>' +
               '<span class="ad-pill ' + (t.completionPct >= 100 ? 'is-ok' : 'is-warn') + '">' +
               t.completionPct + '%</span>' +
             '</div>';
@@ -1100,6 +1102,12 @@
     }
   });
 
+  function refreshTaskNotesVisibility() {
+    $('adTaskNotesWrap').hidden = $('adTaskType').value !== 'custom';
+  }
+  $('adTaskType').addEventListener('change', refreshTaskNotesVisibility);
+  refreshTaskNotesVisibility();
+
   $('adCreateTask').addEventListener('click', async function () {
     var payload = {
       action: 'create',
@@ -1108,13 +1116,21 @@
       targetCount: Number($('adTaskTarget').value),
       dueDate: $('adTaskDue').value || A.todayISO()
     };
+    var notes = $('adTaskNotes').value.trim();
+    if (payload.taskType === 'custom' && notes) payload.notes = notes;
+
     if (!payload.assignedTo) {
       A.msg($('adTaskMsg'), 'Choose a team member.', 'is-error');
+      return;
+    }
+    if (payload.taskType === 'custom' && !notes) {
+      A.msg($('adTaskMsg'), 'Describe the custom task in the instructions field.', 'is-error');
       return;
     }
     try {
       await A.post(API.adminTasks, payload);
       A.msg($('adTaskMsg'), 'Task assigned.', 'is-ok');
+      $('adTaskNotes').value = '';
     } catch (e) {
       A.msg($('adTaskMsg'), e.message, 'is-error');
     }

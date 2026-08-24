@@ -11,6 +11,7 @@ import { getServiceClient } from '../../utils/supabase.js';
 import { isNonEmptyString } from '../../utils/validate.js';
 import { requireAuth, requireCapability, canManageRole, can } from '../../utils/rbac.js';
 import { auditFor } from '../../utils/audit.js';
+import { sendQueuedEmail } from '../../utils/mailer.js';
 
 export async function onRequestOptions(context) {
   return preflight(context.env);
@@ -37,7 +38,7 @@ export async function onRequestGet(context) {
     if (!can(auth.user.role, 'tasks.list.any')) userId = auth.user.id;
 
     var q = db.from('admin_task_progress')
-      .select('task_id, assigned_to, assigned_by, task_type, title, target_count, due_date, status, area_node_id, completed_count')
+      .select('task_id, assigned_to, assigned_by, task_type, title, notes, target_count, due_date, status, area_node_id, completed_count')
       .eq('due_date', date);
     if (userId) q = q.eq('assigned_to', userId);
 
@@ -48,7 +49,7 @@ export async function onRequestGet(context) {
       var done = Math.min(t.completed_count, t.target_count);
       return {
         id: t.task_id, assignedTo: t.assigned_to, taskType: t.task_type,
-        title: t.title, targetCount: t.target_count, completedCount: t.completed_count,
+        title: t.title, notes: t.notes || null, targetCount: t.target_count, completedCount: t.completed_count,
         dueDate: t.due_date, status: t.status, areaNodeId: t.area_node_id,
         pendingCount: Math.max(0, t.target_count - done),
         completionPct: t.target_count ? Math.round(1000 * done / t.target_count) / 10 : 0
@@ -106,21 +107,29 @@ export async function onRequestPost(context) {
         return json(env, { error: 'dueDate must be YYYY-MM-DD.' }, 422);
       }
 
-      var t = await db.from('admin_users').select('id, role, full_name').eq('id', body.assignedTo).maybeSingle();
+      var t = await db.from('admin_users').select('id, role, full_name, email').eq('id', body.assignedTo).maybeSingle();
       if (t.error) throw t.error;
       if (!t.data) return json(env, { error: 'No such user.' }, 404);
       if (!canManageRole(auth.user.role, t.data.role)) {
         return json(env, { error: 'You cannot assign tasks to that user.' }, 403);
       }
 
+      /* Instructions are most relevant for task_type='custom' (the UI
+         only shows the field then) but the column isn't restricted to
+         it — a predefined task can carry a short note too. */
+      var notes = isNonEmptyString(body.notes, 4000) ? body.notes.trim() : null;
+      var title = isNonEmptyString(body.title, 200) ? body.title : defaultTitle(body.taskType, target);
+      var areaNodeId = isNonEmptyString(body.areaNodeId, 200) ? body.areaNodeId : null;
+
       var ins = await db.from('admin_tasks').insert({
         assigned_to: body.assignedTo,
         assigned_by: auth.user.id,
         task_type: body.taskType,
-        title: isNonEmptyString(body.title, 200) ? body.title : defaultTitle(body.taskType, target),
+        title: title,
+        notes: notes,
         target_count: target,
         due_date: dueDate,
-        area_node_id: isNonEmptyString(body.areaNodeId, 200) ? body.areaNodeId : null,
+        area_node_id: areaNodeId,
         /* Always 'human' here. An AI assigner would write source='ai' via
            the same table — see ADR §6; nothing sets it today. */
         source: 'human'
@@ -130,6 +139,29 @@ export async function onRequestPost(context) {
       await audit('create_task', 'admin_task', ins.data.id, {
         assignedTo: body.assignedTo, taskType: body.taskType, targetCount: target, dueDate: dueDate
       });
+
+      /* Task email — same admin_users.email, same sendQueuedEmail() the
+         OTP flow uses (see mailer.js). A missing email on legacy accounts
+         is not an error here: the task itself is already created and
+         visible on the dashboard either way. */
+      if (t.data.email) {
+        var areaName = null;
+        if (areaNodeId) {
+          var loc = await db.from('locations').select('name').eq('node_id', areaNodeId).maybeSingle();
+          areaName = (!loc.error && loc.data) ? loc.data.name : null;
+        }
+        var delivery = await sendQueuedEmail(env, db, {
+          toEmail: t.data.email, template: 'admin_task_assigned',
+          payload: {
+            recipientName: t.data.full_name, roleLabel: t.data.role, title: title, notes: notes,
+            targetCount: target, dueDate: dueDate, areaName: areaName, assignedByName: auth.user.full_name
+          }
+        });
+        if (!delivery.sent) {
+          await audit('task_email_failed', 'admin_task', ins.data.id, { error: delivery.error });
+        }
+      }
+
       return json(env, { ok: true, taskId: ins.data.id }, 201);
     }
 

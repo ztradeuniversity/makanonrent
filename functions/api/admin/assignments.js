@@ -44,8 +44,13 @@ export async function onRequestGet(context) {
     /* A Manager or Field Officer may only ever read their own assignments. */
     if (auth.user.role === 'manager' || auth.user.role === 'field_officer') userId = auth.user.id;
 
+    /* admin_area_assignments carries TWO FKs to admin_users (user_id AND
+       assigned_by — migration 0004), so a bare `admin_users!inner(...)`
+       embed is ambiguous to PostgREST ("more than one relationship was
+       found"). Disambiguated via the FK-name hint, same convention
+       tasks.js already uses for admin_tasks (assigned_to/assigned_by). */
     var q = db.from('admin_area_assignments')
-      .select('id, user_id, node_id, scope_level, created_at, admin_users!inner(full_name, role), locations!inner(name)')
+      .select('id, user_id, node_id, scope_level, created_at, admin_users!admin_area_assignments_user_id_fkey(full_name, role), locations!inner(name)')
       .eq('active', true)
       .order('node_id', { ascending: true });
     if (userId) q = q.eq('user_id', userId);
@@ -144,7 +149,7 @@ export async function onRequestPost(context) {
       }
 
       var row = await db.from('admin_area_assignments')
-        .select('id, user_id, node_id, active, admin_users!inner(role)')
+        .select('id, user_id, node_id, active, admin_users!admin_area_assignments_user_id_fkey(role)')
         .eq('id', body.assignmentId).maybeSingle();
       if (row.error) throw row.error;
       if (!row.data) return json(env, { error: 'No such assignment.' }, 404);

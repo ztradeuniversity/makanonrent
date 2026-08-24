@@ -240,6 +240,12 @@
             <input class="ad-input" type="date" id="adTaskDue" />
           </div>
         </div>
+        <div class="ad-field" id="adTaskNotesWrap" hidden>
+          <label class="ad-label-tip" for="adTaskNotes">Custom Task / Instructions / Notes
+            <span class="ad-tip" data-tip="Describe exactly what this person should do — the specific task, special instructions, and the expected result. This is sent to them by email and shown on their dashboard."><button type="button" class="ad-tip-btn" aria-label="What is Custom Task / Instructions / Notes?">?</button><span class="ad-tip-bubble" role="tooltip"></span></span>
+          </label>
+          <textarea class="ad-textarea" id="adTaskNotes" maxlength="4000" placeholder="e.g. Re-verify the 6 DHA Phase 5 listings flagged last week — check GPS pins match the address and confirm availability by phone before marking complete."></textarea>
+        </div>
         <div class="ad-actions">
           <button class="ad-btn is-primary" type="button" id="adCreateTask">Assign task</button>
         </div>

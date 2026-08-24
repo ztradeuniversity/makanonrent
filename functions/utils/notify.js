@@ -94,8 +94,13 @@ async function resolveRecipients(db, spec, event) {
     if (!event.areaNodeId) continue;
 
     var role = group === 'assistant_ceos' ? 'assistant_ceo' : 'manager';
+    /* Disambiguated FK hint — see functions/api/admin/assignments.js for
+       why a bare admin_users!inner(...) embed on this table is ambiguous
+       (two FKs to admin_users: user_id and assigned_by). Without this,
+       PostgREST rejected the query and `rows.error` silently skipped
+       notifying every area-scoped manager/assistant CEO. */
     var rows = await db.from('admin_area_assignments')
-      .select('user_id, node_id, admin_users!inner(id, role, status)')
+      .select('user_id, node_id, admin_users!admin_area_assignments_user_id_fkey(id, role, status)')
       .eq('active', true)
       .eq('scope_role', role);
     if (rows.error) continue;

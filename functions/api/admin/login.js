@@ -32,6 +32,7 @@ import { isNonEmptyString } from '../../utils/validate.js';
 import { verifyPassword, needsRehash, hashPassword } from '../../utils/password.js';
 import { createSession, buildSetCookie, hashToken } from '../../utils/session.js';
 import { genCode } from './otp.js';
+import { sendQueuedEmail } from '../../utils/mailer.js';
 import { logAudit } from '../../utils/audit.js';
 
 export async function onRequestOptions(context) {
@@ -166,15 +167,25 @@ async function stepCredentials(env, db, body, request) {
   }).select('id').single();
   if (ins.error) throw ins.error;
 
-  await db.from('email_delivery_queue').insert({
-    to_email: user.email, template: 'admin_otp_login',
+  /* Synchronous send, not queue-and-hope: see sendQueuedEmail's comment
+     in mailer.js — nothing in production actually drains
+     email_delivery_queue today, so a login-blocking code cannot be left
+     to arrive "eventually". The row is still written for audit/retry. */
+  var delivery = await sendQueuedEmail(env, db, {
+    toEmail: user.email, template: 'admin_otp_login',
     payload: { code: code, expiresInMinutes: OTP_MINUTES }
   });
 
   await logAudit(env, {
     actorId: user.id, actorRole: user.role, action: 'otp_requested',
-    entityType: 'admin_user', entityId: user.id, detail: { purpose: 'login' }, request: request
+    entityType: 'admin_user', entityId: user.id,
+    detail: { purpose: 'login', delivered: delivery.sent, error: delivery.sent ? undefined : delivery.error },
+    request: request
   });
+
+  if (!delivery.sent) {
+    return json(env, { error: 'Could not send the verification code right now. Please try again in a moment.' }, 502);
+  }
 
   return json(env, { ok: true, otpRequired: true, otpId: ins.data.id, maskedEmail: maskEmail(user.email) });
 }

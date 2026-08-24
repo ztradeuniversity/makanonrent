@@ -9,6 +9,7 @@ import { getServiceClient } from '../../utils/supabase.js';
 import { isNonEmptyString } from '../../utils/validate.js';
 import { requireAuth } from '../../utils/rbac.js';
 import { hashToken } from '../../utils/session.js';
+import { sendQueuedEmail } from '../../utils/mailer.js';
 import { logAudit } from '../../utils/audit.js';
 
 export async function onRequestOptions(context) { return preflight(context.env); }
@@ -53,14 +54,24 @@ export async function onRequestPost(context) {
       }).select('id').single();
       if (ins.error) throw ins.error;
 
-      /* Enqueue only — an actual SMTP/API sender is a separate,
-         explicitly out-of-scope integration (no email provider wired). */
-      await db.from('email_delivery_queue').insert({
-        to_email: email, template: 'admin_otp_' + body.purpose,
+      /* Synchronous send — see sendQueuedEmail's comment in mailer.js.
+         Resend IS wired (functions/utils/mailer.js); the stale comment
+         this replaced predates that and was simply wrong. */
+      var delivery = await sendQueuedEmail(env, db, {
+        toEmail: email, template: 'admin_otp_' + body.purpose,
         payload: { code: code, expiresInMinutes: 10 }
       });
 
-      await logAudit(env, { actorId: auth.user.id, actorRole: auth.user.role, action: 'otp_requested', entityType: 'admin_user', entityId: auth.user.id, detail: { purpose: body.purpose }, request: context.request });
+      await logAudit(env, {
+        actorId: auth.user.id, actorRole: auth.user.role, action: 'otp_requested',
+        entityType: 'admin_user', entityId: auth.user.id,
+        detail: { purpose: body.purpose, delivered: delivery.sent, error: delivery.sent ? undefined : delivery.error },
+        request: context.request
+      });
+
+      if (!delivery.sent) {
+        return json(env, { error: 'Could not send the verification code right now. Please try again in a moment.' }, 502);
+      }
       return json(env, { ok: true, otpId: ins.data.id });
     }
 
