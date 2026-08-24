@@ -942,6 +942,7 @@
     message: 'Send a direct message from the CEO.',
     messageType: 'Appreciation, General, Warning or Important Notice — shown to the recipient alongside the message.',
     designation: 'An organizational title shown in the Team tree. Display only — it never changes what this account can do; the security role does that.',
+    directTeam: 'Team members with no Assistant CEO or Manager above them — they report directly to the CEO.',
     search: 'Find a team member by name, username, or email.',
     findings: 'Record what you observed during the field visit — property/location condition, issues, anything the reviewer needs to know.'
   };
@@ -1011,46 +1012,70 @@
       stat(titled, 'Other Designations') + stat(active.length, 'Total Active Members', true);
   }
 
-  function renderUserRow(u, namePrefix) {
+  var ROLE_LABEL_TEXT = { ceo: 'CEO', assistant_ceo: 'ASSISTANT CEO', manager: 'AREA MANAGER', field_officer: 'FIELD OFFICER' };
+  var ROLE_LABEL_CLASS = { assistant_ceo: 'is-aceo', manager: 'is-mgr', field_officer: 'is-fo' };
+
+  /* One person, one self-contained card — replaces the old <tr>-based
+     renderUserRow (redesign 2026-08-24, root-caused overlap bug: a bare
+     toggle <button> and a wide pill-filled <div> as unrelated inline
+     siblings wrapped unpredictably). Every action/detail-panel button
+     keeps its EXACT same data-attribute contract (data-view, data-edit,
+     data-toggle, data-open-reset, data-delete, data-message) — only the
+     markup around them changed, so the click handler needs no new verbs,
+     just a new way to find "this card" and "this card's detail panel".
+     `chevron` is null for a leaf card (nothing to expand — a plain Field
+     Officer): the row still reserves the chevron's width as a spacer so
+     every card at the same tree depth stays visually aligned. */
+  function renderPersonCard(u, chevron, extraCountsHtml, childrenHtml) {
     var mode = teamExpanded[u.id];
-    /* identityManageable (CEO-only, migration 0014) gates account-lifecycle
-       actions specifically — `manageable` alone would still be true for an
-       Assistant CEO viewing its own managers (that flag drives area/task
-       assignment eligibility, unchanged) and would render buttons the
-       server now rejects. View stays available to anyone who can see the
-       row at all. */
-    var actions = '<button class="ad-btn is-sm" type="button" data-view>View</button> ';
-    /* Message (Team redesign ISSUE 14) is its own capability
-       (users.message, CEO-only) — deliberately checked separately from
-       identityManageable, in case a future policy change ever lets
-       someone message without full identity-management authority. Today
-       the two happen to coincide (both CEO-only), but the check should
-       not assume that stays true. */
+    var actions = '<button class="ad-btn is-sm" type="button" data-view>View</button>';
     if (can('users.message') && u.status === 'active') {
-      actions += '<button class="ad-btn is-sm" type="button" data-message>Message</button> ';
+      actions += ' <button class="ad-btn is-sm" type="button" data-message>Message</button>';
     }
     if (u.identityManageable) {
       actions +=
-        '<button class="ad-btn is-sm" type="button" data-edit>Edit</button> ' +
-        '<button class="ad-btn is-sm" type="button" data-toggle="' + (u.status === 'active' ? 'disabled' : 'active') + '">' +
-          (u.status === 'active' ? 'Disable' : 'Enable') + '</button> ' +
-        '<button class="ad-btn is-sm" type="button" data-open-reset>Reset password</button> ' +
-        '<button class="ad-btn is-sm is-danger" type="button" data-delete>Delete</button>';
+        ' <button class="ad-btn is-sm" type="button" data-edit>Edit</button>' +
+        ' <button class="ad-btn is-sm" type="button" data-toggle="' + (u.status === 'active' ? 'disabled' : 'active') + '">' +
+          (u.status === 'active' ? 'Disable' : 'Enable') + '</button>' +
+        ' <button class="ad-btn is-sm" type="button" data-open-reset>Reset password</button>' +
+        ' <button class="ad-btn is-sm is-danger" type="button" data-delete>Delete</button>';
     } else if (!can('users.message')) {
-      actions += '<span class="ad-pill">View only</span>';
+      actions += ' <span class="ad-pill">View only</span>';
     }
 
-    var titleSuffix = u.displayTitle ? ' <small style="font-weight:600;color:var(--muted);">— ' + esc(u.displayTitle) + '</small>' : '';
-    var row = '<tr data-user="' + esc(u.id) + '">' +
-      '<td>' + (namePrefix || '') + '<b>' + esc(u.fullName) + '</b>' + titleSuffix + '</td>' +
-      '<td>' + esc(u.username) + '</td>' +
-      '<td>' + esc(u.email || '—') + '</td>' +
-      '<td><span class="ad-pill ' + (u.status === 'active' ? 'is-ok' : 'is-danger') + '">' + esc(u.status) + '</span></td>' +
-      '<td>' + esc(A.fmtDateTime(u.lastLoginAt)) + '</td>' +
-      '<td>' + esc(A.fmtDate(u.createdAt)) + '</td>' +
-      '<td>' + actions + '</td>' +
-    '</tr>';
+    var roleLabel = ROLE_LABEL_TEXT[u.role] || u.role;
+    var roleClass = ROLE_LABEL_CLASS[u.role] || '';
+    var chevronHtml = chevron
+      ? '<button class="ad-tree-chevron" type="button" data-toggle-' + chevron.kind + '="' + esc(u.id) + '" ' +
+          'aria-expanded="' + chevron.expanded + '" aria-controls="' + chevron.controlsId + '" aria-label="Expand ' + esc(u.fullName) + '">&#9656;</button>'
+      : '<span class="ad-tree-chevron is-spacer" aria-hidden="true"></span>';
 
+    var card = '<div class="ad-tree-card' + (u.status !== 'active' ? ' is-disabled' : '') + '" data-user="' + esc(u.id) + '">' +
+      '<div class="ad-tree-row' + (chevron ? '' : ' is-static') + '">' +
+        chevronHtml +
+        '<div class="ad-tree-identity">' +
+          '<span class="ad-tree-role' + (roleClass ? ' ' + roleClass : '') + '">' + esc(roleLabel) + '</span>' +
+          '<span class="ad-tree-name">' + esc(u.fullName) +
+            (u.displayTitle ? ' <small>— ' + esc(u.displayTitle) + '</small>' : '') +
+          '</span>' +
+        '</div>' +
+        '<div class="ad-tree-counts">' +
+          (extraCountsHtml || '') +
+          '<span class="ad-pill ad-tree-status ' + (u.status === 'active' ? 'is-ok' : 'is-danger') + '">' + esc(u.status) + '</span>' +
+        '</div>' +
+      '</div>' +
+      '<div class="ad-tree-actions">' + actions + '</div>' +
+      renderPersonDetail(u, mode) +
+      (childrenHtml
+        ? '<div class="ad-tree-children" id="' + esc(chevron.controlsId) + '"' + (chevron.expanded ? '' : ' hidden') + '>' + childrenHtml + '</div>'
+        : '') +
+    '</div>';
+
+    return card;
+  }
+
+  function renderPersonDetail(u, mode) {
+    if (!mode) return '';
     var hasReportsTo = u.role === 'manager' || u.role === 'field_officer';
     var reportsToName = null;
     if (hasReportsTo) {
@@ -1105,7 +1130,7 @@
           '</div>'
         : '<div class="ad-empty">Loading progress…</div>';
 
-      row += '<tr class="ad-detail-row"><td colspan="7"><div class="ad-detail-grid">' +
+      return '<div class="ad-tree-detail"><div class="ad-detail-grid">' +
         '<div class="ad-kv-row"><span>Role</span><span>' + esc(A.roleLabel(u.role)) + '</span></div>' +
         (u.displayTitle ? '<div class="ad-kv-row"><span>Designation</span><span>' + esc(u.displayTitle) + '</span></div>' : '') +
         '<div class="ad-kv-row"><span>Username</span><span>' + esc(u.username) + '</span></div>' +
@@ -1117,11 +1142,12 @@
         '<div class="ad-kv-row"><span>Last verification</span><span>' + esc(A.fmtDateTime(u.lastVerificationAt)) + '</span></div>' +
         progressBlock +
         reportsBlock +
-      '</div></td></tr>';
-    } else if (mode === 'message') {
+      '</div></div>';
+    }
+    if (mode === 'message') {
       /* CEO message composer (ISSUE 14) — inline, same expand pattern as
          reset-password below, not a separate modal system. */
-      row += '<tr class="ad-detail-row"><td colspan="7"><div class="ad-row">' +
+      return '<div class="ad-tree-detail"><div class="ad-row">' +
         '<div class="ad-field" style="width:100%;">' +
           '<label class="ad-label-tip">Message type' + tipSpan('messageType', 'Message type') + '</label>' +
           '<select class="ad-select" data-msg-type>' +
@@ -1139,8 +1165,9 @@
           '<button class="ad-btn is-primary is-sm" type="button" data-msg-send>Send</button> ' +
           '<button class="ad-btn is-sm" type="button" data-msg-cancel>Cancel</button>' +
         '</div>' +
-      '</div></td></tr>';
-    } else if (mode === 'edit') {
+      '</div></div>';
+    }
+    if (mode === 'edit') {
       var reportsToField = '';
       if (hasReportsTo) {
         /* Manager may report to an active Assistant CEO or CEO (blank).
@@ -1158,7 +1185,7 @@
         reportsToField = '<div class="ad-field"><label class="ad-label-tip">Reports to' + tipSpan('reportsTo', 'Reports to') +
           '</label><select class="ad-select" data-edit-reports-to>' + opts + '</select></div>';
       }
-      row += '<tr class="ad-detail-row"><td colspan="7"><div class="ad-row">' +
+      return '<div class="ad-tree-detail"><div class="ad-row">' +
         '<div class="ad-field"><label>Full name</label><input class="ad-input" type="text" data-edit-fullname value="' + esc(u.fullName) + '" /></div>' +
         '<div class="ad-field"><label>Email</label><input class="ad-input" type="email" data-edit-email value="' + esc(u.email || '') + '" /></div>' +
         '<div class="ad-field"><label class="ad-label-tip">Designation' + tipSpan('designation', 'Designation') +
@@ -1167,9 +1194,10 @@
         '</div><div class="ad-actions">' +
         '<button class="ad-btn is-primary is-sm" type="button" data-save-edit>Save</button>' +
         '<button class="ad-btn is-sm" type="button" data-cancel-edit>Cancel</button>' +
-        '</div></td></tr>';
-    } else if (mode === 'reset') {
-      row += '<tr class="ad-detail-row"><td colspan="7">' +
+        '</div></div>';
+    }
+    if (mode === 'reset') {
+      return '<div class="ad-tree-detail">' +
         '<p style="margin:0 0 10px;color:var(--muted);">Set a new password for this team member. ' +
         'The previous password will stop working immediately.</p>' +
         '<div class="ad-row">' +
@@ -1178,9 +1206,9 @@
         '</div><div class="ad-actions">' +
         '<button class="ad-btn is-primary is-sm" type="button" data-do-reset>Reset Password</button> ' +
         '<button class="ad-btn is-sm" type="button" data-cancel-edit>Cancel</button>' +
-        '</div></td></tr>';
+        '</div></div>';
     }
-    return row;
+    return '';
   }
 
   /* Manager row + its nested Field Officers (ISSUE 1: "Manager name, role,
@@ -1195,27 +1223,27 @@
   function renderManagerWithFos(mgr, mgrFos, searching) {
     var mgrAreas = assignByUserCache[mgr.id] || [];
     var expanded = searching || !!mgrFoExpanded[mgr.id];
-    var toggle = '<button class="ad-btn is-sm ad-assign-toggle" type="button" data-toggle-mgr-fos="' + esc(mgr.id) + '" ' +
-      'aria-expanded="' + expanded + '" aria-controls="mgrFos-' + esc(mgr.id) + '">' +
-      '<span class="ad-chevron' + (expanded ? ' is-open' : '') + '" aria-hidden="true">&#9656;</span></button> ';
-    var badge = '<span class="ad-pill">' + mgrFos.length + ' FO' + (mgrFos.length === 1 ? '' : 's') + '</span> ' +
-      '<span class="ad-pill">' + mgrAreas.length + ' area' + (mgrAreas.length === 1 ? '' : 's') + '</span> ';
-    var mgrRow = renderUserRow(mgr, toggle + badge);
+    var controlsId = 'mgrFos-' + mgr.id;
+    var chevron = mgrFos.length ? { kind: 'mgr-fos', expanded: expanded, controlsId: controlsId } : null;
 
-    if (!mgrFos.length) return mgrRow;
+    /* Interactive count buttons (ISSUE 2): "[N Field Officers]" fires the
+       SAME toggle as the chevron — either control opens this Manager's
+       FO list. The area count stays a plain pill: areas now live in the
+       separate Area Assignments tab, so there is nothing in THIS tree
+       for it to expand. */
+    var counts = mgrFos.length
+      ? '<button class="ad-count-btn" type="button" data-toggle-mgr-fos="' + esc(mgr.id) + '" ' +
+          'aria-expanded="' + expanded + '" aria-controls="' + controlsId + '">' +
+          mgrFos.length + ' Field Officer' + (mgrFos.length === 1 ? '' : 's') +
+        '</button>'
+      : '<span class="ad-pill">0 Field Officers</span>';
+    counts += '<span class="ad-pill">' + mgrAreas.length + ' Area' + (mgrAreas.length === 1 ? '' : 's') + '</span>';
 
-    var nested = '<tr id="mgrFos-' + esc(mgr.id) + '"' + (expanded ? '' : ' hidden') + '><td colspan="7" style="padding:0;">' +
-      '<table class="ad-table" style="margin-left:28px;width:calc(100% - 28px);">' +
-        '<tbody>' + mgrFos.map(function (fo) {
-          var foAreas = assignByUserCache[fo.id] || [];
-          return renderUserRow(fo, '↳ <small style="color:var(--ad-muted,#888);">' +
-            (foAreas.length ? esc(assignSummary(foAreas)) : 'No areas assigned') + '</small><br/>');
-        }).join('') +
-        '</tbody>' +
-      '</table>' +
-    '</td></tr>';
+    var childrenHtml = mgrFos.length
+      ? mgrFos.map(function (fo) { return renderPersonCard(fo, null, null); }).join('')
+      : '';
 
-    return mgrRow + nested;
+    return renderPersonCard(mgr, chevron, counts, childrenHtml);
   }
 
   /* CEO's 3-level tree: Assistant CEO → Area Manager → Field Officer, plus
@@ -1226,29 +1254,30 @@
      tiers so a Manager's own row/actions/FO-nesting behave IDENTICALLY
      here and in an Assistant CEO's own (2-level) view — one renderer for
      "a Manager and their FOs", not two. */
-  function renderCeoTree(rows, searching, head, tail) {
+  function renderCeoTree(rows, searching) {
     var assistants = rows.filter(function (u) { return u.role === 'assistant_ceo'; });
     var managers = rows.filter(function (u) { return u.role === 'manager'; });
     var fos = rows.filter(function (u) { return u.role === 'field_officer'; });
     var consumedManagerIds = {};
     var consumedFoIds = {};
 
-    var aceoBlocks = assistants.map(function (aceo) {
+    var aceoCards = assistants.map(function (aceo) {
       var myManagers = managers.filter(function (m) { return m.reportsToUserId === aceo.id; });
       myManagers.forEach(function (m) { consumedManagerIds[m.id] = true; });
       var myDirectFos = fos.filter(function (f) { return f.reportsToUserId === aceo.id; });
       myDirectFos.forEach(function (f) { consumedFoIds[f.id] = true; });
 
       var fosUnderMyManagers = 0;
-      var managerRows = myManagers.map(function (mgr) {
+      var managerCards = myManagers.map(function (mgr) {
         var mgrFos = fos.filter(function (f) { return f.reportsToUserId === mgr.id; });
         mgrFos.forEach(function (f) { consumedFoIds[f.id] = true; });
         fosUnderMyManagers += mgrFos.length;
         return renderManagerWithFos(mgr, mgrFos, searching);
       }).join('');
 
-      var directFoRows = myDirectFos.map(function (fo) { return renderUserRow(fo); }).join('');
+      var directFoCards = myDirectFos.map(function (fo) { return renderPersonCard(fo, null, null); }).join('');
       var totalFos = fosUnderMyManagers + myDirectFos.length;
+      var totalChildren = myManagers.length + totalFos;
 
       /* A search match on an Assistant CEO's own FO or Manager (or a
          Manager's FO further down) must open THIS branch even if the
@@ -1256,62 +1285,62 @@
          exists in `rows` but is buried inside a collapsed node the user
          never sees, which defeats the point of searching. */
       var expanded = searching || !!aceoExpanded[aceo.id];
+      var controlsId = 'aceoGroup-' + aceo.id;
+      var chevron = totalChildren ? { kind: 'aceo', expanded: expanded, controlsId: controlsId } : null;
 
-      return '<div class="ad-team-group">' +
-        '<button type="button" class="ad-btn is-sm ad-assign-toggle" data-toggle-aceo="' + esc(aceo.id) + '" ' +
-        'aria-expanded="' + expanded + '" aria-controls="aceoGroup-' + esc(aceo.id) + '">' +
-        '<span class="ad-chevron' + (expanded ? ' is-open' : '') + '" aria-hidden="true">&#9656;</span></button> ' +
-        '<div class="ad-team-group-head" style="display:inline-flex;">' +
-          'ASSISTANT CEO — ' + esc(aceo.fullName) + (aceo.displayTitle ? ' <small>(' + esc(aceo.displayTitle) + ')</small>' : '') +
-          '<span class="ad-pill">' + myManagers.length + ' Manager' + (myManagers.length === 1 ? '' : 's') + '</span>' +
-          '<span class="ad-pill">' + totalFos + ' FO' + (totalFos === 1 ? '' : 's') + '</span>' +
-          '<span class="ad-pill ' + (aceo.status === 'active' ? 'is-ok' : 'is-danger') + '">' + esc(aceo.status) + '</span>' +
-          '<span class="ad-tip" data-tip="' + esc(ROLE_DESC.assistant_ceo) + '">' +
-            '<button type="button" class="ad-tip-btn" aria-label="What is Assistant CEO?">?</button>' +
-            '<span class="ad-tip-bubble" role="tooltip"></span></span>' +
-        '</div>' +
-        '<div id="aceoGroup-' + esc(aceo.id) + '"' + (expanded ? '' : ' hidden') + '>' +
-          head + renderUserRow(aceo) + directFoRows + managerRows + tail +
-        '</div>' +
-      '</div>';
+      var counts =
+        '<button class="ad-count-btn" type="button" data-toggle-aceo="' + esc(aceo.id) + '" ' +
+          'aria-expanded="' + expanded + '" aria-controls="' + controlsId + '" ' + (myManagers.length ? '' : 'disabled') + '>' +
+          myManagers.length + ' Manager' + (myManagers.length === 1 ? '' : 's') +
+        '</button>' +
+        '<button class="ad-count-btn" type="button" data-toggle-aceo="' + esc(aceo.id) + '" ' +
+          'aria-expanded="' + expanded + '" aria-controls="' + controlsId + '" ' + (totalFos ? '' : 'disabled') + '>' +
+          totalFos + ' Field Officer' + (totalFos === 1 ? '' : 's') +
+        '</button>';
+
+      return renderPersonCard(aceo, chevron, counts, directFoCards + managerCards);
     }).join('');
 
     /* DIRECT CEO TEAM (ISSUE 6): Managers and Field Officers with no
        assistant_ceo/manager parent — reports_to_user_id is null, or a
        Manager whose own row falls through because they were never
        claimed above. Never force these into an Assistant CEO's branch
-       just because one exists. */
+       just because one exists. Rendered as its own labelled section
+       (not a person card — there is no "Direct CEO Team" account), same
+       card shell for visual consistency with the Assistant CEO cards
+       above it. */
     var directManagers = managers.filter(function (m) { return !consumedManagerIds[m.id]; });
-    var directManagerRows = directManagers.map(function (mgr) {
+    var directManagerCards = directManagers.map(function (mgr) {
       var mgrFos = fos.filter(function (f) { return f.reportsToUserId === mgr.id; });
       mgrFos.forEach(function (f) { consumedFoIds[f.id] = true; });
       return renderManagerWithFos(mgr, mgrFos, searching);
     }).join('');
     var orphanFos = fos.filter(function (f) { return !consumedFoIds[f.id]; });
-    var orphanFoRows = orphanFos.map(function (fo) { return renderUserRow(fo); }).join('');
+    var orphanFoCards = orphanFos.map(function (fo) { return renderPersonCard(fo, null, null); }).join('');
 
     var directBlock = '';
     var directCount = directManagers.length + orphanFos.length;
     if (directCount) {
       var directExpanded = searching || !!teamGroupExpanded['direct'];
-      directBlock = '<div class="ad-team-group">' +
-        '<button type="button" class="ad-btn is-sm ad-assign-toggle" data-toggle-group="direct" ' +
-        'aria-expanded="' + directExpanded + '" aria-controls="teamGroup-direct">' +
-        '<span class="ad-chevron' + (directExpanded ? ' is-open' : '') + '" aria-hidden="true">&#9656;</span></button> ' +
-        '<div class="ad-team-group-head" style="display:inline-flex;">' +
-          'DIRECT CEO TEAM' +
-          '<span class="ad-pill">' + directCount + '</span>' +
-          '<span class="ad-tip" data-tip="Team members with no Assistant CEO or Manager above them — they report directly to the CEO.">' +
-            '<button type="button" class="ad-tip-btn" aria-label="What is Direct CEO Team?">?</button>' +
-            '<span class="ad-tip-bubble" role="tooltip"></span></span>' +
+      directBlock = '<div class="ad-tree-card">' +
+        '<div class="ad-tree-row">' +
+          '<button class="ad-tree-chevron" type="button" data-toggle-group="direct" ' +
+            'aria-expanded="' + directExpanded + '" aria-controls="teamGroup-direct" aria-label="Expand Direct CEO Team">&#9656;</button>' +
+          '<div class="ad-tree-identity">' +
+            '<span class="ad-tree-role">DIRECT CEO TEAM' +
+              tipSpan('directTeam', 'Direct CEO Team') +
+            '</span>' +
+            '<span class="ad-tree-name"><small>Reports directly to the CEO — no Assistant CEO or Manager above them</small></span>' +
+          '</div>' +
+          '<div class="ad-tree-counts"><span class="ad-pill">' + directCount + '</span></div>' +
         '</div>' +
-        '<div id="teamGroup-direct"' + (directExpanded ? '' : ' hidden') + '>' +
-          head + directManagerRows + orphanFoRows + tail +
+        '<div class="ad-tree-children" id="teamGroup-direct"' + (directExpanded ? '' : ' hidden') + '>' +
+          directManagerCards + orphanFoCards +
         '</div>' +
       '</div>';
     }
 
-    return aceoBlocks + directBlock;
+    return aceoCards + directBlock;
   }
 
   function renderTeamList() {
@@ -1328,11 +1357,6 @@
       return;
     }
 
-    var head = '<div class="ad-table-wrap"><table class="ad-table"><thead><tr>' +
-      '<th>Name</th><th>Username</th><th>Email</th><th>Status</th><th>Last login</th><th>Created</th><th></th>' +
-    '</tr></thead><tbody>';
-    var tail = '</tbody></table></div>';
-
     var searching = !!teamFilters.q.trim();
 
     /* CEO gets the full 3-level tree (Assistant CEO → Manager → Field
@@ -1342,8 +1366,8 @@
        ROLE_GROUPS rendering below, which already nests one level
        correctly for what THEY can see. */
     if (ME && ME.user.role === 'ceo') {
-      $('adUserList').innerHTML = renderCeoTree(rows, searching, head, tail) ||
-        '<div class="ad-empty">No accounts match this search/filter.</div>';
+      $('adUserList').innerHTML = '<div class="ad-tree">' + (renderCeoTree(rows, searching) ||
+        '<div class="ad-empty">No accounts match this search/filter.</div>') + '</div>';
       bindTooltips($('adUserList'));
       return;
     }
@@ -1369,39 +1393,19 @@
         members = members.filter(function (u) { return !consumedFoIds[u.id]; });
       }
       if (!members.length) return '';
-      /* Collapsed by default (audited gap: previously every role section
-         and every row rendered open at once). A search match auto-opens
-         its section — collapsing on you while you're actively finding
-         someone would defeat the point of searching — without permanently
-         changing the stored collapsed/expanded preference. */
-      var expanded = searching || !!teamGroupExpanded[role];
 
-      var bodyRows;
+      var bodyCards;
       if (role === 'manager') {
-        bodyRows = members.map(function (mgr) {
+        bodyCards = members.map(function (mgr) {
           var mgrFos = rows.filter(function (u) { return u.role === 'field_officer' && u.reportsToUserId === mgr.id; });
           mgrFos.forEach(function (fo) { consumedFoIds[fo.id] = true; });
           return renderManagerWithFos(mgr, mgrFos, searching);
         }).join('');
       } else {
-        bodyRows = members.map(function (u) { return renderUserRow(u); }).join('');
+        bodyCards = members.map(function (u) { return renderPersonCard(u, null, null); }).join('');
       }
 
-      return '<div class="ad-team-group">' +
-        '<button type="button" class="ad-btn is-sm ad-assign-toggle" data-toggle-group="' + esc(role) + '" ' +
-        'aria-expanded="' + expanded + '" aria-controls="teamGroup-' + esc(role) + '">' +
-        '<span class="ad-chevron' + (expanded ? ' is-open' : '') + '" aria-hidden="true">&#9656;</span></button> ' +
-        '<div class="ad-team-group-head" style="display:inline-flex;">' +
-          esc(A.roleLabel(role).toUpperCase()) +
-          '<span class="ad-pill">' + members.length + '</span>' +
-          '<span class="ad-tip" data-tip="' + esc(ROLE_DESC[role]) + '">' +
-            '<button type="button" class="ad-tip-btn" aria-label="What is ' + esc(A.roleLabel(role)) + '?">?</button>' +
-            '<span class="ad-tip-bubble" role="tooltip"></span></span>' +
-        '</div>' +
-        '<div id="teamGroup-' + esc(role) + '"' + (expanded ? '' : ' hidden') + '>' +
-          head + bodyRows + tail +
-        '</div>' +
-      '</div>';
+      return '<div class="ad-tree">' + bodyCards + '</div>';
     }).join('');
 
     $('adUserList').innerHTML = html || '<div class="ad-empty">No accounts match this search/filter.</div>';
@@ -1480,10 +1484,33 @@
         renderTeamList();
       });
       $('adRemovedToggle').addEventListener('click', function () {
-        var open = $('adRemovedList').hidden;
-        $('adRemovedList').hidden = !open;
+        var open = $('adRemovedBody').hidden;
+        $('adRemovedBody').hidden = !open;
         this.setAttribute('aria-expanded', String(open));
         this.querySelector('.ad-chevron').classList.toggle('is-open', open);
+      });
+      $('adRemovedSearch').addEventListener('input', function () {
+        removedFilterQ = this.value;
+        renderRemovedList();
+      });
+      $('adRemovedList').addEventListener('click', async function (e) {
+        var permBtn = e.target.closest('[data-permanent-remove]');
+        if (!permBtn) return;
+        var permUserId = permBtn.getAttribute('data-permanent-remove');
+        var permUser = removedCache.find(function (u) { return u.id === permUserId; });
+        var typed = win.prompt(
+          'This removes ' + (permUser ? permUser.fullName : 'this former member') +
+          ' from the visible historical Team list. Historical audit/security records ' +
+          'must remain preserved and are NOT affected.\n\nType REMOVE to confirm:'
+        );
+        if (typed !== 'REMOVE') return;
+        try {
+          await A.post(API.adminUsers, { action: 'hide-history', userId: permUserId });
+          A.msg($('adUserMsg'), (permUser ? permUser.fullName : 'Former member') + ' removed from the history view. Audit records are preserved.', 'is-ok');
+          await loadRemovedTeam();
+        } catch (err) {
+          A.msg($('adUserMsg'), err.message, 'is-error');
+        }
       });
     }
   }
@@ -1536,29 +1563,47 @@
      an archived account must stay invisible everywhere operational
      (selectors, hierarchy, active list) while still being inspectable
      here: who they were, when they joined, when they left, and how much
-     recorded field work is attributed to them. Nothing here reactivates
-     them or edits history — read-only. */
+     recorded field work is attributed to them. "Permanently Remove"
+     (ISSUE 15/16) only ever hides a row from THIS list (history_hidden_at,
+     migration 0017) — it never touches the audit/verification/task/
+     assignment rows that account is attributed to. */
+  var removedCache = [];
+  var removedFilterQ = '';
+
+  function renderRemovedList() {
+    var q = removedFilterQ.trim().toLowerCase();
+    var rows = !q ? removedCache : removedCache.filter(function (u) {
+      return (u.fullName || '').toLowerCase().indexOf(q) > -1 ||
+        (u.username || '').toLowerCase().indexOf(q) > -1 ||
+        (u.displayTitle || '').toLowerCase().indexOf(q) > -1;
+    });
+    $('adRemovedList').innerHTML = rows.length
+      ? '<div class="ad-table-wrap"><table class="ad-table"><thead><tr>' +
+          '<th>Name</th><th>Previous role</th><th>Status</th><th>Joined</th><th>Removed</th><th>Reports</th><th>Tasks</th><th>Areas</th><th></th>' +
+        '</tr></thead><tbody>' +
+        rows.map(function (u) {
+          return '<tr>' +
+            '<td><b>' + esc(u.fullName) + '</b>' + (u.displayTitle ? ' <small>(' + esc(u.displayTitle) + ')</small>' : '') +
+            '<small style="display:block;">' + esc(u.username) + '</small></td>' +
+            '<td>Former ' + esc(A.roleLabel(u.role)) + '</td>' +
+            '<td><span class="ad-pill is-danger">FORMER / REMOVED</span></td>' +
+            '<td>' + esc(A.fmtDate(u.joinedAt)) + '</td>' +
+            '<td>' + esc(A.fmtDate(u.removedAt)) + '</td>' +
+            '<td class="num">' + u.historicalReportCount + '</td>' +
+            '<td class="num">' + u.historicalTaskCount + '</td>' +
+            '<td class="num">' + u.historicalAreaCount + '</td>' +
+            '<td><button class="ad-btn is-sm is-danger" type="button" data-permanent-remove="' + esc(u.id) + '">Permanently Remove</button></td>' +
+          '</tr>';
+        }).join('') + '</tbody></table></div>'
+      : '<div class="ad-empty">' + (q ? 'No former member matches that search.' : 'No removed team members.') + '</div>';
+  }
+
   async function loadRemovedTeam() {
     try {
       var res = await A.get(API.adminUsers + '?archived=1');
-      $('adRemovedCount').textContent = res.removed.length + ' former account(s)';
-      $('adRemovedList').innerHTML = res.removed.length
-        ? '<div class="ad-table-wrap"><table class="ad-table"><thead><tr>' +
-            '<th>Name</th><th>Previous role</th><th>Joined</th><th>Removed</th><th>Reports</th><th>Tasks</th><th>Areas</th>' +
-          '</tr></thead><tbody>' +
-          res.removed.map(function (u) {
-            return '<tr>' +
-              '<td><b>' + esc(u.fullName) + '</b>' + (u.displayTitle ? ' <small>(' + esc(u.displayTitle) + ')</small>' : '') +
-              '<small style="display:block;">' + esc(u.username) + '</small></td>' +
-              '<td>Former ' + esc(A.roleLabel(u.role)) + '</td>' +
-              '<td>' + esc(A.fmtDate(u.joinedAt)) + '</td>' +
-              '<td>' + esc(A.fmtDate(u.removedAt)) + '</td>' +
-              '<td class="num">' + u.historicalReportCount + '</td>' +
-              '<td class="num">' + u.historicalTaskCount + '</td>' +
-              '<td class="num">' + u.historicalAreaCount + '</td>' +
-            '</tr>';
-          }).join('') + '</tbody></table></div>'
-        : '<div class="ad-empty">No removed team members.</div>';
+      removedCache = res.removed;
+      $('adRemovedCount').textContent = removedCache.length + ' former account(s)';
+      renderRemovedList();
     } catch (e) {
       $('adRemovedList').innerHTML = '<div class="ad-empty">' + esc(e.message) + '</div>';
     }
@@ -1601,22 +1646,19 @@
   });
 
   $('adUserList').addEventListener('click', async function (e) {
-    /* ROOT CAUSE of "Save doesn't persist reports-to" (audited
-       2026-08-24): Save/Cancel and the edit inputs live in the SECOND
-       <tr class="ad-detail-row"> — a SIBLING of the <tr data-user="…">
-       row, not a descendant of it. `.closest('[data-user]')` only walks
-       ANCESTORS, so a click starting inside the detail row always
-       resolved `row` to null and the whole handler returned before
-       sending any request — silently, no error, exactly the observed
-       symptom. This affected fullName/email saves identically, not just
-       reports-to; reports-to just made it visible since Save previously
-       "looked" like it worked (the row collapsed) while actually never
-       calling the API. */
-    var clickedRow = e.target.closest('tr');
-    if (!clickedRow) return;
-    var row = clickedRow.classList.contains('ad-detail-row') ? clickedRow.previousElementSibling : clickedRow;
-    if (!row || !row.hasAttribute('data-user')) return;
-    var userId = row.getAttribute('data-user');
+    /* Card redesign (2026-08-24): the detail panel (.ad-tree-detail) is
+       now a DIRECT CHILD of the same .ad-tree-card as the row that opens
+       it — not a sibling the old <tr>-based lookup had to special-case.
+       closest('[data-user]') alone finds the right card whether the
+       click started on the row, an action button, or inside the open
+       detail panel, and — critically — a click inside a NESTED Field
+       Officer card resolves to THAT card, never the Manager card it's
+       nested inside, because closest() stops at the first match walking
+       up from the click target. */
+    var cardEl = e.target.closest('[data-user]');
+    if (!cardEl) return;
+    var row = cardEl;
+    var userId = cardEl.getAttribute('data-user');
     var toggle = e.target.closest('[data-toggle]');
     var openReset = e.target.closest('[data-open-reset]');
     var doReset = e.target.closest('[data-do-reset]');
@@ -1640,9 +1682,8 @@
         teamExpanded[userId] = teamExpanded[userId] === 'reset' ? null : 'reset';
         renderTeamList();
       } else if (doReset) {
-        var detailRowReset = row.nextElementSibling;
-        var newPwEl = detailRowReset.querySelector('[data-reset-new]');
-        var confirmPwEl = detailRowReset.querySelector('[data-reset-confirm]');
+        var newPwEl = row.querySelector('[data-reset-new]');
+        var confirmPwEl = row.querySelector('[data-reset-confirm]');
         if (newPwEl.value.length < 10) {
           A.msg($('adUserMsg'), 'Password must be at least 10 characters.', 'is-error');
           return;
@@ -1735,9 +1776,8 @@
         teamExpanded[userId] = null;
         renderTeamList();
       } else if (msgSend) {
-        var msgDetailRow = row.nextElementSibling;
-        var msgTypeEl = msgDetailRow.querySelector('[data-msg-type]');
-        var msgBodyEl = msgDetailRow.querySelector('[data-msg-body]');
+        var msgTypeEl = row.querySelector('[data-msg-type]');
+        var msgBodyEl = row.querySelector('[data-msg-body]');
         var msgBody = msgBodyEl.value.trim();
         if (!msgBody) { A.msg($('adUserMsg'), 'Write a message before sending.', 'is-error'); return; }
         var msgRes = await A.post(API.adminUsers, { action: 'message', userId: userId, messageType: msgTypeEl.value, body: msgBody });
@@ -1751,11 +1791,10 @@
         teamExpanded[userId] = null;
         renderTeamList();
       } else if (saveEdit) {
-        var detailRow = row.nextElementSibling;
-        var fullNameEl = detailRow.querySelector('[data-edit-fullname]');
-        var emailEl = detailRow.querySelector('[data-edit-email]');
-        var titleEl = detailRow.querySelector('[data-edit-title]');
-        var reportsToEl = detailRow.querySelector('[data-edit-reports-to]');
+        var fullNameEl = row.querySelector('[data-edit-fullname]');
+        var emailEl = row.querySelector('[data-edit-email]');
+        var titleEl = row.querySelector('[data-edit-title]');
+        var reportsToEl = row.querySelector('[data-edit-reports-to]');
         await A.post(API.adminUsers, {
           action: 'update', userId: userId,
           fullName: fullNameEl.value.trim(), email: emailEl.value.trim(),

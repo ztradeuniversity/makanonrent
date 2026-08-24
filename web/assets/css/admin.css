@@ -358,3 +358,77 @@
 }
 .ad-chevron { display: inline-block; transition: transform .15s ease; font-size: 12px; }
 .ad-chevron.is-open { transform: rotate(90deg); }
+
+/* ── team tree (card-based, redesign 2026-08-24) ───────────────────
+   ROOT CAUSE of the old overlap bug: the toggle <button> and the
+   ".ad-team-group-head" <div> were separate inline-level siblings with
+   no shared flex container. A wide pill-filled head wraps like a line
+   of text once it doesn't fit — the WHOLE div drops to the next line,
+   leaving the button stranded alone above it. Every card below puts the
+   toggle and the head inside ONE flex row with `flex-wrap: wrap`, so
+   content that doesn't fit wraps a *pill*, never the whole header past
+   its own toggle. */
+.ad-tree { display: flex; flex-direction: column; gap: 10px; }
+.ad-tree-card {
+  border: 1.5px solid var(--line); border-radius: var(--radius);
+  background: var(--surface); overflow: hidden;
+}
+.ad-tree-card.is-disabled { opacity: .65; }
+.ad-tree-row {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px;
+  padding: 12px 14px; width: 100%; text-align: left; background: none; border: none; cursor: pointer;
+}
+.ad-tree-row:hover { background: var(--paper); }
+.ad-tree-row:focus-visible { outline: 2px solid var(--green); outline-offset: -2px; }
+/* A leaf card (Field Officer — nothing to expand) is not a <button> and
+   must not look clickable or take a pointer cursor for row-toggling. */
+.ad-tree-row.is-static { cursor: default; }
+.ad-tree-row.is-static:hover { background: none; }
+.ad-tree-chevron {
+  width: 22px; height: 22px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; border: 1.5px solid var(--line); font-size: 11px; color: var(--muted);
+  transition: transform .15s ease, background .15s ease;
+}
+.ad-tree-row[aria-expanded="true"] .ad-tree-chevron { transform: rotate(90deg); background: var(--paper); }
+.ad-tree-chevron.is-spacer { border: none; }
+.ad-tree-identity { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 200px; }
+.ad-tree-role {
+  font-size: 10.5px; font-weight: 800; letter-spacing: .6px; text-transform: uppercase;
+}
+.ad-tree-role.is-aceo  { color: #8A6D22; }
+.ad-tree-role.is-mgr   { color: var(--green); }
+.ad-tree-role.is-fo    { color: var(--muted); }
+.ad-tree-name { font-size: 14.5px; font-weight: 750; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ad-tree-name small { font-weight: 600; color: var(--muted); }
+.ad-tree-counts { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+/* Interactive count "badges" (ISSUE 2) — real <button>s, not decorative
+   <span>s: keyboard-focusable, hover/focus states, and they fire the
+   SAME expand action as the row's own chevron so either one works. */
+.ad-count-btn {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 100px;
+  font-size: 11px; font-weight: 750; white-space: nowrap; cursor: pointer;
+  background: var(--paper); border: 1px solid var(--line); color: var(--muted);
+  transition: border-color .15s ease, color .15s ease, background .15s ease;
+}
+.ad-count-btn:hover, .ad-count-btn:focus-visible {
+  border-color: var(--green-lift); color: var(--green); background: rgba(18, 90, 68, .06); outline: none;
+}
+.ad-count-btn[aria-expanded="true"] { border-color: var(--green); color: var(--green); background: rgba(18, 90, 68, .1); }
+.ad-tree-status { flex-shrink: 0; }
+.ad-tree-actions { display: flex; gap: 6px; flex-wrap: wrap; flex-shrink: 0; margin-left: auto; padding: 0 14px 12px; }
+.ad-tree-actions:empty { display: none; }
+.ad-tree-detail { padding: 0 14px 14px; border-top: 1px solid var(--line); margin-top: -1px; }
+/* Nested children: a left rule gives the "connector" feel the brief asks
+   for without SVG lines/absolute positioning — one border, normal flow,
+   nothing that can collide with a sibling. */
+.ad-tree-children {
+  margin: 0 14px 12px 24px; padding-left: 16px; border-left: 2px solid var(--line);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.ad-tree-children[hidden] { display: none; }
+.ad-tree-empty { padding: 10px 14px 14px; color: var(--muted); font-size: 13px; }
+
+@media (max-width: 480px) {
+  .ad-tree-actions { margin-left: 0; width: 100%; padding: 0 14px 12px 46px; }
+  .ad-tree-children { margin-left: 14px; }
+}

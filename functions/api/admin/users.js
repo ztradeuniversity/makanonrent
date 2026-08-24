@@ -48,9 +48,14 @@ export async function onRequestGet(context) {
       if (auth.user.role !== 'ceo') {
         return json(env, { error: 'Only the CEO can view removed team member history.' }, 403);
       }
+      /* history_hidden_at (migration 0017, ISSUE 15/16): a "Permanently
+         Remove" is presentation-only — this filter is the entire effect
+         of that action. Every other table this account ever touched is
+         untouched by it. */
       var arcRes = await db.from('admin_users')
         .select('id, username, full_name, email, role, display_title, status, created_at, archived_at')
         .eq('status', 'archived')
+        .is('history_hidden_at', null)
         .order('archived_at', { ascending: false });
       if (arcRes.error) throw arcRes.error;
 
@@ -626,7 +631,37 @@ export async function onRequestPost(context) {
       return json(env, { ok: true });
     }
 
-    return json(env, { error: "action must be 'create', 'update', 'set-reports-to', 'set-status' or 'reset-password'." }, 422);
+    /* ── hide-history: "Permanently Remove" from the Removed Team Members
+       presentation list (ISSUE 15/16, migration 0017) ──────────────────
+       CEO-only, and only ever on an ALREADY-archived account — this is
+       not a faster path to removal, it only changes what the history
+       view shows for someone already gone. Sets ONE column
+       (history_hidden_at); no other table is touched, so every audit/
+       verification/task/assignment record this person ever created
+       remains queryable by anyone who still has direct access to those
+       tables — this action only removes them from the CEO's Team-history
+       UI, nothing else. */
+    if (body.action === 'hide-history') {
+      if (auth.user.role !== 'ceo') {
+        return json(env, { error: 'Only the CEO can permanently remove a former member from history.' }, 403);
+      }
+      if (!isNonEmptyString(body.userId, 60)) return json(env, { error: 'userId is required.' }, 422);
+
+      var hideTarget = await db.from('admin_users').select('id, username, status').eq('id', body.userId).maybeSingle();
+      if (hideTarget.error) throw hideTarget.error;
+      if (!hideTarget.data) return json(env, { error: 'No such user.' }, 404);
+      if (hideTarget.data.status !== 'archived') {
+        return json(env, { error: 'Only an already-removed (archived) team member can be permanently removed from history.' }, 422);
+      }
+
+      var hideUpd = await db.from('admin_users').update({ history_hidden_at: new Date().toISOString() }).eq('id', body.userId);
+      if (hideUpd.error) throw hideUpd.error;
+
+      await audit('history_hidden', 'admin_user', body.userId, { username: hideTarget.data.username });
+      return json(env, { ok: true });
+    }
+
+    return json(env, { error: "action must be 'create', 'update', 'set-reports-to', 'set-status', 'reset-password', 'message' or 'hide-history'." }, 422);
   } catch (e) {
     return json(env, { error: (e && e.message) || 'User request failed.' }, 500);
   }
