@@ -57,3 +57,24 @@
 # Icons are content-stable and referenced by fixed names.
 /assets/img/*
   Cache-Control: public, max-age=604800
+
+# ROOT CAUSE (proven via HTTP headers, 2026-08-23): /assets/js/* and
+# /assets/css/* carried no explicit Cache-Control rule, so they fell back
+# to Cloudflare Pages' default `public, max-age=14400` (4h) with no
+# cache-busting query string on any <script>/<link> tag in web/*.html.
+# A browser that loaded admin-console.js at any point kept executing that
+# exact cached copy for up to 4 hours after every subsequent deploy — the
+# same failure mode the /sw.js rule above already exists to prevent, just
+# unguarded for JS/CSS. This is why server-side curl checks always showed
+# "current" code while a live browser tab kept sending an older request
+# shape (e.g. a create-team-member payload from before the email field
+# existed) against the new, correct server validation — 100% reproducible
+# for that browser until the cache expired or a hard refresh occurred.
+# `must-revalidate` (not immutable/no-store) keeps the CDN edge cache and
+# ETag/304 revalidation working; only the BROWSER is forced to check on
+# every load instead of trusting a stale local copy for 4 hours.
+/assets/js/*
+  Cache-Control: public, max-age=0, must-revalidate
+
+/assets/css/*
+  Cache-Control: public, max-age=0, must-revalidate
