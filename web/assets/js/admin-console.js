@@ -973,8 +973,16 @@
           A.msg($('adUserMsg'), 'Passwords do not match.', 'is-error');
           return;
         }
+        var resettingUser = (teamCache || []).find(function (u) { return u.id === userId; });
         await A.post(API.adminUsers, { action: 'reset-password', userId: userId, newPassword: newPwEl.value });
-        A.msg($('adUserMsg'), 'Password reset successfully.', 'is-ok');
+        /* Explicit about WHO and WHAT changed — audited 2026-08-24: the
+           backend/save path was proven working (a real reset_password
+           audit entry is written only after the DB update commits, and
+           production logs already show successful resets), so a vague
+           "Password reset successfully." was read as "did nothing" when
+           the actual gap was trust in the feedback, not the action. */
+        A.msg($('adUserMsg'), 'Password reset for ' + (resettingUser ? resettingUser.fullName : 'this member') +
+          '. They must sign in with the new password and will be asked to change it.', 'is-ok');
         teamExpanded[userId] = null;
         await loadTeam();
       } else if (del) {
