@@ -20,12 +20,20 @@
   function can(cap) { return !!CAPS[cap]; }
 
   /* ── tabs ───────────────────────────────────────────────────────── */
+  /* Team redesign (audited 2026-08-24): Team, Area Assignments and Task
+     Management were one page — identity management mixed with two
+     unrelated operational systems is what made it read as cluttered.
+     Split into three tabs, gated on the SAME capabilities the old cards
+     already used to decide visibility (areas.assign, tasks.assign), so
+     nobody gains or loses access — just organisation. */
   var TABS = [
     { id: 'today',      label: 'Today',      show: function () { return true; } },
     { id: 'verify',     label: 'Verify',     show: function () { return can('properties.verify'); } },
     { id: 'approvals',  label: 'Approvals',  show: function () { return can('properties.approve'); } },
     { id: 'properties', label: 'Properties', show: function () { return true; } },
     { id: 'team',       label: 'Team',       show: function () { return can('users.list'); } },
+    { id: 'areas',      label: 'Area Assignments', show: function () { return can('areas.assign'); } },
+    { id: 'tasks',      label: 'Task Management',  show: function () { return can('tasks.assign'); } },
     { id: 'monitor',    label: 'Monitoring', show: function () { return can('monitor.read'); } },
     { id: 'reports',    label: 'Reports',    show: function () { return can('monitor.read'); } },
     { id: 'settings',   label: 'Settings',   show: function () { return can('settings.read'); } },
@@ -36,8 +44,8 @@
 
   var LOADERS = {
     today: loadToday, verify: loadVerify, approvals: loadApprovals,
-    properties: loadProperties, team: loadTeam, monitor: loadMonitor,
-    reports: loadReports, settings: loadSettings, audit: loadAudit
+    properties: loadProperties, team: loadTeam, areas: loadAreaAssignments, tasks: loadTaskManagement,
+    monitor: loadMonitor, reports: loadReports, settings: loadSettings, audit: loadAudit
   };
 
   function renderTabs() {
@@ -931,13 +939,18 @@
     transfer: 'Moves active operational responsibility to another eligible team member while preserving history.',
     revoke: 'Removes the current active assignment without deleting historical records.',
     history: 'Shows areas previously assigned to this member that were later transferred elsewhere or removed — the original record is kept, not deleted.',
+    message: 'Send a direct message from the CEO.',
+    messageType: 'Appreciation, General, Warning or Important Notice — shown to the recipient alongside the message.',
+    designation: 'An organizational title shown in the Team tree. Display only — it never changes what this account can do; the security role does that.',
     search: 'Find a team member by name, username, or email.',
     findings: 'Record what you observed during the field visit — property/location condition, issues, anything the reviewer needs to know.'
   };
   var teamFilters = { q: '', role: '', status: '' };
-  var teamExpanded = {};   // userId -> 'view' | 'edit'
+  var teamExpanded = {};   // userId -> 'view' | 'edit' | 'message'
+  var profileCache = {};   // userId -> deep profile/progress data, fetched on demand when View opens
   var teamGroupExpanded = {};   // role -> collapsed(false, default)/expanded(true)
   var mgrFoExpanded = {};   // managerId -> true when their nested Field Officer list is open (ISSUE 1, governance pass)
+  var aceoExpanded = {};    // assistantCeoId -> true when their nested Manager list is open (Team redesign, CEO-only tree)
   var teamBound = false;
 
   /* Moves each element's `data-tip` attribute into its sibling bubble once,
@@ -977,8 +990,25 @@
       if (!q) return true;
       return (u.fullName || '').toLowerCase().indexOf(q) > -1 ||
         (u.username || '').toLowerCase().indexOf(q) > -1 ||
-        (u.email || '').toLowerCase().indexOf(q) > -1;
+        (u.email || '').toLowerCase().indexOf(q) > -1 ||
+        (u.displayTitle || '').toLowerCase().indexOf(q) > -1;
     });
+  }
+
+  /* Real counts, live from teamCache — never hardcoded (Team redesign
+     ISSUE 4). "Other Designations" is deliberately NOT a fourth role
+     bucket (there are only three security roles) — it counts how many
+     active members currently have a custom display_title set, since a
+     title is informational, not a fourth kind of account. */
+  function renderTeamOverviewStats() {
+    var active = teamCache.filter(function (u) { return u.status === 'active'; });
+    var aceo = active.filter(function (u) { return u.role === 'assistant_ceo'; }).length;
+    var mgr = active.filter(function (u) { return u.role === 'manager'; }).length;
+    var fo = active.filter(function (u) { return u.role === 'field_officer'; }).length;
+    var titled = active.filter(function (u) { return u.displayTitle; }).length;
+    $('adTeamOverviewStats').innerHTML =
+      stat(aceo, 'Assistant CEOs') + stat(mgr, 'Area Managers') + stat(fo, 'Field Officers') +
+      stat(titled, 'Other Designations') + stat(active.length, 'Total Active Members', true);
   }
 
   function renderUserRow(u, namePrefix) {
@@ -990,6 +1020,15 @@
        server now rejects. View stays available to anyone who can see the
        row at all. */
     var actions = '<button class="ad-btn is-sm" type="button" data-view>View</button> ';
+    /* Message (Team redesign ISSUE 14) is its own capability
+       (users.message, CEO-only) — deliberately checked separately from
+       identityManageable, in case a future policy change ever lets
+       someone message without full identity-management authority. Today
+       the two happen to coincide (both CEO-only), but the check should
+       not assume that stays true. */
+    if (can('users.message') && u.status === 'active') {
+      actions += '<button class="ad-btn is-sm" type="button" data-message>Message</button> ';
+    }
     if (u.identityManageable) {
       actions +=
         '<button class="ad-btn is-sm" type="button" data-edit>Edit</button> ' +
@@ -997,12 +1036,13 @@
           (u.status === 'active' ? 'Disable' : 'Enable') + '</button> ' +
         '<button class="ad-btn is-sm" type="button" data-open-reset>Reset password</button> ' +
         '<button class="ad-btn is-sm is-danger" type="button" data-delete>Delete</button>';
-    } else {
+    } else if (!can('users.message')) {
       actions += '<span class="ad-pill">View only</span>';
     }
 
+    var titleSuffix = u.displayTitle ? ' <small style="font-weight:600;color:var(--muted);">— ' + esc(u.displayTitle) + '</small>' : '';
     var row = '<tr data-user="' + esc(u.id) + '">' +
-      '<td>' + (namePrefix || '') + '<b>' + esc(u.fullName) + '</b></td>' +
+      '<td>' + (namePrefix || '') + '<b>' + esc(u.fullName) + '</b>' + titleSuffix + '</td>' +
       '<td>' + esc(u.username) + '</td>' +
       '<td>' + esc(u.email || '—') + '</td>' +
       '<td><span class="ad-pill ' + (u.status === 'active' ? 'is-ok' : 'is-danger') + '">' + esc(u.status) + '</span></td>' +
@@ -1023,12 +1063,11 @@
     }
 
     if (mode === 'view') {
-      /* Hierarchical review tree (governance pass): who reports DOWNWARD
-         to this account, with what they're each currently holding — the
-         same reports_to_user_id link and admin_area_assignments data
-         already loaded for this tab, just read one level down. Only
-         Assistant CEO/Manager rows have anyone reporting to them, so a
-         Field Officer's view never shows an (always empty) section. */
+      /* Who reports DOWNWARD to this account — just the roster + role/
+         status here; area/task detail for any one of them is a click
+         (their own View) away rather than duplicated inline, since the
+         per-user progress numbers below now come from a dedicated fetch
+         (?profile=) rather than tab-local state that may not be warm. */
       var directReports = (u.role === 'assistant_ceo' || u.role === 'manager')
         ? (teamCache || []).filter(function (x) { return x.reportsToUserId === u.id && x.status !== 'archived'; })
         : [];
@@ -1038,18 +1077,37 @@
           '<span>' + (u.role === 'assistant_ceo' ? 'Area Managers' : 'Field Officers') + ' reporting to ' + esc(u.fullName) + '</span>' +
           '<div style="padding-left:8px;margin-top:4px;">' +
           directReports.map(function (r) {
-            var rAreas = assignByUserCache[r.id] || [];
             return '<div style="margin-bottom:4px;">▸ <b>' + esc(r.fullName) + '</b> (' + esc(A.roleLabel(r.role)) + ')' +
-              '<small style="display:block;padding-left:14px;">' +
-              (rAreas.length ? esc(assignSummary(rAreas)) : 'No areas assigned yet') +
-              (r.status !== 'active' ? ' · ' + esc(r.status) : '') +
-              '</small></div>';
+              (r.status !== 'active' ? ' <small>· ' + esc(r.status) + '</small>' : '') + '</div>';
           }).join('') +
           '</div></div>';
       }
 
+      /* Progress/performance (Team redesign ISSUE 11): real numbers off
+         /api/admin/users?profile=<id> — fetched once on open (the click
+         handler populates profileCache), never invented client-side.
+         Renders a loading placeholder the first paint; the fetch's
+         completion re-renders this same row with the real figures. */
+      var prof = profileCache[u.id];
+      var progressBlock = prof
+        ? '<div class="ad-kv-row" style="align-items:flex-start;flex-direction:column;">' +
+            '<span>Progress</span>' +
+            '<div class="ad-stats" style="margin-top:6px;">' +
+              stat(prof.assignedAreaCount, 'Assigned areas') +
+              stat(prof.tasksOpen, 'Pending tasks') +
+              stat(prof.tasksCompleted, 'Completed tasks') +
+              stat(prof.fieldReportsSubmitted, 'Field reports') +
+              (can('verification.review') || ME.user.role === 'ceo'
+                ? stat(prof.reportsReviewedByThem, 'Reviewed by them') + stat(prof.reportsReturnedByThem, 'Returned by them')
+                : '') +
+              stat(prof.ownSubmissionsReturned, 'Their reports returned') +
+            '</div>' +
+          '</div>'
+        : '<div class="ad-empty">Loading progress…</div>';
+
       row += '<tr class="ad-detail-row"><td colspan="7"><div class="ad-detail-grid">' +
         '<div class="ad-kv-row"><span>Role</span><span>' + esc(A.roleLabel(u.role)) + '</span></div>' +
+        (u.displayTitle ? '<div class="ad-kv-row"><span>Designation</span><span>' + esc(u.displayTitle) + '</span></div>' : '') +
         '<div class="ad-kv-row"><span>Username</span><span>' + esc(u.username) + '</span></div>' +
         '<div class="ad-kv-row"><span>Email</span><span>' + esc(u.email || '—') + '</span></div>' +
         '<div class="ad-kv-row"><span>Status</span><span>' + esc(u.status) + '</span></div>' +
@@ -1057,7 +1115,30 @@
         '<div class="ad-kv-row"><span>Created</span><span>' + esc(A.fmtDateTime(u.createdAt)) + '</span></div>' +
         '<div class="ad-kv-row"><span>Last login</span><span>' + esc(A.fmtDateTime(u.lastLoginAt)) + '</span></div>' +
         '<div class="ad-kv-row"><span>Last verification</span><span>' + esc(A.fmtDateTime(u.lastVerificationAt)) + '</span></div>' +
+        progressBlock +
         reportsBlock +
+      '</div></td></tr>';
+    } else if (mode === 'message') {
+      /* CEO message composer (ISSUE 14) — inline, same expand pattern as
+         reset-password below, not a separate modal system. */
+      row += '<tr class="ad-detail-row"><td colspan="7"><div class="ad-row">' +
+        '<div class="ad-field" style="width:100%;">' +
+          '<label class="ad-label-tip">Message type' + tipSpan('messageType', 'Message type') + '</label>' +
+          '<select class="ad-select" data-msg-type>' +
+            '<option value="general">General</option>' +
+            '<option value="appreciation">Appreciation</option>' +
+            '<option value="warning">Warning</option>' +
+            '<option value="important">Important Notice</option>' +
+          '</select>' +
+        '</div>' +
+        '<div class="ad-field" style="width:100%;">' +
+          '<label>Message to ' + esc(u.fullName) + '</label>' +
+          '<textarea class="ad-textarea" data-msg-body maxlength="4000" placeholder="Write your message…"></textarea>' +
+        '</div>' +
+        '<div class="ad-actions" style="width:100%;">' +
+          '<button class="ad-btn is-primary is-sm" type="button" data-msg-send>Send</button> ' +
+          '<button class="ad-btn is-sm" type="button" data-msg-cancel>Cancel</button>' +
+        '</div>' +
       '</div></td></tr>';
     } else if (mode === 'edit') {
       var reportsToField = '';
@@ -1080,6 +1161,8 @@
       row += '<tr class="ad-detail-row"><td colspan="7"><div class="ad-row">' +
         '<div class="ad-field"><label>Full name</label><input class="ad-input" type="text" data-edit-fullname value="' + esc(u.fullName) + '" /></div>' +
         '<div class="ad-field"><label>Email</label><input class="ad-input" type="email" data-edit-email value="' + esc(u.email || '') + '" /></div>' +
+        '<div class="ad-field"><label class="ad-label-tip">Designation' + tipSpan('designation', 'Designation') +
+          '</label><input class="ad-input" type="text" maxlength="120" data-edit-title value="' + esc(u.displayTitle || '') + '" placeholder="Optional — e.g. Senior Field Coordinator" /></div>' +
         reportsToField +
         '</div><div class="ad-actions">' +
         '<button class="ad-btn is-primary is-sm" type="button" data-save-edit>Save</button>' +
@@ -1135,6 +1218,102 @@
     return mgrRow + nested;
   }
 
+  /* CEO's 3-level tree: Assistant CEO → Area Manager → Field Officer, plus
+     a DIRECT CEO TEAM bucket for anyone with no assistant_ceo/manager
+     parent (ISSUE 6). Collapsed by default at every level; a search match
+     auto-opens only the branches that actually contain it (ISSUE 7) —
+     never the whole tree. Reuses renderManagerWithFos for the bottom two
+     tiers so a Manager's own row/actions/FO-nesting behave IDENTICALLY
+     here and in an Assistant CEO's own (2-level) view — one renderer for
+     "a Manager and their FOs", not two. */
+  function renderCeoTree(rows, searching, head, tail) {
+    var assistants = rows.filter(function (u) { return u.role === 'assistant_ceo'; });
+    var managers = rows.filter(function (u) { return u.role === 'manager'; });
+    var fos = rows.filter(function (u) { return u.role === 'field_officer'; });
+    var consumedManagerIds = {};
+    var consumedFoIds = {};
+
+    var aceoBlocks = assistants.map(function (aceo) {
+      var myManagers = managers.filter(function (m) { return m.reportsToUserId === aceo.id; });
+      myManagers.forEach(function (m) { consumedManagerIds[m.id] = true; });
+      var myDirectFos = fos.filter(function (f) { return f.reportsToUserId === aceo.id; });
+      myDirectFos.forEach(function (f) { consumedFoIds[f.id] = true; });
+
+      var fosUnderMyManagers = 0;
+      var managerRows = myManagers.map(function (mgr) {
+        var mgrFos = fos.filter(function (f) { return f.reportsToUserId === mgr.id; });
+        mgrFos.forEach(function (f) { consumedFoIds[f.id] = true; });
+        fosUnderMyManagers += mgrFos.length;
+        return renderManagerWithFos(mgr, mgrFos, searching);
+      }).join('');
+
+      var directFoRows = myDirectFos.map(function (fo) { return renderUserRow(fo); }).join('');
+      var totalFos = fosUnderMyManagers + myDirectFos.length;
+
+      /* A search match on an Assistant CEO's own FO or Manager (or a
+         Manager's FO further down) must open THIS branch even if the
+         Assistant CEO's own name doesn't match — otherwise the result
+         exists in `rows` but is buried inside a collapsed node the user
+         never sees, which defeats the point of searching. */
+      var expanded = searching || !!aceoExpanded[aceo.id];
+
+      return '<div class="ad-team-group">' +
+        '<button type="button" class="ad-btn is-sm ad-assign-toggle" data-toggle-aceo="' + esc(aceo.id) + '" ' +
+        'aria-expanded="' + expanded + '" aria-controls="aceoGroup-' + esc(aceo.id) + '">' +
+        '<span class="ad-chevron' + (expanded ? ' is-open' : '') + '" aria-hidden="true">&#9656;</span></button> ' +
+        '<div class="ad-team-group-head" style="display:inline-flex;">' +
+          'ASSISTANT CEO — ' + esc(aceo.fullName) + (aceo.displayTitle ? ' <small>(' + esc(aceo.displayTitle) + ')</small>' : '') +
+          '<span class="ad-pill">' + myManagers.length + ' Manager' + (myManagers.length === 1 ? '' : 's') + '</span>' +
+          '<span class="ad-pill">' + totalFos + ' FO' + (totalFos === 1 ? '' : 's') + '</span>' +
+          '<span class="ad-pill ' + (aceo.status === 'active' ? 'is-ok' : 'is-danger') + '">' + esc(aceo.status) + '</span>' +
+          '<span class="ad-tip" data-tip="' + esc(ROLE_DESC.assistant_ceo) + '">' +
+            '<button type="button" class="ad-tip-btn" aria-label="What is Assistant CEO?">?</button>' +
+            '<span class="ad-tip-bubble" role="tooltip"></span></span>' +
+        '</div>' +
+        '<div id="aceoGroup-' + esc(aceo.id) + '"' + (expanded ? '' : ' hidden') + '>' +
+          head + renderUserRow(aceo) + directFoRows + managerRows + tail +
+        '</div>' +
+      '</div>';
+    }).join('');
+
+    /* DIRECT CEO TEAM (ISSUE 6): Managers and Field Officers with no
+       assistant_ceo/manager parent — reports_to_user_id is null, or a
+       Manager whose own row falls through because they were never
+       claimed above. Never force these into an Assistant CEO's branch
+       just because one exists. */
+    var directManagers = managers.filter(function (m) { return !consumedManagerIds[m.id]; });
+    var directManagerRows = directManagers.map(function (mgr) {
+      var mgrFos = fos.filter(function (f) { return f.reportsToUserId === mgr.id; });
+      mgrFos.forEach(function (f) { consumedFoIds[f.id] = true; });
+      return renderManagerWithFos(mgr, mgrFos, searching);
+    }).join('');
+    var orphanFos = fos.filter(function (f) { return !consumedFoIds[f.id]; });
+    var orphanFoRows = orphanFos.map(function (fo) { return renderUserRow(fo); }).join('');
+
+    var directBlock = '';
+    var directCount = directManagers.length + orphanFos.length;
+    if (directCount) {
+      var directExpanded = searching || !!teamGroupExpanded['direct'];
+      directBlock = '<div class="ad-team-group">' +
+        '<button type="button" class="ad-btn is-sm ad-assign-toggle" data-toggle-group="direct" ' +
+        'aria-expanded="' + directExpanded + '" aria-controls="teamGroup-direct">' +
+        '<span class="ad-chevron' + (directExpanded ? ' is-open' : '') + '" aria-hidden="true">&#9656;</span></button> ' +
+        '<div class="ad-team-group-head" style="display:inline-flex;">' +
+          'DIRECT CEO TEAM' +
+          '<span class="ad-pill">' + directCount + '</span>' +
+          '<span class="ad-tip" data-tip="Team members with no Assistant CEO or Manager above them — they report directly to the CEO.">' +
+            '<button type="button" class="ad-tip-btn" aria-label="What is Direct CEO Team?">?</button>' +
+            '<span class="ad-tip-bubble" role="tooltip"></span></span>' +
+        '</div>' +
+        '<div id="teamGroup-direct"' + (directExpanded ? '' : ' hidden') + '>' +
+          head + directManagerRows + orphanFoRows + tail +
+        '</div>' +
+      '</div>';
+    }
+
+    return aceoBlocks + directBlock;
+  }
+
   function renderTeamList() {
     var rows = filteredTeam();
     $('adTeamCount').textContent = teamCache.length + ' account(s)' +
@@ -1155,6 +1334,19 @@
     var tail = '</tbody></table></div>';
 
     var searching = !!teamFilters.q.trim();
+
+    /* CEO gets the full 3-level tree (Assistant CEO → Manager → Field
+       Officer, Team redesign): only the CEO's own teamCache ever contains
+       every tier at once, so this branch is the only place it makes
+       sense. Assistant CEO/Manager viewers fall through to the existing
+       ROLE_GROUPS rendering below, which already nests one level
+       correctly for what THEY can see. */
+    if (ME && ME.user.role === 'ceo') {
+      $('adUserList').innerHTML = renderCeoTree(rows, searching, head, tail) ||
+        '<div class="ad-empty">No accounts match this search/filter.</div>';
+      bindTooltips($('adUserList'));
+      return;
+    }
 
     /* Nested hierarchy tree (ISSUE 1, governance pass, audited 2026-08-24):
        whenever the viewer can see BOTH Managers and Field Officers in the
@@ -1216,6 +1408,19 @@
     bindTooltips($('adUserList'));
   }
 
+  /* Team, Area Assignments and Task Management are now three separate
+     tabs (redesign 2026-08-24) that all need the same team roster — this
+     is the one place that fetches it, so the three tabs can never show
+     three different answers for "who's on the team". Always refetches
+     (matches the original loadTeam()'s behaviour); the cost is one small
+     GET, not worth caching across tab switches when correctness (a
+     just-created member appearing immediately) is what actually matters. */
+  async function ensureTeamCache() {
+    var res = await A.get(API.adminUsers);
+    teamCache = res.users;
+    return teamCache;
+  }
+
   async function loadTeam() {
     /* The role select is built from capabilities rather than hardcoded —
        who may create whom is decided once, in rbac.js, and read here. */
@@ -1226,60 +1431,24 @@
     $('adNewRole').innerHTML = roleOpts.join('');
     $('adCreateUserCard').hidden = !roleOpts.length;
     bindTooltips($('adCreateUserCard'));
-    /* Area Manager now sees this panel (to manage their Field Officers)
-       but does not hold tasks.assign — hide what they cannot do rather
-       than let them hit a 403. */
-    $('adTaskCard').hidden = !can('tasks.assign');
 
     $('adRemovedCard').hidden = !(ME && ME.user.role === 'ceo');
     if (ME && ME.user.role === 'ceo') loadRemovedTeam();
 
     try {
-      var res = await A.get(API.adminUsers);
-      teamCache = res.users;
+      await ensureTeamCache();
+      renderTeamOverviewStats();
       renderTeamList();
 
-      var assignable = res.users.filter(function (u) { return u.manageable && u.status === 'active'; });
-      var opts = assignable.map(function (u) {
-        return '<option value="' + esc(u.id) + '">' + esc(u.fullName) + ' (' + esc(A.roleLabel(u.role)) + ')</option>';
-      }).join('');
-      $('adAssignUser').innerHTML = opts || '<option value="">No eligible accounts</option>';
-      $('adTaskUser').innerHTML = opts || '<option value="">No eligible accounts</option>';
-
-      /* Built once — the cascade's listeners must not be bound again every
-         time the panel is reopened, or one click would fire N assigns. */
-      if (!areaPickerReady) {
-        areaPickerReady = true;
-        await initAreaPicker();
-      }
-      /* Real regression caught by testing before it ever shipped: this
-         called the old single-select refreshAssignScope(), removed when
-         the multi-select picker replaced it — every loadTeam() call threw
-         here, caught by this function's own try/catch, and silently
-         replaced the whole Team Manager list with an error message. Not
-         re-rendering the picker at all here is correct: renderReview()
-         already re-runs after every checkbox change and after
-         beginEditAreas() preloads state; nothing needs a stale review
-         redrawn on every unrelated loadTeam() call. */
-
+      /* The Manager/FO area-count badges in the tree read assignByUserCache
+         (renderManagerWithFos) — without this, that cache stays cold until
+         someone visits the separate Area Assignments tab, and every badge
+         would misleadingly read "0 areas" for a Manager who actually holds
+         several. loadAssignments() is the same call Area Assignments makes;
+         calling it here too keeps the Team tree's numbers correct on its
+         own, independent of tab visit order. */
       await loadAssignments();
-
-      /* The FIRST renderTeamList() above ran before assignByUserCache was
-         populated (loadAssignments() had not resolved yet), so every
-         Manager's area-count badge and every nested FO's area summary
-         (ISSUE 1) rendered against stale/empty data. Re-render now that
-         it's fresh — cheap (pure DOM string rebuild) and the only way
-         those numbers are ever correct on load rather than only after
-         some unrelated interaction forces a second render. */
       renderTeamList();
-
-      /* Delegation status (ISSUE 2) lives in the same freshly-loaded
-         assignByUserCache — re-render the picker's checkboxes so a node
-         someone just delegated shows as disabled the next time this tab
-         is opened, not only after the picker is manually re-touched.
-         Safe to call unconditionally: renderCities/refreshPicker are pure
-         render functions, never listener binders. */
-      if (areaPickerReady) { renderCities(); refreshPicker(); }
     } catch (e) {
       $('adUserList').innerHTML = '<div class="ad-empty">' + esc(e.message) + '</div>';
     }
@@ -1290,6 +1459,13 @@
       $('adTeamRoleFilter').addEventListener('change', function () { teamFilters.role = this.value; renderTeamList(); });
       $('adTeamStatusFilter').addEventListener('change', function () { teamFilters.status = this.value; renderTeamList(); });
       $('adUserList').addEventListener('click', function (e) {
+        var aceoToggle = e.target.closest('[data-toggle-aceo]');
+        if (aceoToggle) {
+          var aceoId = aceoToggle.getAttribute('data-toggle-aceo');
+          aceoExpanded[aceoId] = !aceoExpanded[aceoId];
+          renderTeamList();
+          return;
+        }
         var mgrToggle = e.target.closest('[data-toggle-mgr-fos]');
         if (mgrToggle) {
           var mgrId = mgrToggle.getAttribute('data-toggle-mgr-fos');
@@ -1312,6 +1488,49 @@
     }
   }
 
+  /* ── AREA ASSIGNMENTS (moved out of Team, redesign 2026-08-24) ────── */
+  async function loadAreaAssignments() {
+    try {
+      var users = await ensureTeamCache();
+      var assignable = users.filter(function (u) { return u.manageable && u.status === 'active'; });
+      var opts = assignable.map(function (u) {
+        return '<option value="' + esc(u.id) + '">' + esc(u.fullName) + ' (' + esc(A.roleLabel(u.role)) + ')</option>';
+      }).join('');
+      $('adAssignUser').innerHTML = opts || '<option value="">No eligible accounts</option>';
+
+      /* Built once — the cascade's listeners must not be bound again every
+         time the panel is reopened, or one click would fire N assigns. */
+      if (!areaPickerReady) {
+        areaPickerReady = true;
+        await initAreaPicker();
+      }
+      await loadAssignments();
+      /* Delegation status (ISSUE 2) lives in the just-loaded
+         assignByUserCache — re-render the picker's checkboxes so a node
+         someone just delegated shows as disabled the next time this tab
+         is opened, not only after the picker is manually re-touched. */
+      renderCities();
+      refreshPicker();
+    } catch (e) {
+      $('adAssignMsg').textContent = '';
+      A.msg($('adAssignMsg'), e.message, 'is-error');
+    }
+  }
+
+  /* ── TASK MANAGEMENT (moved out of Team, redesign 2026-08-24) ─────── */
+  async function loadTaskManagement() {
+    try {
+      var users = await ensureTeamCache();
+      var assignable = users.filter(function (u) { return u.manageable && u.status === 'active'; });
+      var opts = assignable.map(function (u) {
+        return '<option value="' + esc(u.id) + '">' + esc(u.fullName) + ' (' + esc(A.roleLabel(u.role)) + ')</option>';
+      }).join('');
+      $('adTaskUser').innerHTML = opts || '<option value="">No eligible accounts</option>';
+    } catch (e) {
+      A.msg($('adTaskMsg'), e.message, 'is-error');
+    }
+  }
+
   /* ── REMOVED TEAM MEMBERS (CEO-only history view, governance pass) ──
      Collapsed by default, never merged into the active Team list above —
      an archived account must stay invisible everywhere operational
@@ -1325,15 +1544,18 @@
       $('adRemovedCount').textContent = res.removed.length + ' former account(s)';
       $('adRemovedList').innerHTML = res.removed.length
         ? '<div class="ad-table-wrap"><table class="ad-table"><thead><tr>' +
-            '<th>Name</th><th>Role</th><th>Joined</th><th>Removed</th><th>Historical reports</th>' +
+            '<th>Name</th><th>Previous role</th><th>Joined</th><th>Removed</th><th>Reports</th><th>Tasks</th><th>Areas</th>' +
           '</tr></thead><tbody>' +
           res.removed.map(function (u) {
             return '<tr>' +
-              '<td><b>' + esc(u.fullName) + '</b><small style="display:block;">' + esc(u.username) + '</small></td>' +
+              '<td><b>' + esc(u.fullName) + '</b>' + (u.displayTitle ? ' <small>(' + esc(u.displayTitle) + ')</small>' : '') +
+              '<small style="display:block;">' + esc(u.username) + '</small></td>' +
               '<td>Former ' + esc(A.roleLabel(u.role)) + '</td>' +
               '<td>' + esc(A.fmtDate(u.joinedAt)) + '</td>' +
               '<td>' + esc(A.fmtDate(u.removedAt)) + '</td>' +
               '<td class="num">' + u.historicalReportCount + '</td>' +
+              '<td class="num">' + u.historicalTaskCount + '</td>' +
+              '<td class="num">' + u.historicalAreaCount + '</td>' +
             '</tr>';
           }).join('') + '</tbody></table></div>'
         : '<div class="ad-empty">No removed team members.</div>';
@@ -1348,9 +1570,10 @@
     var username = $('adNewUsername').value.trim();
     var password = $('adNewPassword').value;
     var email = $('adNewEmail').value.trim();
+    var displayTitle = $('adNewDisplayTitle').value.trim();
 
     if (!role || !fullName || !username || !password || !email) {
-      A.msg($('adUserMsg'), 'Designation, full name, username, password and email are all required.', 'is-error');
+      A.msg($('adUserMsg'), 'Security role, full name, username, password and email are all required.', 'is-error');
       return;
     }
     if (password.length < 10) {
@@ -1361,13 +1584,15 @@
     this.disabled = true;
     try {
       await A.post(API.adminUsers, {
-        action: 'create', role: role, fullName: fullName, username: username, email: email, password: password
+        action: 'create', role: role, fullName: fullName, username: username, email: email, password: password,
+        displayTitle: displayTitle || undefined
       });
       A.msg($('adUserMsg'), 'Team member created with the password and email you set.', 'is-ok');
       $('adNewFullName').value = '';
       $('adNewUsername').value = '';
       $('adNewPassword').value = '';
       $('adNewEmail').value = '';
+      $('adNewDisplayTitle').value = '';
       await loadTeam();
     } catch (e) {
       A.msg($('adUserMsg'), e.message, 'is-error');
@@ -1400,6 +1625,9 @@
     var del = e.target.closest('[data-delete]');
     var saveEdit = e.target.closest('[data-save-edit]');
     var cancelEdit = e.target.closest('[data-cancel-edit]');
+    var msgOpen = e.target.closest('[data-message]');
+    var msgSend = e.target.closest('[data-msg-send]');
+    var msgCancel = e.target.closest('[data-msg-cancel]');
 
     try {
       if (toggle) {
@@ -1485,7 +1713,36 @@
         await loadTeam();
         await loadAssignments();
       } else if (view) {
-        teamExpanded[userId] = teamExpanded[userId] === 'view' ? null : 'view';
+        var opening = teamExpanded[userId] !== 'view';
+        teamExpanded[userId] = opening ? 'view' : null;
+        renderTeamList();
+        /* Progress/performance (ISSUE 11) is fetched on open, not baked
+           into the team list response — a number nobody is looking at
+           yet shouldn't cost every Team page load. Cached per user for
+           the rest of this session; re-fetched automatically each time
+           View is re-opened via loadTeam()'s natural refresh cycle. */
+        if (opening && !profileCache[userId]) {
+          try {
+            var profRes = await A.get(API.adminUsers + '?profile=' + encodeURIComponent(userId));
+            profileCache[userId] = profRes.profile;
+            renderTeamList();
+          } catch (profErr) { /* the row already shows "Loading…" → falls back silently */ }
+        }
+      } else if (msgOpen) {
+        teamExpanded[userId] = teamExpanded[userId] === 'message' ? null : 'message';
+        renderTeamList();
+      } else if (msgCancel) {
+        teamExpanded[userId] = null;
+        renderTeamList();
+      } else if (msgSend) {
+        var msgDetailRow = row.nextElementSibling;
+        var msgTypeEl = msgDetailRow.querySelector('[data-msg-type]');
+        var msgBodyEl = msgDetailRow.querySelector('[data-msg-body]');
+        var msgBody = msgBodyEl.value.trim();
+        if (!msgBody) { A.msg($('adUserMsg'), 'Write a message before sending.', 'is-error'); return; }
+        var msgRes = await A.post(API.adminUsers, { action: 'message', userId: userId, messageType: msgTypeEl.value, body: msgBody });
+        A.msg($('adUserMsg'), 'Message sent' + (msgRes.emailSent ? ' and emailed.' : ' (in-app only — email did not send).'), 'is-ok');
+        teamExpanded[userId] = null;
         renderTeamList();
       } else if (edit) {
         teamExpanded[userId] = teamExpanded[userId] === 'edit' ? null : 'edit';
@@ -1497,11 +1754,14 @@
         var detailRow = row.nextElementSibling;
         var fullNameEl = detailRow.querySelector('[data-edit-fullname]');
         var emailEl = detailRow.querySelector('[data-edit-email]');
+        var titleEl = detailRow.querySelector('[data-edit-title]');
         var reportsToEl = detailRow.querySelector('[data-edit-reports-to]');
         await A.post(API.adminUsers, {
           action: 'update', userId: userId,
-          fullName: fullNameEl.value.trim(), email: emailEl.value.trim()
+          fullName: fullNameEl.value.trim(), email: emailEl.value.trim(),
+          displayTitle: titleEl.value.trim()
         });
+        delete profileCache[userId];   // designation just changed — the cached profile snapshot is now stale
         if (reportsToEl) {
           await A.post(API.adminUsers, {
             action: 'set-reports-to', userId: userId, reportsToUserId: reportsToEl.value || null

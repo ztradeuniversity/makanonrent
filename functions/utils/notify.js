@@ -162,6 +162,37 @@ export async function publish(env, event) {
   }
 }
 
+/* A CEO-to-one-member message (Team redesign, ISSUE 14) is NOT an
+   audience-resolved event — the recipient is already known, explicitly,
+   by the caller. Routing it through publish()/EVENTS would mean inventing
+   a fake "audience" just to satisfy that shape. Same table, same delivery
+   guarantees (fire-and-forget, never fails the caller's request), just
+   without the resolution step that doesn't apply here. */
+export async function notifyDirect(env, opts) {
+  try {
+    var db = getServiceClient(env);
+    var res = await db.from('notifications').insert({
+      recipient_id: opts.recipientId,
+      event_type: 'ceo.message',
+      title: opts.title,
+      body: opts.body || null,
+      entity_type: 'admin_user',
+      entity_id: opts.recipientId,
+      actor_id: opts.actorId || null,
+      severity: opts.severity || 'info',
+      source: 'ceo_message'
+    });
+    if (res.error) {
+      console.error('notify: direct insert failed', res.error.message);
+      return { sent: false };
+    }
+    return { sent: true };
+  } catch (e) {
+    console.error('notify: notifyDirect threw', e && e.message);
+    return { sent: false };
+  }
+}
+
 export async function markRead(env, userId, ids) {
   var db = getServiceClient(env);
   var q = db.from('notifications')

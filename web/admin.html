@@ -144,7 +144,11 @@
       </div>
     </section>
 
-    <!-- ══ TEAM ══ -->
+    <!-- ══ TEAM ══ (Team management only — Area Assignments and Task
+         Management moved to their own tabs below, redesign audited
+         2026-08-24: the old single Team page mixed identity management
+         with two unrelated operational systems, which is why it read as
+         cluttered rather than as three separate, focused jobs.) -->
     <section class="ad-panel" id="panel-team" role="tabpanel">
       <div class="ad-card" id="adCreateUserCard">
         <div class="ad-card-head">
@@ -153,8 +157,8 @@
         </div>
         <div class="ad-row">
           <div class="ad-field">
-            <label class="ad-label-tip" for="adNewRole">Designation
-              <span class="ad-tip" data-tip="Area Manager, Assistant CEO or Field Officer — this decides the dashboard and permissions the account gets."><button type="button" class="ad-tip-btn" aria-label="What is Designation?">?</button><span class="ad-tip-bubble" role="tooltip"></span></span>
+            <label class="ad-label-tip" for="adNewRole">Security role
+              <span class="ad-tip" data-tip="Area Manager, Assistant CEO or Field Officer — this decides the dashboard and permissions the account gets. A custom designation below never changes this."><button type="button" class="ad-tip-btn" aria-label="What is Security role?">?</button><span class="ad-tip-bubble" role="tooltip"></span></span>
             </label>
             <select class="ad-select" id="adNewRole"></select>
           </div>
@@ -182,6 +186,12 @@
             </label>
             <input class="ad-input" type="email" id="adNewEmail" autocomplete="off" placeholder="name@gmail.com" />
           </div>
+          <div class="ad-field">
+            <label class="ad-label-tip" for="adNewDisplayTitle">Designation (optional)
+              <span class="ad-tip" data-tip="An organizational title shown in the Team tree — e.g. &quot;Senior Field Coordinator&quot;. Display only: it never changes what this account can do, only the security role above does that."><button type="button" class="ad-tip-btn" aria-label="What is Designation?">?</button><span class="ad-tip-bubble" role="tooltip"></span></span>
+            </label>
+            <input class="ad-input" type="text" id="adNewDisplayTitle" autocomplete="off" maxlength="120" placeholder="e.g. Regional Field Lead" />
+          </div>
         </div>
         <div class="ad-actions">
           <button class="ad-btn is-primary" type="button" id="adCreateUser">Create Team Member</button>
@@ -190,9 +200,14 @@
       </div>
 
       <div class="ad-card">
-        <div class="ad-card-head"><b>Team Manager</b><span id="adTeamCount"></span></div>
+        <div class="ad-card-head"><b>Team overview</b><span>Every count is live — nothing here is fixed.</span></div>
+        <div class="ad-stats" id="adTeamOverviewStats"></div>
+      </div>
+
+      <div class="ad-card">
+        <div class="ad-card-head"><b>Team</b><span id="adTeamCount"></span></div>
         <div class="ad-team-toolbar">
-          <input class="ad-input" type="search" id="adTeamSearch" placeholder="Search by name, username or email" aria-label="Search team members" />
+          <input class="ad-input" type="search" id="adTeamSearch" placeholder="Search team by name, username, email or designation" aria-label="Search team members" />
           <select class="ad-select" id="adTeamRoleFilter" aria-label="Filter by role">
             <option value="">All roles</option>
             <option value="assistant_ceo">Assistant CEO</option>
@@ -213,13 +228,16 @@
           <button type="button" class="ad-btn is-sm ad-assign-toggle" id="adRemovedToggle" aria-expanded="false" aria-controls="adRemovedList">
             <span class="ad-chevron" aria-hidden="true">&#9656;</span></button>
           <b>Removed team members
-            <span class="ad-tip" data-tip="Former accounts are never active — they cannot log in, hold assignments or receive new work. Their history (reports, reviews, assignments) stays on record; this is a read-only view of who they were and when they left."><button type="button" class="ad-tip-btn" aria-label="What is Removed team members?">?</button><span class="ad-tip-bubble" role="tooltip"></span></span>
+            <span class="ad-tip" data-tip="Former accounts are never active — they cannot log in, hold assignments or receive new work. Their history (reports, tasks, areas) stays on record; this is a read-only view of who they were and when they left."><button type="button" class="ad-tip-btn" aria-label="What is Removed team members?">?</button><span class="ad-tip-bubble" role="tooltip"></span></span>
           </b>
           <span id="adRemovedCount"></span>
         </div>
         <div id="adRemovedList" hidden></div>
       </div>
+    </section>
 
+    <!-- ══ AREA ASSIGNMENTS ══ (moved out of Team, redesign 2026-08-24) -->
+    <section class="ad-panel" id="panel-areas" role="tabpanel">
       <div class="ad-card">
         <div class="ad-card-head">
           <b>Assign an area
@@ -259,7 +277,10 @@
         <p class="ad-msg" id="adAssignMsg" role="status" aria-live="polite"></p>
         <div id="adAssignmentList" style="margin-top:14px;"></div>
       </div>
+    </section>
 
+    <!-- ══ TASK MANAGEMENT ══ (moved out of Team, redesign 2026-08-24) -->
+    <section class="ad-panel" id="panel-tasks" role="tabpanel">
       <div class="ad-card" id="adTaskCard">
         <div class="ad-card-head"><b>Assign a daily task</b><span>Progress is measured from real work, not self-reported.</span></div>
         <div class="ad-row">

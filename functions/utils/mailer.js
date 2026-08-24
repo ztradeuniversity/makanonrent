@@ -111,6 +111,16 @@ export function renderTemplate(template, payload) {
       text: rl.join('\n')
     };
   }
+  if (template === 'ceo_message') {
+    var ml = [
+      'Hi ' + (payload.recipientName || 'there') + ',',
+      '',
+      'MESSAGE FROM CEO' + (payload.messageType ? ' — ' + payload.messageType : ''),
+      '',
+      payload.body || ''
+    ];
+    return { subject: 'Message from CEO' + (payload.messageType ? ' — ' + payload.messageType : ''), text: ml.join('\n') };
+  }
   if (template === 'notify_available') {
     var lines = [
       'Good news — a verified property matching what you asked for is now available on MakanOnRent.',

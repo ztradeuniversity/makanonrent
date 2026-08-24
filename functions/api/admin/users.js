@@ -17,6 +17,8 @@ import { requireAuth, requireCapability, canManageRole, can, getVisibleSubordina
 import { hashPassword, validatePasswordStrength } from '../../utils/password.js';
 import { revokeAllUserSessions } from '../../utils/session.js';
 import { auditFor } from '../../utils/audit.js';
+import { notifyDirect } from '../../utils/notify.js';
+import { sendQueuedEmail } from '../../utils/mailer.js';
 
 export async function onRequestOptions(context) {
   return preflight(context.env);
@@ -47,7 +49,7 @@ export async function onRequestGet(context) {
         return json(env, { error: 'Only the CEO can view removed team member history.' }, 403);
       }
       var arcRes = await db.from('admin_users')
-        .select('id, username, full_name, email, role, status, created_at, archived_at')
+        .select('id, username, full_name, email, role, display_title, status, created_at, archived_at')
         .eq('status', 'archived')
         .order('archived_at', { ascending: false });
       if (arcRes.error) throw arcRes.error;
@@ -55,10 +57,26 @@ export async function onRequestGet(context) {
       var arcRows = arcRes.data || [];
       var arcIds = arcRows.map(function (u) { return u.id; });
       var reportCounts = {};
+      var taskCounts = {};
+      var areaCounts = {};
       if (arcIds.length) {
         var vRes = await db.from('property_verifications').select('verified_by').in('verified_by', arcIds);
         if (!vRes.error) {
           (vRes.data || []).forEach(function (r) { reportCounts[r.verified_by] = (reportCounts[r.verified_by] || 0) + 1; });
+        }
+        /* Historical task/area counts (ISSUE 17): "Historical Tasks" and
+           "Historical Areas" alongside the report count already computed
+           above — same pattern, no new tables, counted straight off the
+           tables that already carry the CEO's audit obligation. Revoked
+           area rows still exist (never hard-deleted), so this counts ALL
+           rows ever held, not just active ones. */
+        var tRes = await db.from('admin_tasks').select('assigned_to').in('assigned_to', arcIds);
+        if (!tRes.error) {
+          (tRes.data || []).forEach(function (r) { taskCounts[r.assigned_to] = (taskCounts[r.assigned_to] || 0) + 1; });
+        }
+        var aRes = await db.from('admin_area_assignments').select('user_id').in('user_id', arcIds);
+        if (!aRes.error) {
+          (aRes.data || []).forEach(function (r) { areaCounts[r.user_id] = (areaCounts[r.user_id] || 0) + 1; });
         }
       }
 
@@ -66,15 +84,83 @@ export async function onRequestGet(context) {
         removed: arcRows.map(function (u) {
           return {
             id: u.id, username: u.username, fullName: u.full_name, email: u.email, role: u.role,
+            displayTitle: u.display_title || null,
             joinedAt: u.created_at, removedAt: u.archived_at,
-            historicalReportCount: reportCounts[u.id] || 0
+            historicalReportCount: reportCounts[u.id] || 0,
+            historicalTaskCount: taskCounts[u.id] || 0,
+            historicalAreaCount: areaCounts[u.id] || 0
           };
         })
       });
     }
 
+    /* Deep profile / progress (Team redesign, ISSUE 11): real numbers off
+       the SAME tables the rest of the console already reads — admin_tasks
+       (open/completed), property_verifications (field reports submitted),
+       property_verification_reviews (decisions made AS reviewer, and
+       decisions received on their OWN submissions). Nothing here is a
+       stored or derived-elsewhere metric; every count is a live query, so
+       it can never drift from what Verify/Approvals/Monitoring show for
+       the same person. Visibility: CEO sees anyone, a scoped caller only
+       someone in their own hierarchy or themselves — same rule as the
+       Team list itself. */
+    var profileId = url.searchParams.get('profile');
+    if (profileId) {
+      if (auth.user.role !== 'ceo' && profileId !== auth.user.id) {
+        var profVisible = await getVisibleSubordinateIds(env, auth.user);
+        if (profVisible.indexOf(profileId) === -1) {
+          return json(env, { error: 'That team member is outside your own hierarchy.' }, 403);
+        }
+      }
+      var pu = await db.from('admin_users')
+        .select('id, username, full_name, email, role, display_title, status, created_at, last_login_at, last_verification_at, reports_to_user_id')
+        .eq('id', profileId).maybeSingle();
+      if (pu.error) throw pu.error;
+      if (!pu.data) return json(env, { error: 'No such user.' }, 404);
+
+      var reportsToName = null;
+      if (pu.data.reports_to_user_id) {
+        var pParent = await db.from('admin_users').select('full_name').eq('id', pu.data.reports_to_user_id).maybeSingle();
+        if (!pParent.error && pParent.data) reportsToName = pParent.data.full_name;
+      }
+
+      var areaCountRes = await db.from('admin_area_assignments').select('id', { count: 'exact', head: true }).eq('user_id', profileId).eq('active', true);
+      var tasksOpenRes = await db.from('admin_tasks').select('id', { count: 'exact', head: true }).eq('assigned_to', profileId).eq('status', 'open');
+      var tasksDoneRes = await db.from('admin_tasks').select('id', { count: 'exact', head: true }).eq('assigned_to', profileId).eq('status', 'completed');
+      var reportsSubmittedRes = await db.from('property_verifications').select('id', { count: 'exact', head: true }).eq('verified_by', profileId);
+      var reviewedByThemRes = await db.from('property_verification_reviews').select('id', { count: 'exact', head: true }).eq('reviewer_id', profileId).eq('decision', 'reviewed');
+      var returnedByThemRes = await db.from('property_verification_reviews').select('id', { count: 'exact', head: true }).eq('reviewer_id', profileId).eq('decision', 'returned');
+
+      /* "Returned reports" ABOUT this person's own submissions — needs the
+         verification ids they submitted first, since reviews key off
+         verification_id, not the submitter directly. */
+      var ownVerifIds = await db.from('property_verifications').select('id').eq('verified_by', profileId).limit(500);
+      var ownReturnedCount = 0;
+      if (!ownVerifIds.error && (ownVerifIds.data || []).length) {
+        var ids = ownVerifIds.data.map(function (r) { return r.id; });
+        var ownReturnedRes = await db.from('property_verification_reviews').select('id', { count: 'exact', head: true }).in('verification_id', ids).eq('decision', 'returned');
+        if (!ownReturnedRes.error) ownReturnedCount = ownReturnedRes.count || 0;
+      }
+
+      return json(env, {
+        profile: {
+          id: pu.data.id, username: pu.data.username, fullName: pu.data.full_name, email: pu.data.email,
+          role: pu.data.role, displayTitle: pu.data.display_title || null, status: pu.data.status,
+          createdAt: pu.data.created_at, lastLoginAt: pu.data.last_login_at, lastVerificationAt: pu.data.last_verification_at,
+          reportsToName: reportsToName,
+          assignedAreaCount: areaCountRes.count || 0,
+          tasksOpen: tasksOpenRes.count || 0,
+          tasksCompleted: tasksDoneRes.count || 0,
+          fieldReportsSubmitted: reportsSubmittedRes.count || 0,
+          reportsReviewedByThem: reviewedByThemRes.count || 0,
+          reportsReturnedByThem: returnedByThemRes.count || 0,
+          ownSubmissionsReturned: ownReturnedCount
+        }
+      });
+    }
+
     var q = db.from('admin_users')
-      .select('id, username, full_name, email, role, status, last_login_at, last_verification_at, created_at, reports_to_user_id')
+      .select('id, username, full_name, email, role, display_title, status, last_login_at, last_verification_at, created_at, reports_to_user_id')
       .neq('status', 'archived')
       .order('role', { ascending: true })
       .order('full_name', { ascending: true });
@@ -104,6 +190,7 @@ export async function onRequestGet(context) {
       users: (res.data || []).map(function (u) {
         return {
           id: u.id, username: u.username, fullName: u.full_name, email: u.email, role: u.role,
+          displayTitle: u.display_title || null,
           status: u.status, lastLoginAt: u.last_login_at,
           lastVerificationAt: u.last_verification_at, createdAt: u.created_at,
           reportsToUserId: u.reports_to_user_id || null,
@@ -180,12 +267,18 @@ export async function onRequestPost(context) {
       var weak = validatePasswordStrength(body.password);
       if (weak) return json(env, { error: weak }, 422);
 
+      /* Custom designation (migration 0016) — display only, never read by
+         canManageRole/can/PERMISSIONS. `role` above is the only thing
+         that ever decides what this account can do. */
+      var displayTitle = isNonEmptyString(body.displayTitle, 120) ? String(body.displayTitle).trim() : null;
+
       var pw = await hashPassword(body.password);
       var ins = await db.from('admin_users').insert({
         username: String(body.username).trim().toLowerCase(),
         full_name: body.fullName,
         email: email,
         role: role,
+        display_title: displayTitle,
         frozen_role: FROZEN_ROLE[role],
         password_hash: pw.hash, password_salt: pw.salt, password_algo: pw.algo,
         must_change_password: true,
@@ -238,6 +331,15 @@ export async function onRequestPost(context) {
         patchFields.email = String(body.email).trim().toLowerCase();
         patchFields.email_verified_at = null;
       }
+      /* Empty string clears the title (falls back to the plain role
+         label everywhere it's displayed) — only `undefined`/absent means
+         "leave it alone", same convention email/fullName already use via
+         `!= null`. */
+      if (body.displayTitle != null) {
+        var titleTrim = String(body.displayTitle).trim();
+        if (titleTrim.length > 120) return json(env, { error: 'Designation must be 120 characters or fewer.' }, 422);
+        patchFields.display_title = titleTrim || null;
+      }
       if (!Object.keys(patchFields).length) {
         return json(env, { error: 'Nothing to update.' }, 422);
       }
@@ -252,6 +354,52 @@ export async function onRequestPost(context) {
 
       await audit('update_user', 'admin_user', body.userId, { fields: Object.keys(patchFields), username: editTarget.data.username });
       return json(env, { ok: true });
+    }
+
+    /* ── message (CEO → one team member, Team redesign ISSUE 14) ──────
+       Delivered through the SAME notification bus every other event in
+       this console uses (notify.js, reused via notifyDirect — no second
+       table) and the SAME shared mailer OTP/task/owner mail already goes
+       through (mailer.js — no second provider). Email is best-effort:
+       the in-app notification is the guaranteed delivery; a missing or
+       unreachable inbox never blocks the message from reaching the
+       recipient's dashboard. */
+    if (body.action === 'message') {
+      if (!can(auth.user.role, 'users.message')) {
+        return json(env, { error: 'Your role does not permit this action.' }, 403);
+      }
+      if (!isNonEmptyString(body.userId, 60)) return json(env, { error: 'userId is required.' }, 422);
+      if (!isNonEmptyString(body.body, 4000)) return json(env, { error: 'A message body is required.' }, 422);
+      var msgType = ['appreciation', 'general', 'warning', 'important'].indexOf(body.messageType) > -1 ? body.messageType : 'general';
+
+      var msgTarget = await db.from('admin_users').select('id, full_name, email, role, status').eq('id', body.userId).maybeSingle();
+      if (msgTarget.error) throw msgTarget.error;
+      if (!msgTarget.data) return json(env, { error: 'No such user.' }, 404);
+      if (!canManageRole(auth.user.role, msgTarget.data.role)) {
+        return json(env, { error: 'You cannot message that user.' }, 403);
+      }
+
+      var msgSeverity = msgType === 'warning' ? 'warning' : msgType === 'important' ? 'critical' : 'info';
+      var msgTypeLabel = msgType.charAt(0).toUpperCase() + msgType.slice(1);
+      var notifyRes = await notifyDirect(env, {
+        recipientId: body.userId, actorId: auth.user.id, severity: msgSeverity,
+        title: 'Message from CEO' + (msgType !== 'general' ? ' — ' + msgTypeLabel : ''),
+        body: body.body
+      });
+
+      var emailSent = false;
+      if (msgTarget.data.email) {
+        try {
+          var mailRes = await sendQueuedEmail(env, db, {
+            toEmail: msgTarget.data.email, template: 'ceo_message',
+            payload: { recipientName: msgTarget.data.full_name, messageType: msgTypeLabel, body: body.body }
+          });
+          emailSent = !!mailRes.sent;
+        } catch (mailErr) { /* in-app delivery already succeeded; email is a bonus channel */ }
+      }
+
+      await audit('message_sent', 'admin_user', body.userId, { messageType: msgType, delivered: notifyRes.sent, emailSent: emailSent });
+      return json(env, { ok: true, delivered: notifyRes.sent, emailSent: emailSent });
     }
 
     /* ── set-reports-to (reporting hierarchy) ──────────────────────────

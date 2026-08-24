@@ -40,6 +40,12 @@ export var PERMISSIONS = {
      (migration 0014, admin_users.reports_to_user_id). Same CEO-only
      reasoning as the rest of identity management above. */
   'users.set_reports_to':        ['ceo'],
+  /* Team redesign (migration 0016): a direct message FROM the CEO TO one
+     team member, delivered through the existing notification bus + mailer
+     — CEO-only, same identity-management reasoning as the rest of this
+     block. Not a capability any other role gains a symmetric version of;
+     there is no peer-to-peer or upward messaging in this brief. */
+  'users.message':               ['ceo'],
 
   /* — area assignment (City → Main → Sub) — */
   'areas.assign':               ['ceo', 'assistant_ceo', 'manager'],
