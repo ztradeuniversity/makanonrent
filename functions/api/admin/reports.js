@@ -14,7 +14,7 @@
    in a Worker is the thing that falls over first (ADR 0002 §9). */
 import { json, preflight } from '../../utils/cors.js';
 import { getServiceClient } from '../../utils/supabase.js';
-import { requireCapability } from '../../utils/rbac.js';
+import { requireCapability, getVisibleSubordinateIds } from '../../utils/rbac.js';
 
 export async function onRequestOptions(context) {
   return preflight(context.env);
@@ -46,7 +46,16 @@ export async function onRequestGet(context) {
       var q = db.from('admin_report_manager_ranking')
         .select('*')
         .order('performance_score', { ascending: false, nullsFirst: false });
-      if (auth.user.role === 'assistant_ceo') q = q.eq('role', 'manager');
+      /* Same hierarchy leak already found and fixed in users.js/
+         assignments.js/monitor.js (governance pass, audited 2026-08-24):
+         `.eq('role', 'manager')` alone ranked every Manager system-wide
+         for any Assistant CEO, not just their own. getVisibleSubordinateIds
+         is the same shared definition every other endpoint uses. */
+      if (auth.user.role === 'assistant_ceo') {
+        var reportMgrIds = await getVisibleSubordinateIds(env, auth.user);
+        q = reportMgrIds.length ? q.eq('role', 'manager').in('user_id', reportMgrIds)
+          : q.eq('user_id', '00000000-0000-0000-0000-000000000000');
+      }
 
       var res = await q;
       if (res.error) throw res.error;

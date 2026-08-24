@@ -8,7 +8,7 @@
    apart the first time either is edited. */
 import { json, preflight } from '../../utils/cors.js';
 import { getServiceClient } from '../../utils/supabase.js';
-import { requireCapability } from '../../utils/rbac.js';
+import { requireCapability, getVisibleSubordinateIds } from '../../utils/rbac.js';
 
 export async function onRequestOptions(context) {
   return preflight(context.env);
@@ -27,8 +27,19 @@ export async function onRequestGet(context) {
     var db = getServiceClient(env);
     var q = db.from('admin_manager_overview').select('*').order('full_name', { ascending: true });
 
-    /* An Assistant CEO monitors Managers; the CEO monitors everyone. */
-    if (auth.user.role === 'assistant_ceo') q = q.eq('role', 'manager');
+    /* An Assistant CEO monitors Managers — but ONLY their own (governance
+       pass, audited 2026-08-24 — this had exactly the same unscoped bug
+       already found and fixed in users.js/assignments.js: `.eq('role',
+       'manager')` alone returned every Manager system-wide to any
+       Assistant CEO, not just their own hierarchy). getVisibleSubordinateIds
+       is the same shared hierarchy definition every other endpoint now
+       uses, so Monitoring can never show a different roster than Team
+       does. The CEO monitors everyone — unfiltered. */
+    if (auth.user.role === 'assistant_ceo') {
+      var monitorIds = await getVisibleSubordinateIds(env, auth.user);
+      q = monitorIds.length ? q.eq('role', 'manager').in('user_id', monitorIds)
+        : q.eq('user_id', '00000000-0000-0000-0000-000000000000');
+    }
 
     var res = await q;
     if (res.error) throw res.error;

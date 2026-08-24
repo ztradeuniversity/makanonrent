@@ -168,6 +168,8 @@
   background: var(--surface); margin-bottom: 8px;
 }
 .ad-verify-row.is-blocked { background: var(--paper); opacity: .72; }
+.ad-sub.is-blocked { opacity: .6; }
+.ad-sub.is-blocked span { font-style: italic; }
 .ad-verify-row .ad-grow { flex: 1; min-width: 180px; }
 .ad-verify-row b { font-size: 14px; font-weight: 750; color: var(--text); }
 .ad-verify-row small { display: block; font-size: 12px; color: var(--muted); font-weight: 600; }

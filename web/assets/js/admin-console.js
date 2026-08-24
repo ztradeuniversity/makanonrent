@@ -136,10 +136,28 @@
       var managers = users.filter(function (u) { return u.role === 'manager' && u.status === 'active'; }).length;
       var fos = users.filter(function (u) { return u.role === 'field_officer' && u.status === 'active'; }).length;
 
+      /* MY ACTIVE AREAS vs MY AVAILABLE AREAS TO DELEGATE (ISSUE 2C/5) —
+         two different questions, deliberately not the same number.
+         "Active" is everything ME.areas already reports (every node this
+         caller currently holds). "Available to delegate" is that same
+         set MINUS whatever a subordinate already holds too — read off
+         the SAME per-row delegatedTo flag the picker and assignment list
+         use, fetched directly here (own userId) rather than assuming
+         assignByUserCache is already warm, since Today can load before
+         the Team tab ever has. */
       var areas = (ME && ME.areas) || [];
       var cities = areas.filter(function (a) { return a.level === 'city'; }).length;
       var mains = areas.filter(function (a) { return a.level === 'main'; }).length;
       var subs = areas.filter(function (a) { return a.level === 'sub'; }).length;
+
+      var availCities = cities, availMains = mains, availSubs = subs;
+      try {
+        var mineRes = await A.get(API.adminAssignments + '?userId=' + encodeURIComponent(ME.user.id));
+        var delegatedRows = (mineRes.assignments || []).filter(function (a) { return a.delegatedTo; });
+        availCities -= delegatedRows.filter(function (a) { return a.level === 'city'; }).length;
+        availMains -= delegatedRows.filter(function (a) { return a.level === 'main'; }).length;
+        availSubs -= delegatedRows.filter(function (a) { return a.level === 'sub'; }).length;
+      } catch (e) { /* stat card degrades to "active === available", not a hard error */ }
 
       var reviewPending = 0;
       if (can('verification.review')) {
@@ -152,9 +170,9 @@
       var parts = [];
       if (ME.user.role === 'assistant_ceo') parts.push(stat(managers, 'Area Managers'));
       parts.push(stat(fos, 'Field Officers'));
-      parts.push(stat(cities, 'Cities'));
-      parts.push(stat(mains, 'Main locations'));
-      parts.push(stat(subs, 'Sub locations'));
+      parts.push(stat(cities + ' / ' + availCities, 'Cities (active / available)'));
+      parts.push(stat(mains + ' / ' + availMains, 'Main locations (active / available)'));
+      parts.push(stat(subs + ' / ' + availSubs, 'Sub locations (active / available)'));
       parts.push(stat(reviewPending, 'Reports awaiting review', true));
       $('adOverviewStats').innerHTML = parts.join('');
     } catch (e) {
@@ -884,6 +902,9 @@
   }
 
   /* ── TEAM ───────────────────────────────────────────────────────── */
+  /* 'manager' MUST precede 'field_officer' — renderTeamList's FO-nesting
+     pass (ISSUE 1) populates consumedFoIds while rendering the manager
+     group and reads it while rendering the field_officer group. */
   var ROLE_GROUPS = ['manager', 'assistant_ceo', 'field_officer'];
   var ROLE_DESC = {
     manager: 'Supervises Field Officers and reviews their property/location work within assigned areas.',
@@ -907,6 +928,7 @@
   var teamFilters = { q: '', role: '', status: '' };
   var teamExpanded = {};   // userId -> 'view' | 'edit'
   var teamGroupExpanded = {};   // role -> collapsed(false, default)/expanded(true)
+  var mgrFoExpanded = {};   // managerId -> true when their nested Field Officer list is open (ISSUE 1, governance pass)
   var teamBound = false;
 
   /* Moves each element's `data-tip` attribute into its sibling bubble once,
@@ -950,7 +972,7 @@
     });
   }
 
-  function renderUserRow(u) {
+  function renderUserRow(u, namePrefix) {
     var mode = teamExpanded[u.id];
     /* identityManageable (CEO-only, migration 0014) gates account-lifecycle
        actions specifically — `manageable` alone would still be true for an
@@ -971,7 +993,7 @@
     }
 
     var row = '<tr data-user="' + esc(u.id) + '">' +
-      '<td><b>' + esc(u.fullName) + '</b></td>' +
+      '<td>' + (namePrefix || '') + '<b>' + esc(u.fullName) + '</b></td>' +
       '<td>' + esc(u.username) + '</td>' +
       '<td>' + esc(u.email || '—') + '</td>' +
       '<td><span class="ad-pill ' + (u.status === 'active' ? 'is-ok' : 'is-danger') + '">' + esc(u.status) + '</span></td>' +
@@ -1069,6 +1091,41 @@
     return row;
   }
 
+  /* Manager row + its nested Field Officers (ISSUE 1: "Manager name, role,
+     active status, number of assigned areas, number of Field Officers,
+     assigned-area summary… then inside that Manager's expandable section,
+     show all Field Officers directly under that Manager"). Collapsed by
+     default (mgrFoExpanded), auto-open only while actively searching —
+     same convention the role-group chevrons already use, so the whole
+     tree behaves consistently whether you're collapsing a role or a
+     single Manager. assignByUserCache comes from loadAssignments(), which
+     loadTeam() always awaits before this ever renders. */
+  function renderManagerWithFos(mgr, mgrFos, searching) {
+    var mgrAreas = assignByUserCache[mgr.id] || [];
+    var expanded = searching || !!mgrFoExpanded[mgr.id];
+    var toggle = '<button class="ad-btn is-sm ad-assign-toggle" type="button" data-toggle-mgr-fos="' + esc(mgr.id) + '" ' +
+      'aria-expanded="' + expanded + '" aria-controls="mgrFos-' + esc(mgr.id) + '">' +
+      '<span class="ad-chevron' + (expanded ? ' is-open' : '') + '" aria-hidden="true">&#9656;</span></button> ';
+    var badge = '<span class="ad-pill">' + mgrFos.length + ' FO' + (mgrFos.length === 1 ? '' : 's') + '</span> ' +
+      '<span class="ad-pill">' + mgrAreas.length + ' area' + (mgrAreas.length === 1 ? '' : 's') + '</span> ';
+    var mgrRow = renderUserRow(mgr, toggle + badge);
+
+    if (!mgrFos.length) return mgrRow;
+
+    var nested = '<tr id="mgrFos-' + esc(mgr.id) + '"' + (expanded ? '' : ' hidden') + '><td colspan="7" style="padding:0;">' +
+      '<table class="ad-table" style="margin-left:28px;width:calc(100% - 28px);">' +
+        '<tbody>' + mgrFos.map(function (fo) {
+          var foAreas = assignByUserCache[fo.id] || [];
+          return renderUserRow(fo, '↳ <small style="color:var(--ad-muted,#888);">' +
+            (foAreas.length ? esc(assignSummary(foAreas)) : 'No areas assigned') + '</small><br/>');
+        }).join('') +
+        '</tbody>' +
+      '</table>' +
+    '</td></tr>';
+
+    return mgrRow + nested;
+  }
+
   function renderTeamList() {
     var rows = filteredTeam();
     $('adTeamCount').textContent = teamCache.length + ' account(s)' +
@@ -1089,8 +1146,27 @@
     var tail = '</tbody></table></div>';
 
     var searching = !!teamFilters.q.trim();
+
+    /* Nested hierarchy tree (ISSUE 1, governance pass, audited 2026-08-24):
+       whenever the viewer can see BOTH Managers and Field Officers in the
+       same list — CEO or Assistant CEO, since /api/admin/users now scopes
+       an Assistant CEO to their own hierarchy rather than dropping every
+       Manager/FO into two disconnected flat groups — nest each Manager's
+       Field Officers directly under them via reports_to_user_id, and drop
+       those FOs from the separate FIELD OFFICER group so nobody appears
+       twice. A Manager viewing their OWN team never has a 'manager' group
+       to nest under (their teamCache is FOs only), so this naturally
+       no-ops for them and the flat list is unchanged.
+       consumedFoIds is populated while rendering 'manager' and read while
+       rendering 'field_officer' — this depends on 'manager' preceding
+       'field_officer' in ROLE_GROUPS, true today and asserted by the
+       ROLE_GROUPS declaration comment. */
+    var consumedFoIds = {};
     var html = ROLE_GROUPS.map(function (role) {
       var members = rows.filter(function (u) { return u.role === role; });
+      if (role === 'field_officer') {
+        members = members.filter(function (u) { return !consumedFoIds[u.id]; });
+      }
       if (!members.length) return '';
       /* Collapsed by default (audited gap: previously every role section
          and every row rendered open at once). A search match auto-opens
@@ -1098,6 +1174,18 @@
          someone would defeat the point of searching — without permanently
          changing the stored collapsed/expanded preference. */
       var expanded = searching || !!teamGroupExpanded[role];
+
+      var bodyRows;
+      if (role === 'manager') {
+        bodyRows = members.map(function (mgr) {
+          var mgrFos = rows.filter(function (u) { return u.role === 'field_officer' && u.reportsToUserId === mgr.id; });
+          mgrFos.forEach(function (fo) { consumedFoIds[fo.id] = true; });
+          return renderManagerWithFos(mgr, mgrFos, searching);
+        }).join('');
+      } else {
+        bodyRows = members.map(function (u) { return renderUserRow(u); }).join('');
+      }
+
       return '<div class="ad-team-group">' +
         '<button type="button" class="ad-btn is-sm ad-assign-toggle" data-toggle-group="' + esc(role) + '" ' +
         'aria-expanded="' + expanded + '" aria-controls="teamGroup-' + esc(role) + '">' +
@@ -1110,7 +1198,7 @@
             '<span class="ad-tip-bubble" role="tooltip"></span></span>' +
         '</div>' +
         '<div id="teamGroup-' + esc(role) + '"' + (expanded ? '' : ' hidden') + '>' +
-          head + members.map(renderUserRow).join('') + tail +
+          head + bodyRows + tail +
         '</div>' +
       '</div>';
     }).join('');
@@ -1166,6 +1254,23 @@
          redrawn on every unrelated loadTeam() call. */
 
       await loadAssignments();
+
+      /* The FIRST renderTeamList() above ran before assignByUserCache was
+         populated (loadAssignments() had not resolved yet), so every
+         Manager's area-count badge and every nested FO's area summary
+         (ISSUE 1) rendered against stale/empty data. Re-render now that
+         it's fresh — cheap (pure DOM string rebuild) and the only way
+         those numbers are ever correct on load rather than only after
+         some unrelated interaction forces a second render. */
+      renderTeamList();
+
+      /* Delegation status (ISSUE 2) lives in the same freshly-loaded
+         assignByUserCache — re-render the picker's checkboxes so a node
+         someone just delegated shows as disabled the next time this tab
+         is opened, not only after the picker is manually re-touched.
+         Safe to call unconditionally: renderCities/refreshPicker are pure
+         render functions, never listener binders. */
+      if (areaPickerReady) { renderCities(); refreshPicker(); }
     } catch (e) {
       $('adUserList').innerHTML = '<div class="ad-empty">' + esc(e.message) + '</div>';
     }
@@ -1176,6 +1281,13 @@
       $('adTeamRoleFilter').addEventListener('change', function () { teamFilters.role = this.value; renderTeamList(); });
       $('adTeamStatusFilter').addEventListener('change', function () { teamFilters.status = this.value; renderTeamList(); });
       $('adUserList').addEventListener('click', function (e) {
+        var mgrToggle = e.target.closest('[data-toggle-mgr-fos]');
+        if (mgrToggle) {
+          var mgrId = mgrToggle.getAttribute('data-toggle-mgr-fos');
+          mgrFoExpanded[mgrId] = !mgrFoExpanded[mgrId];
+          renderTeamList();
+          return;
+        }
         var groupToggle = e.target.closest('[data-toggle-group]');
         if (!groupToggle) return;
         var role = groupToggle.getAttribute('data-toggle-group');
@@ -1450,9 +1562,26 @@
 
         var detail = '<div class="ad-detail-grid" id="assignRows-' + esc(userId) + '"' + (expanded ? '' : ' hidden') + '>' +
           rows.map(function (a) {
-            return '<div class="ad-verify-row" data-assignment="' + esc(a.id) + '">' +
+            /* Ownership/delegation lineage (ISSUE 2A/2B/6): the ORIGINAL
+               grant row is never deleted or rewritten when its holder
+               delegates it onward — it just stops being the operational
+               owner. Both facts come straight off this same row, no
+               second history table: who granted it (assignedByName/
+               createdAt, already stored on every row) and, if someone
+               downstream now also holds this exact node, who it was
+               delegated onward to (server-computed from the same result
+               set — never a client-side guess). */
+            var lineage = '<small style="display:block;">' +
+              (a.assignedByName ? 'Assigned by ' + esc(a.assignedByName) + ' · ' : '') +
+              esc(A.fmtDateTime(a.createdAt)) +
+            '</small>';
+            var delegatedNote = a.delegatedTo
+              ? '<span class="ad-pill is-warn">Delegated to ' + esc(a.delegatedTo.name) + ' (' + esc(A.roleLabel(a.delegatedTo.role)) + ')</span>'
+              : '';
+            return '<div class="ad-verify-row" data-assignment="' + esc(a.id) + '" style="align-items:flex-start;">' +
               '<div class="ad-grow"><b>' + esc(a.areaName || a.nodeId) + '</b>' +
-              '<small>' + esc(a.nodeId) + ' · ' + esc(a.level) + '</small></div>' +
+              '<small>' + esc(a.nodeId) + ' · ' + esc(a.level) + '</small>' + lineage + '</div>' +
+              delegatedNote + ' ' +
               '<button class="ad-btn is-sm" type="button" data-transfer="' + esc(userId) + '">Transfer</button>' + tipSpan('transfer', 'Transfer') + ' ' +
               '<button class="ad-btn is-sm is-danger" type="button" data-remove>Remove</button>' + tipSpan('revoke', 'Remove') +
             '</div>';
@@ -1533,6 +1662,21 @@
     return all.filter(function (s) { return withinMyScope(s.id); });
   }
 
+  /* ── delegation ownership (ISSUE 2) ────────────────────────────────
+     A node the caller holds is no longer THEIRS to delegate again once
+     someone downstream in their own hierarchy already holds it — the
+     server (assignments.js GET) computes this per-row as `delegatedTo`
+     from the same result set assignByUserCache is built from, so the
+     picker and the assignment list below can never show two different
+     answers for the same node. Nothing here re-derives delegation from
+     scratch; it just reads what the server already decided. */
+  function myDelegatedNodes() {
+    var mine = (ME && assignByUserCache[ME.user.id]) || [];
+    var map = {};
+    mine.forEach(function (a) { if (a.delegatedTo) map[a.nodeId] = a.delegatedTo; });
+    return map;
+  }
+
   /* Multi-city / multi-main / multi-sub picker (replaces the old
      single-select City/Main <select> pair — audited gap: a CEO assigning
      one manager across several cities previously had to repeat the whole
@@ -1565,8 +1709,9 @@
      I hold here": every main scopedGetMainAreas already limited them to. */
   function computeSelection() {
     var out = [];
-    Object.keys(citySel).filter(function (id) { return citySel[id]; }).forEach(function (cityId) {
-      var mains = scopedGetMainAreas(cityId);
+    var delegated = myDelegatedNodes();
+    Object.keys(citySel).filter(function (id) { return citySel[id] && !delegated[id]; }).forEach(function (cityId) {
+      var mains = scopedGetMainAreas(cityId).filter(function (m) { return !delegated[m.id]; });
       var checkedMains = mains.filter(function (m) { return mainSel[m.id]; });
       if (!checkedMains.length) {
         if (withinMyScope(cityId)) {
@@ -1577,7 +1722,7 @@
         return;
       }
       checkedMains.forEach(function (m) {
-        var subs = scopedGetSubAreas(m.id);
+        var subs = scopedGetSubAreas(m.id).filter(function (s) { return !delegated[s.id]; });
         var checkedSubs = subs.filter(function (s) { return subSel[s.id]; });
         if (!checkedSubs.length || (subs.length && checkedSubs.length === subs.length)) {
           out.push({ id: m.id, name: m.name, level: 'main' });
@@ -1633,10 +1778,13 @@
   function renderCities() {
     var q = citySearchQ.trim().toLowerCase();
     var list = scopedListCities().filter(function (c) { return !q || c.name.toLowerCase().indexOf(q) > -1; });
+    var delegated = myDelegatedNodes();
     $('adAssignCities').innerHTML = list.length
       ? list.map(function (c) {
-          return '<label class="ad-sub"><input type="checkbox" data-city="' + esc(c.id) + '"' +
-            (citySel[c.id] ? ' checked' : '') + ' /><span>' + esc(c.name) + '</span></label>';
+          var d = delegated[c.id];
+          return '<label class="ad-sub' + (d ? ' is-blocked' : '') + '"><input type="checkbox" data-city="' + esc(c.id) + '"' +
+            (citySel[c.id] ? ' checked' : '') + (d ? ' disabled' : '') + ' /><span>' + esc(c.name) +
+            (d ? ' — already assigned to ' + esc(d.name) : '') + '</span></label>';
         }).join('')
       : '<div class="ad-empty">' + (myScopeNodeIds() !== null && !myScopeNodeIds().length
           ? 'You have no assigned areas to delegate from yet.' : 'No city matches that.') + '</div>';
@@ -1644,10 +1792,12 @@
 
   function renderHierarchy() {
     var selectedCityIds = Object.keys(citySel).filter(function (id) { return citySel[id]; });
+    var delegated = myDelegatedNodes();
     $('adAssignHierarchy').innerHTML = selectedCityIds.map(function (cityId) {
       var mains = scopedGetMainAreas(cityId);
       var mainRows = mains.length ? mains.map(function (m) {
         var checked = !!mainSel[m.id];
+        var mDeleg = delegated[m.id];
         var subBlock = '';
         if (checked) {
           var subs = scopedGetSubAreas(m.id);
@@ -1655,13 +1805,16 @@
             ? '<div class="ad-sub-tools"><button class="ad-btn is-sm" type="button" data-sub-all="' + esc(m.id) + '">Select all</button>' +
               '<button class="ad-btn is-sm" type="button" data-sub-none="' + esc(m.id) + '">Clear</button></div>' +
               '<div class="ad-sublist" style="margin:6px 0 10px 20px;">' + subs.map(function (s) {
-                return '<label class="ad-sub"><input type="checkbox" data-sub="' + esc(s.id) + '" data-sub-main="' + esc(m.id) + '"' +
-                  (subSel[s.id] ? ' checked' : '') + ' /><span>' + esc(s.name) + '</span></label>';
+                var sDeleg = delegated[s.id];
+                return '<label class="ad-sub' + (sDeleg ? ' is-blocked' : '') + '"><input type="checkbox" data-sub="' + esc(s.id) + '" data-sub-main="' + esc(m.id) + '"' +
+                  (subSel[s.id] ? ' checked' : '') + (sDeleg ? ' disabled' : '') + ' /><span>' + esc(s.name) +
+                  (sDeleg ? ' — already assigned to ' + esc(sDeleg.name) : '') + '</span></label>';
               }).join('') + '</div>'
             : '<div class="ad-empty" style="margin-left:20px;">No sub locations published — this main location is assigned whole.</div>';
         }
-        return '<label class="ad-sub"><input type="checkbox" data-main="' + esc(m.id) + '" data-main-city="' + esc(cityId) + '"' +
-          (checked ? ' checked' : '') + ' /><span>' + esc(m.name) + '</span></label>' + subBlock;
+        return '<label class="ad-sub' + (mDeleg ? ' is-blocked' : '') + '"><input type="checkbox" data-main="' + esc(m.id) + '" data-main-city="' + esc(cityId) + '"' +
+          (checked ? ' checked' : '') + (mDeleg ? ' disabled' : '') + ' /><span>' + esc(m.name) +
+          (mDeleg ? ' — already assigned to ' + esc(mDeleg.name) : '') + '</span></label>' + subBlock;
       }).join('') : '<div class="ad-empty">No main locations published — assigning ' + esc(cityName(cityId)) + ' covers the whole city.</div>';
 
       return '<div class="ad-field"><label>Main Locations — ' + esc(cityName(cityId)) + '</label>' + mainRows + '</div>';

@@ -41,8 +41,29 @@ export async function onRequestGet(context) {
     var url = new URL(context.request.url);
     var userId = url.searchParams.get('userId');
 
-    /* A Manager or Field Officer may only ever read their own assignments. */
-    if (auth.user.role === 'manager' || auth.user.role === 'field_officer') userId = auth.user.id;
+    /* Hierarchy scope (governance pass, audited 2026-08-24 — root cause of
+       BOTH the Assistant CEO team-tree gap and the delegation-ownership
+       confusion in the same pass): this endpoint was NEVER actually
+       scoped for assistant_ceo — with no ?userId it ran completely
+       unfiltered, returning every active assignment for every user in
+       the system. A Manager/FO, conversely, was hard-locked to ONLY
+       their own row, which silently excluded a Manager's own Field
+       Officers' assignments — the Team tree could never show what it
+       had no data for. getVisibleSubordinateIds is the same hierarchy
+       definition users.js/tasks.js/assignments.js POST already enforce;
+       reusing it here means the LIST a caller sees and what those
+       endpoints will ACT on can no longer disagree. */
+    if (auth.user.role !== 'ceo') {
+      var hierarchyIds = await getVisibleSubordinateIds(env, auth.user);
+      var allowedIds = hierarchyIds.concat([auth.user.id]);
+      if (userId) {
+        if (allowedIds.indexOf(userId) === -1) {
+          return json(env, { error: 'That team member is outside your own hierarchy.' }, 403);
+        }
+      } else {
+        userId = null; // fall through to the .in() filter below
+      }
+    }
 
     /* admin_area_assignments carries TWO FKs to admin_users (user_id AND
        assigned_by — migration 0004), so a bare `admin_users!inner(...)`
@@ -56,23 +77,60 @@ export async function onRequestGet(context) {
        appearing as if still operational). The row and its history are
        untouched; this only changes what this read returns. */
     var q = db.from('admin_area_assignments')
-      .select('id, user_id, node_id, scope_level, created_at, admin_users!admin_area_assignments_user_id_fkey!inner(full_name, role, status), locations!inner(name)')
+      .select('id, user_id, node_id, scope_level, created_at, assigned_by, ' +
+        'admin_users!admin_area_assignments_user_id_fkey!inner(full_name, role, status), ' +
+        'assigner:admin_users!admin_area_assignments_assigned_by_fkey(full_name), ' +
+        'locations!inner(name)')
       .eq('active', true)
       .eq('admin_users.status', 'active')
       .order('node_id', { ascending: true });
-    if (userId) q = q.eq('user_id', userId);
+    if (userId) {
+      q = q.eq('user_id', userId);
+    } else if (auth.user.role !== 'ceo') {
+      q = q.in('user_id', allowedIds);
+    }
 
     var res = await q;
     if (res.error) throw res.error;
 
+    /* Delegation-ownership annotation (ISSUE 2): for each row, if some
+       OTHER user within the same caller's hierarchy holds this exact
+       node actively too, the row is annotated with who it was delegated
+       onward to — so a superior's own original grant is never deleted or
+       hidden, just marked "no longer the operational owner". Computed
+       from the SAME result set already fetched above; no second query,
+       no second source of truth. Only meaningful for callers who can see
+       more than one tier (ceo/assistant_ceo) — a Manager's own rows have
+       no subordinate rows to compare against unless FOs are in the same
+       result set, which they now correctly are. */
+    var rows = res.data || [];
+    var byNode = {};
+    rows.forEach(function (a) {
+      if (!byNode[a.node_id]) byNode[a.node_id] = [];
+      byNode[a.node_id].push(a);
+    });
+    var roleRank = { ceo: 0, assistant_ceo: 1, manager: 2, field_officer: 3 };
+
     return json(env, {
-      assignments: (res.data || []).map(function (a) {
+      assignments: rows.map(function (a) {
+        var siblings = byNode[a.node_id].filter(function (x) { return x.id !== a.id; });
+        /* "Delegated onward" = someone LOWER in the hierarchy (higher
+           roleRank) holds the identical node — never the reverse, so a
+           Manager's row never claims to be "delegated to" their own
+           Assistant CEO. */
+        var delegatedTo = siblings.find(function (x) {
+          return (roleRank[x.admin_users.role] || 0) > (roleRank[a.admin_users.role] || 0);
+        });
         return {
           id: a.id, userId: a.user_id, nodeId: a.node_id, level: a.scope_level,
           areaName: a.locations && a.locations.name,
           userName: a.admin_users && a.admin_users.full_name,
           userRole: a.admin_users && a.admin_users.role,
-          createdAt: a.created_at
+          createdAt: a.created_at,
+          assignedByName: a.assigner && a.assigner.full_name || null,
+          delegatedTo: delegatedTo
+            ? { userId: delegatedTo.user_id, name: delegatedTo.admin_users.full_name, role: delegatedTo.admin_users.role }
+            : null
         };
       })
     });
