@@ -9,7 +9,7 @@
 import { json, preflight } from '../../utils/cors.js';
 import { getServiceClient } from '../../utils/supabase.js';
 import { isNonEmptyString } from '../../utils/validate.js';
-import { requireAuth, requireCapability, canManageRole, can } from '../../utils/rbac.js';
+import { requireAuth, requireCapability, canManageRole, can, getManagedManagerIds, getScopeNodeIds, isWithinScope } from '../../utils/rbac.js';
 import { auditFor } from '../../utils/audit.js';
 import { sendQueuedEmail } from '../../utils/mailer.js';
 
@@ -40,6 +40,31 @@ export async function onRequestGet(context) {
     var q = db.from('admin_task_progress')
       .select('task_id, assigned_to, assigned_by, task_type, title, notes, target_count, due_date, status, area_node_id, completed_count')
       .eq('due_date', date);
+
+    /* tasks.list.any grants the CAPABILITY to pass a userId, but for
+       Assistant CEO it must still stop at the hierarchy boundary — "any"
+       meant "not just yourself", never "anyone in the company" (migration
+       0014, approved 2026-08-24). Same reports_to + area-overlap FO
+       resolution as users.js's Team list scoping. */
+    if (auth.user.role === 'assistant_ceo') {
+      var hierarchyIds = await getManagedManagerIds(env, auth.user.id);
+      var aceoScope = await getScopeNodeIds(env, auth.user);
+      var foRows = await db.from('admin_area_assignments')
+        .select('user_id, node_id, admin_users!admin_area_assignments_user_id_fkey!inner(role, status)')
+        .eq('active', true).eq('admin_users.role', 'field_officer').eq('admin_users.status', 'active');
+      (!foRows.error ? (foRows.data || []) : []).forEach(function (r) {
+        if (isWithinScope(aceoScope, r.node_id) && hierarchyIds.indexOf(r.user_id) === -1) hierarchyIds.push(r.user_id);
+      });
+
+      if (userId) {
+        if (hierarchyIds.indexOf(userId) === -1) {
+          return json(env, { error: 'That team member is outside your hierarchy.' }, 403);
+        }
+      } else {
+        q = hierarchyIds.length ? q.in('assigned_to', hierarchyIds) : q.eq('assigned_to', '00000000-0000-0000-0000-000000000000');
+      }
+    }
+
     if (userId) q = q.eq('assigned_to', userId);
 
     var res = await q;
@@ -107,11 +132,14 @@ export async function onRequestPost(context) {
         return json(env, { error: 'dueDate must be YYYY-MM-DD.' }, 422);
       }
 
-      var t = await db.from('admin_users').select('id, role, full_name, email').eq('id', body.assignedTo).maybeSingle();
+      var t = await db.from('admin_users').select('id, role, full_name, email, status').eq('id', body.assignedTo).maybeSingle();
       if (t.error) throw t.error;
       if (!t.data) return json(env, { error: 'No such user.' }, 404);
       if (!canManageRole(auth.user.role, t.data.role)) {
         return json(env, { error: 'You cannot assign tasks to that user.' }, 403);
+      }
+      if (t.data.status !== 'active') {
+        return json(env, { error: 'That team member is not active and cannot receive new tasks.' }, 409);
       }
 
       /* Instructions are most relevant for task_type='custom' (the UI

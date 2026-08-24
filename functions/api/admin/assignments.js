@@ -49,9 +49,16 @@ export async function onRequestGet(context) {
        embed is ambiguous to PostgREST ("more than one relationship was
        found"). Disambiguated via the FK-name hint, same convention
        tasks.js already uses for admin_tasks (assigned_to/assigned_by). */
+    /* !inner + admin_users.status filter: an archived/disabled member's
+       assignment must not surface here even though the row itself is
+       still active=true (audited root cause, 2026-08-24 — removing a
+       member never touched their standing assignments, so they kept
+       appearing as if still operational). The row and its history are
+       untouched; this only changes what this read returns. */
     var q = db.from('admin_area_assignments')
-      .select('id, user_id, node_id, scope_level, created_at, admin_users!admin_area_assignments_user_id_fkey(full_name, role), locations!inner(name)')
+      .select('id, user_id, node_id, scope_level, created_at, admin_users!admin_area_assignments_user_id_fkey!inner(full_name, role, status), locations!inner(name)')
       .eq('active', true)
+      .eq('admin_users.status', 'active')
       .order('node_id', { ascending: true });
     if (userId) q = q.eq('user_id', userId);
 
@@ -100,11 +107,17 @@ export async function onRequestPost(context) {
       var level = levelFromNodeId(body.nodeId);
       if (!level) return json(env, { error: 'nodeId is not a City / Main / Sub location path.' }, 422);
 
-      var target = await db.from('admin_users').select('id, role, full_name').eq('id', body.userId).maybeSingle();
+      var target = await db.from('admin_users').select('id, role, full_name, status').eq('id', body.userId).maybeSingle();
       if (target.error) throw target.error;
       if (!target.data) return json(env, { error: 'No such user.' }, 404);
       if (!canManageRole(auth.user.role, target.data.role)) {
         return json(env, { error: 'You cannot assign areas to that user.' }, 403);
+      }
+      /* A stale client-supplied userId (a removed/disabled member the UI
+         no longer lists) must be rejected here, server-side — hiding it
+         from selectors is not enforcement. */
+      if (target.data.status !== 'active') {
+        return json(env, { error: 'That team member is not active and cannot receive new assignments.' }, 409);
       }
 
       /* An Assistant CEO can only delegate territory they themselves hold

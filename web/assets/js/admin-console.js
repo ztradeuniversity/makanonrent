@@ -691,14 +691,23 @@
 
   function renderUserRow(u) {
     var mode = teamExpanded[u.id];
-    var actions = u.manageable
-      ? '<button class="ad-btn is-sm" type="button" data-view>View</button> ' +
+    /* identityManageable (CEO-only, migration 0014) gates account-lifecycle
+       actions specifically — `manageable` alone would still be true for an
+       Assistant CEO viewing its own managers (that flag drives area/task
+       assignment eligibility, unchanged) and would render buttons the
+       server now rejects. View stays available to anyone who can see the
+       row at all. */
+    var actions = '<button class="ad-btn is-sm" type="button" data-view>View</button> ';
+    if (u.identityManageable) {
+      actions +=
         '<button class="ad-btn is-sm" type="button" data-edit>Edit</button> ' +
         '<button class="ad-btn is-sm" type="button" data-toggle="' + (u.status === 'active' ? 'disabled' : 'active') + '">' +
           (u.status === 'active' ? 'Disable' : 'Enable') + '</button> ' +
         '<button class="ad-btn is-sm" type="button" data-reset>Reset password</button> ' +
-        '<button class="ad-btn is-sm is-danger" type="button" data-delete>Delete</button>'
-      : '<span class="ad-pill">View only</span>';
+        '<button class="ad-btn is-sm is-danger" type="button" data-delete>Delete</button>';
+    } else {
+      actions += '<span class="ad-pill">View only</span>';
+    }
 
     var row = '<tr data-user="' + esc(u.id) + '">' +
       '<td><b>' + esc(u.fullName) + '</b></td>' +
@@ -710,20 +719,37 @@
       '<td>' + actions + '</td>' +
     '</tr>';
 
+    var reportsToName = null;
+    if (u.role === 'manager' && u.reportsToUserId) {
+      var aceo = (teamCache || []).find(function (x) { return x.id === u.reportsToUserId; });
+      reportsToName = aceo ? aceo.fullName : 'Unassigned Assistant CEO';
+    }
+
     if (mode === 'view') {
       row += '<tr class="ad-detail-row"><td colspan="7"><div class="ad-detail-grid">' +
         '<div class="ad-kv-row"><span>Role</span><span>' + esc(A.roleLabel(u.role)) + '</span></div>' +
         '<div class="ad-kv-row"><span>Username</span><span>' + esc(u.username) + '</span></div>' +
         '<div class="ad-kv-row"><span>Email</span><span>' + esc(u.email || '—') + '</span></div>' +
         '<div class="ad-kv-row"><span>Status</span><span>' + esc(u.status) + '</span></div>' +
+        (u.role === 'manager' ? '<div class="ad-kv-row"><span>Reports to</span><span>' + esc(reportsToName || 'Not assigned') + '</span></div>' : '') +
         '<div class="ad-kv-row"><span>Created</span><span>' + esc(A.fmtDateTime(u.createdAt)) + '</span></div>' +
         '<div class="ad-kv-row"><span>Last login</span><span>' + esc(A.fmtDateTime(u.lastLoginAt)) + '</span></div>' +
         '<div class="ad-kv-row"><span>Last verification</span><span>' + esc(A.fmtDateTime(u.lastVerificationAt)) + '</span></div>' +
       '</div></td></tr>';
     } else if (mode === 'edit') {
+      var aceoOpts = '';
+      if (u.role === 'manager') {
+        var aceos = (teamCache || []).filter(function (x) { return x.role === 'assistant_ceo' && x.status === 'active'; });
+        aceoOpts = '<option value="">Not assigned</option>' + aceos.map(function (x) {
+          return '<option value="' + esc(x.id) + '"' + (x.id === u.reportsToUserId ? ' selected' : '') + '>' + esc(x.fullName) + '</option>';
+        }).join('');
+      }
       row += '<tr class="ad-detail-row"><td colspan="7"><div class="ad-row">' +
         '<div class="ad-field"><label>Full name</label><input class="ad-input" type="text" data-edit-fullname value="' + esc(u.fullName) + '" /></div>' +
         '<div class="ad-field"><label>Email</label><input class="ad-input" type="email" data-edit-email value="' + esc(u.email || '') + '" /></div>' +
+        (u.role === 'manager'
+          ? '<div class="ad-field"><label>Reports to (Assistant CEO)</label><select class="ad-select" data-edit-reports-to>' + aceoOpts + '</select></div>'
+          : '') +
         '</div><div class="ad-actions">' +
         '<button class="ad-btn is-primary is-sm" type="button" data-save-edit>Save</button>' +
         '<button class="ad-btn is-sm" type="button" data-cancel-edit>Cancel</button>' +
@@ -936,10 +962,16 @@
         var detailRow = row.nextElementSibling;
         var fullNameEl = detailRow.querySelector('[data-edit-fullname]');
         var emailEl = detailRow.querySelector('[data-edit-email]');
+        var reportsToEl = detailRow.querySelector('[data-edit-reports-to]');
         await A.post(API.adminUsers, {
           action: 'update', userId: userId,
           fullName: fullNameEl.value.trim(), email: emailEl.value.trim()
         });
+        if (reportsToEl) {
+          await A.post(API.adminUsers, {
+            action: 'set-reports-to', userId: userId, reportsToUserId: reportsToEl.value || null
+          });
+        }
         A.msg($('adUserMsg'), 'Team member updated.', 'is-ok');
         teamExpanded[userId] = null;
         await loadTeam();

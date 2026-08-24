@@ -13,7 +13,7 @@
 import { json, preflight } from '../../utils/cors.js';
 import { getServiceClient } from '../../utils/supabase.js';
 import { isNonEmptyString } from '../../utils/validate.js';
-import { requireAuth, requireCapability, canManageRole, can } from '../../utils/rbac.js';
+import { requireAuth, requireCapability, canManageRole, can, getManagedManagerIds, getScopeNodeIds, isWithinScope } from '../../utils/rbac.js';
 import { hashPassword, generateTempPassword, validatePasswordStrength } from '../../utils/password.js';
 import { revokeAllUserSessions } from '../../utils/session.js';
 import { auditFor } from '../../utils/audit.js';
@@ -42,13 +42,36 @@ export async function onRequestGet(context) {
   try {
     var db = getServiceClient(env);
     var q = db.from('admin_users')
-      .select('id, username, full_name, email, role, status, last_login_at, last_verification_at, created_at')
+      .select('id, username, full_name, email, role, status, last_login_at, last_verification_at, created_at, reports_to_user_id')
       .neq('status', 'archived')
       .order('role', { ascending: true })
       .order('full_name', { ascending: true });
 
-    var visible = VISIBLE_ROLES[auth.user.role];
-    if (visible) q = q.in('role', visible);
+    /* Assistant CEO hierarchy (migration 0014, approved 2026-08-24):
+       VISIBLE_ROLES alone made an Assistant CEO see EVERY manager/FO
+       system-wide, not just its own. Managers are scoped to the explicit
+       reports_to_user_id link. Field Officers have no equivalent explicit
+       link (approved scope: "FO visibility remains subject to existing
+       scope and reporting rules"), so they're scoped by the SAME
+       area-overlap mechanism already used for properties/tasks — an FO
+       whose own active area assignment falls within the Assistant CEO's
+       own assigned territory. An Assistant CEO with no managers assigned
+       legitimately sees nobody, not everybody. */
+    if (auth.user.role === 'assistant_ceo') {
+      var managerIds = await getManagedManagerIds(env, auth.user.id);
+      var aceoScope = await getScopeNodeIds(env, auth.user);
+      var foRows = await db.from('admin_area_assignments')
+        .select('user_id, node_id, admin_users!admin_area_assignments_user_id_fkey!inner(role, status)')
+        .eq('active', true).eq('admin_users.role', 'field_officer').eq('admin_users.status', 'active');
+      var foIds = (!foRows.error ? (foRows.data || []) : [])
+        .filter(function (r) { return isWithinScope(aceoScope, r.node_id); })
+        .map(function (r) { return r.user_id; });
+      var visibleIds = managerIds.concat(foIds);
+      q = visibleIds.length ? q.in('id', visibleIds) : q.eq('id', '00000000-0000-0000-0000-000000000000');
+    } else {
+      var visible = VISIBLE_ROLES[auth.user.role];
+      if (visible) q = q.in('role', visible);
+    }
 
     var res = await q;
     if (res.error) throw res.error;
@@ -59,7 +82,15 @@ export async function onRequestGet(context) {
           id: u.id, username: u.username, fullName: u.full_name, email: u.email, role: u.role,
           status: u.status, lastLoginAt: u.last_login_at,
           lastVerificationAt: u.last_verification_at, createdAt: u.created_at,
-          manageable: canManageRole(auth.user.role, u.role)
+          reportsToUserId: u.reports_to_user_id || null,
+          /* `manageable` still drives area/task assignment eligibility
+             elsewhere (unchanged, canManageRole). Identity-management
+             actions (edit/reset/disable/delete) are a NARROWER, now
+             CEO-only capability (migration 0014) — the frontend must gate
+             those buttons on this, not on `manageable`, or a hidden-but-
+             not-actually-blocked action would render for Assistant CEO. */
+          manageable: canManageRole(auth.user.role, u.role),
+          identityManageable: can(auth.user.role, 'users.edit')
         };
       })
     });
@@ -196,6 +227,40 @@ export async function onRequestPost(context) {
       }
 
       await audit('update_user', 'admin_user', body.userId, { fields: Object.keys(patchFields), username: editTarget.data.username });
+      return json(env, { ok: true });
+    }
+
+    /* ── set-reports-to (Assistant CEO → Area Manager hierarchy) ──────── */
+    if (body.action === 'set-reports-to') {
+      if (!can(auth.user.role, 'users.set_reports_to')) {
+        return json(env, { error: 'Your role does not permit this action.' }, 403);
+      }
+      if (!isNonEmptyString(body.userId, 60)) return json(env, { error: 'userId is required.' }, 422);
+
+      var mgr = await db.from('admin_users').select('id, role').eq('id', body.userId).maybeSingle();
+      if (mgr.error) throw mgr.error;
+      if (!mgr.data) return json(env, { error: 'No such user.' }, 404);
+      if (mgr.data.role !== 'manager') {
+        return json(env, { error: 'Only an Area Manager can be assigned to an Assistant CEO.' }, 422);
+      }
+
+      var reportsTo = null;
+      if (body.reportsToUserId != null) {
+        if (!isNonEmptyString(body.reportsToUserId, 60)) {
+          return json(env, { error: 'reportsToUserId must be a user id or null.' }, 422);
+        }
+        var aceo = await db.from('admin_users').select('id, role, status').eq('id', body.reportsToUserId).maybeSingle();
+        if (aceo.error) throw aceo.error;
+        if (!aceo.data || aceo.data.role !== 'assistant_ceo' || aceo.data.status !== 'active') {
+          return json(env, { error: 'reportsToUserId must be an active Assistant CEO.' }, 422);
+        }
+        reportsTo = body.reportsToUserId;
+      }
+
+      var repUpd = await db.from('admin_users').update({ reports_to_user_id: reportsTo }).eq('id', body.userId);
+      if (repUpd.error) throw repUpd.error;
+
+      await audit('set_reports_to', 'admin_user', body.userId, { reportsToUserId: reportsTo });
       return json(env, { ok: true });
     }
 
@@ -339,7 +404,7 @@ export async function onRequestPost(context) {
       return json(env, { ok: true, temporaryPassword: temp });
     }
 
-    return json(env, { error: "action must be 'create', 'update', 'set-status' or 'reset-password'." }, 422);
+    return json(env, { error: "action must be 'create', 'update', 'set-reports-to', 'set-status' or 'reset-password'." }, 422);
   } catch (e) {
     return json(env, { error: (e && e.message) || 'User request failed.' }, 500);
   }

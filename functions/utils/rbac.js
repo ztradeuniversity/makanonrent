@@ -22,15 +22,24 @@ export var ROLES = ['ceo', 'assistant_ceo', 'manager', 'field_officer'];
    the Founder's brief maps onto it one-to-one. */
 export var PERMISSIONS = {
   /* — identity management — */
+  /* CEO-only (policy change, audited+approved 2026-08-24): account
+     lifecycle — who exists, their credentials, their standing — is CEO
+     authority exclusively. Assistant CEO/Manager previously held create/
+     reset/edit/toggle for their downward tier; that capability is
+     removed here, not merely hidden in the UI. Assistant CEO still SEES
+     its hierarchy (users.list) — visibility and account-management
+     authority are different capabilities. */
   'users.create.assistant_ceo':  ['ceo'],
-  'users.create.manager':        ['ceo', 'assistant_ceo'],
-  /* An Area Manager manages the Field Officers working their own areas,
-     mirroring how an Assistant CEO manages Managers one tier down. */
-  'users.create.field_officer':  ['ceo', 'assistant_ceo', 'manager'],
+  'users.create.manager':        ['ceo'],
+  'users.create.field_officer':  ['ceo'],
   'users.list':                  ['ceo', 'assistant_ceo', 'manager'],
-  'users.toggle_status':         ['ceo', 'assistant_ceo', 'manager'],
-  'users.reset_password':        ['ceo', 'assistant_ceo', 'manager'],
-  'users.edit':                  ['ceo', 'assistant_ceo', 'manager'],
+  'users.toggle_status':         ['ceo'],
+  'users.reset_password':        ['ceo'],
+  'users.edit':                  ['ceo'],
+  /* CEO assigns/reassigns which Assistant CEO a Manager reports to
+     (migration 0014, admin_users.reports_to_user_id). Same CEO-only
+     reasoning as the rest of identity management above. */
+  'users.set_reports_to':        ['ceo'],
 
   /* — area assignment (City → Main → Sub) — */
   'areas.assign':               ['ceo', 'assistant_ceo', 'manager'],
@@ -161,4 +170,20 @@ export async function assertAreaScope(env, user, nodeId) {
   var scope = await getScopeNodeIds(env, user);
   if (isWithinScope(scope, nodeId)) return null;
   return json(env, { error: 'That area is outside your assigned scope.' }, 403);
+}
+
+/* ── Assistant CEO → Area Manager hierarchy (migration 0014) ──────────
+   admin_users.reports_to_user_id is the single authoritative link — no
+   second hierarchy table. Returns the ACTIVE manager ids reporting to
+   this Assistant CEO, or [] if none (an Assistant CEO with nobody
+   assigned legitimately sees an empty dashboard, not an error and not
+   "everyone"). Callers other than 'ceo' must always pass this through —
+   there is no unscoped path for assistant_ceo the way CEO gets `null`
+   from getScopeNodeIds. */
+export async function getManagedManagerIds(env, assistantCeoUserId) {
+  var db = getServiceClient(env);
+  var res = await db.from('admin_users')
+    .select('id').eq('reports_to_user_id', assistantCeoUserId).eq('role', 'manager').eq('status', 'active');
+  if (res.error) throw res.error;
+  return (res.data || []).map(function (r) { return r.id; });
 }
