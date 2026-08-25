@@ -12,7 +12,7 @@
 import { json, preflight } from '../../utils/cors.js';
 import { getServiceClient } from '../../utils/supabase.js';
 import { isNonEmptyString } from '../../utils/validate.js';
-import { requireAuth, requireCapability, canManageRole, getScopeNodeIds, isWithinScope, getVisibleSubordinateIds, cascadeInvalidateChildren } from '../../utils/rbac.js';
+import { requireAuth, requireCapability, canManageRole, getScopeNodeIds, isWithinScope, getVisibleSubordinateIds, getDelegationTargets, cascadeInvalidateChildren } from '../../utils/rbac.js';
 import { auditFor } from '../../utils/audit.js';
 
 export async function onRequestOptions(context) {
@@ -39,6 +39,34 @@ export async function onRequestGet(context) {
   try {
     var db = getServiceClient(env);
     var url = new URL(context.request.url);
+
+    /* ── recipients: who this caller may delegate/assign AREAS to
+       (Area Assignment hierarchy fix, audited 2026-08-25) ─────────────
+       ONE tier down, never further — the SAME getDelegationTargets
+       tasks.js uses, not the broader team-visibility set. Confirmed root
+       cause of the live bug: the "Team member" picker was built from
+       teamCache (users.js, hierarchy-VISIBILITY scoped — deliberately
+       includes an Assistant CEO's Field Officers) instead of from this
+       stricter set, so a Field Officer rendered as a selectable Area
+       Assignment recipient even though the backend already rejected the
+       resulting POST. Returned with names/roles so the picker never has
+       to re-derive eligibility from the Team list. */
+    if (url.searchParams.get('recipients')) {
+      var delegTargets = await getDelegationTargets(env, auth.user);
+      var rq = db.from('admin_users').select('id, full_name, role, username').eq('status', 'active');
+      if (delegTargets !== null) {
+        if (!delegTargets.length) return json(env, { recipients: [] });
+        rq = rq.in('id', delegTargets);
+      }
+      var rres = await rq.order('full_name', { ascending: true });
+      if (rres.error) throw rres.error;
+      return json(env, {
+        recipients: (rres.data || []).map(function (u) {
+          return { id: u.id, fullName: u.full_name, role: u.role, username: u.username };
+        })
+      });
+    }
+
     var userId = url.searchParams.get('userId');
     var includeHistory = !!url.searchParams.get('history');
     /* nodeIds (Assistant CEO dashboard fix, 2026-08-24, ISSUE 3/3A/3B):
@@ -245,15 +273,27 @@ export async function onRequestPost(context) {
       if (!canManageRole(auth.user.role, target.data.role)) {
         return json(env, { error: 'You cannot assign areas to that user.' }, 403);
       }
-      /* Role-level authority alone is not enough (a Manager and an
-         unrelated system-wide Field Officer both pass canManageRole) —
-         the target must actually be IN this caller's own hierarchy.
-         Same shared definition users.js uses to decide what the caller
-         can even see, so the picker and this check can never disagree. */
+      /* Area-delegation hierarchy fix (audited 2026-08-25, confirmed live
+         bug): role-level authority alone is not enough (a Manager and an
+         unrelated system-wide Field Officer both pass canManageRole),
+         but the OLD check here — getVisibleSubordinateIds — is the
+         team-VISIBILITY set, which deliberately includes an Assistant
+         CEO's Field Officers (so the Team tree and oversight views can
+         show them). Reusing it here silently let an Assistant CEO
+         delegate an area straight to an FO, bypassing the Area Manager
+         tier entirely — confirmed live via a direct 'assign' POST with
+         an FO's id. getDelegationTargets is the separate, stricter
+         answer used by tasks.js for the identical rule; sharing it here
+         means the Area Assignment picker and this check can never
+         disagree, and can never disagree with Task Management either. */
       if (auth.user.role !== 'ceo') {
-        var hierarchyIds = await getVisibleSubordinateIds(env, auth.user);
-        if (hierarchyIds.indexOf(body.userId) === -1) {
-          return json(env, { error: 'That team member is outside your own hierarchy.' }, 403);
+        var hierarchyIds = await getDelegationTargets(env, auth.user);
+        if (!hierarchyIds || hierarchyIds.indexOf(body.userId) === -1) {
+          return json(env, {
+            error: auth.user.role === 'assistant_ceo'
+              ? 'Assistant CEO can assign areas only to Area Managers.'
+              : 'You can assign areas only to a Field Officer who reports to you.'
+          }, 403);
         }
       }
       /* A stale client-supplied userId (a removed/disabled member the UI
@@ -441,12 +481,21 @@ export async function onRequestPost(context) {
         if (!isWithinScope(xferScope, src.data.node_id)) {
           return json(env, { error: 'That area is outside your own assigned scope.' }, 403);
         }
-        /* Both ends of the transfer must be this caller's own hierarchy —
-           otherwise a scoped role could launder an area between two
-           accounts neither of which reports to them. */
-        var xferHierarchyIds = await getVisibleSubordinateIds(env, auth.user);
-        if (xferHierarchyIds.indexOf(src.data.user_id) === -1 || xferHierarchyIds.indexOf(body.toUserId) === -1) {
-          return json(env, { error: 'Both the current and new owner must be within your own hierarchy.' }, 403);
+        /* Area-delegation hierarchy fix (2026-08-25): same confirmed bug
+           as 'assign' above — getVisibleSubordinateIds is the broad
+           team-VISIBILITY set (includes an Assistant CEO's Field
+           Officers), not the delegation-authority set. BOTH ends of a
+           transfer must be ONE tier down from the caller — an Assistant
+           CEO reaching past a Manager to move an area straight to (or
+           away from) an FO is exactly the bypass this rule exists to
+           close, whether done via 'assign' or via 'transfer'. */
+        var xferHierarchyIds = await getDelegationTargets(env, auth.user);
+        if (!xferHierarchyIds || xferHierarchyIds.indexOf(src.data.user_id) === -1 || xferHierarchyIds.indexOf(body.toUserId) === -1) {
+          return json(env, {
+            error: auth.user.role === 'assistant_ceo'
+              ? 'Assistant CEO can transfer areas only between Area Managers.'
+              : 'You can transfer areas only between Field Officers who report to you.'
+          }, 403);
         }
       }
 

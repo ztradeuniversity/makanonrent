@@ -1525,14 +1525,32 @@
   }
 
   /* ── AREA ASSIGNMENTS (moved out of Team, redesign 2026-08-24) ────── */
+  var areaDelegationTargets = [];   // id/fullName/role/username the caller may assign/transfer AREAS to — ONE tier down only (Area Assignment hierarchy fix, 2026-08-25)
+
   async function loadAreaAssignments() {
     try {
-      var users = await ensureTeamCache();
-      var assignable = users.filter(function (u) { return u.manageable && u.status === 'active'; });
-      var opts = assignable.map(function (u) {
+      /* Area-delegation hierarchy fix (audited 2026-08-25): the "Team
+         member" recipient picker was previously built from teamCache's
+         `manageable` flag — the hierarchy-VISIBILITY set (deliberately
+         includes an Assistant CEO's Field Officers, for the Team tree).
+         That let a Field Officer render as a selectable Area Assignment
+         recipient for an Assistant CEO even though the backend already
+         rejected the resulting POST — confirmed live. ?recipients=1 is
+         the same strict, ONE-tier-down set the backend now enforces for
+         both 'assign' and 'transfer', so the picker can never offer a
+         choice the server will refuse. */
+      var recipRes = await A.get(API.adminAssignments + '?recipients=1');
+      areaDelegationTargets = recipRes.recipients || [];
+      var opts = areaDelegationTargets.map(function (u) {
         return '<option value="' + esc(u.id) + '">' + esc(u.fullName) + ' (' + esc(A.roleLabel(u.role)) + ')</option>';
       }).join('');
-      $('adAssignUser').innerHTML = opts || '<option value="">No eligible accounts</option>';
+      $('adAssignUser').innerHTML = opts || '<option value="">No eligible recipient</option>';
+      /* Explicit role label (requirement: never show an ambiguous "Team
+         member" once the list is hierarchy-restricted). */
+      var areaRole = ME && ME.user.role;
+      $('adAssignUserLabel').textContent = areaRole === 'assistant_ceo' ? 'Assign area to Area Manager'
+        : areaRole === 'manager' ? 'Assign area to Field Officer'
+        : 'Team member';
 
       /* Built once — the cascade's listeners must not be bound again every
          time the panel is reopened, or one click would fire N assigns. */
@@ -2098,23 +2116,23 @@
               ? '<span class="ad-pill is-warn">Delegated to ' + esc(a.delegatedTo.name) + ' (' + esc(A.roleLabel(a.delegatedTo.role)) + ')</span>'
               : '';
 
-            /* Inline transfer picker (ISSUE 2/11, governance pass, audited
-               2026-08-24): replaces a prompt() + exact-name-string-match
-               flow whose recipient list was ALSO filtered to `role ===
-               fromUser.role` — the confirmed root cause of "No exact
-               match for Ahmad Jan" (a Field Officer can never match a
-               Manager's own role, so he was excluded before the name
-               comparison ever ran). Eligible recipients now come from
-               `manageable` — the exact same hierarchy+role scoping
-               users.js already computed for this teamCache — so the
-               dropdown can only ever contain someone the transfer API
-               will actually accept. A <select> also makes "no exact
-               match" structurally impossible: every option is a valid id. */
+            /* Inline transfer picker (governance pass 2026-08-24, tightened
+               2026-08-25): originally built from teamCache's `manageable`
+               flag — the hierarchy-VISIBILITY set, which deliberately
+               includes an Assistant CEO's Field Officers for the Team
+               tree. That was a second, independent instance of the SAME
+               confirmed live bug fixed in the main Team-member picker
+               above: an Assistant CEO's Transfer dropdown could still
+               offer a Field Officer even after the primary picker was
+               fixed, because this one had its own separate (and broader)
+               eligibility list. Now reads the SAME areaDelegationTargets
+               (?recipients=1, ONE tier down) the top-level picker and the
+               backend both use — one authoritative recipient set for
+               every Area Assignment entry point, not three that can
+               drift apart. */
             var xferBlock = '';
             if (xferOpenId === a.id) {
-              var eligible = (teamCache || []).filter(function (u) {
-                return u.manageable && u.status === 'active' && u.id !== userId;
-              });
+              var eligible = areaDelegationTargets.filter(function (u) { return u.id !== userId; });
               xferBlock = '<div class="ad-field" style="width:100%;margin-top:8px;">' +
                 (eligible.length
                   ? '<label>Transfer "' + esc(a.areaName || a.nodeId) + '" to</label>' +
@@ -2127,8 +2145,9 @@
                       '<button class="ad-btn is-sm is-primary" type="button" data-xfer-confirm="' + esc(a.id) + '">Confirm transfer</button> ' +
                       '<button class="ad-btn is-sm" type="button" data-xfer-cancel>Cancel</button>' +
                     '</div>'
-                  : '<div class="ad-empty">No eligible ' + (rows[0].userRole === 'manager' ? 'Field Officer' : 'team member') +
-                    ' found in your authorized team.</div>' +
+                  : '<div class="ad-empty">No eligible ' +
+                    (ME && ME.user.role === 'assistant_ceo' ? 'Area Manager' : ME && ME.user.role === 'manager' ? 'Field Officer' : 'recipient') +
+                    ' found in your authorized hierarchy.</div>' +
                     '<div class="ad-actions" style="margin-top:8px;"><button class="ad-btn is-sm" type="button" data-xfer-cancel>Close</button></div>') +
               '</div>';
             }
@@ -2685,7 +2704,7 @@
         var select = xferRow.querySelector('[data-xfer-recipient]');
         var toUserId = select && select.value;
         if (!toUserId) return;
-        var toUser = (teamCache || []).find(function (u) { return u.id === toUserId; });
+        var toUser = areaDelegationTargets.find(function (u) { return u.id === toUserId; });
         if (!win.confirm('Transfer this assignment (and any sub-locations under it) to ' + (toUser ? toUser.fullName : 'this recipient') + '?')) return;
         var xres = await A.post(API.adminAssignments, { action: 'transfer', assignmentId: xferId, toUserId: toUserId });
         A.msg($('adAssignMsg'), 'Transferred ' + xres.transferredCount + ' location(s) to ' + (toUser ? toUser.fullName : 'the recipient') + '.' +

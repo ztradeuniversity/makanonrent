@@ -9,7 +9,7 @@
 import { json, preflight } from '../../utils/cors.js';
 import { getServiceClient } from '../../utils/supabase.js';
 import { isNonEmptyString } from '../../utils/validate.js';
-import { requireAuth, requireCapability, canManageRole, can, getManagedManagerIds, getScopeNodeIds, isWithinScope, getVisibleSubordinateIds, getTaskDelegationTargets } from '../../utils/rbac.js';
+import { requireAuth, requireCapability, canManageRole, can, getManagedManagerIds, getScopeNodeIds, isWithinScope, getVisibleSubordinateIds, getDelegationTargets } from '../../utils/rbac.js';
 import { auditFor } from '../../utils/audit.js';
 import { sendQueuedEmail } from '../../utils/mailer.js';
 import { publish } from '../../utils/notify.js';
@@ -34,13 +34,13 @@ export async function onRequestGet(context) {
     var url = new URL(context.request.url);
 
     /* ── recipients: who this caller may delegate work to (ISSUE 3/19) ──
-       ONE tier down, never further — getTaskDelegationTargets, not the
+       ONE tier down, never further — getDelegationTargets, not the
        broader team-VISIBILITY set. Returned with names/roles so the
        frontend never has to re-derive eligibility from the Team list
        (which deliberately includes people who are NOT valid recipients,
        e.g. an Assistant CEO's Field Officers). */
     if (url.searchParams.get('recipients')) {
-      var targets = await getTaskDelegationTargets(env, auth.user);
+      var targets = await getDelegationTargets(env, auth.user);
       var rq = db.from('admin_users').select('id, full_name, role, username').eq('status', 'active');
       if (targets !== null) {
         if (!targets.length) return json(env, { recipients: [] });
@@ -168,7 +168,7 @@ export async function onRequestGet(context) {
        company" (migration 0014, approved 2026-08-24). Same reports_to +
        area-overlap FO resolution as users.js's Team list scoping for
        Assistant CEO; Manager's own Field Officers (reports_to = self)
-       for Manager — the SAME set getTaskDelegationTargets uses for
+       for Manager — the SAME set getDelegationTargets uses for
        delegation authority, since "whose work can I oversee" and "who
        can I delegate to" are the same people for a Manager (unlike an
        Assistant CEO, who oversees FOs they cannot delegate to directly). */
@@ -190,7 +190,7 @@ export async function onRequestGet(context) {
         q = hierarchyIds.length ? q.in('assigned_to', hierarchyIds) : q.eq('assigned_to', '00000000-0000-0000-0000-000000000000');
       }
     } else if (auth.user.role === 'manager' && teamScope && !userId) {
-      var mgrFoIds = await getTaskDelegationTargets(env, auth.user);
+      var mgrFoIds = await getDelegationTargets(env, auth.user);
       q = mgrFoIds.length ? q.in('assigned_to', mgrFoIds) : q.eq('assigned_to', '00000000-0000-0000-0000-000000000000');
     }
 
@@ -276,14 +276,14 @@ export async function onRequestPost(context) {
          'field_officer') is true, and the OLD check here
          (getVisibleSubordinateIds) is the team-VISIBILITY set, which
          intentionally includes an Assistant CEO's Field Officers too.
-         getTaskDelegationTargets is the separate, stricter answer: ONE
+         getDelegationTargets is the separate, stricter answer: ONE
          tier down, never further — "Assistant CEO cannot assign directly
          to FO" is a hard business rule, enforced here regardless of what
          the client sent. Manager now reaches this too (tasks.assign
          grants it, work-hierarchy fix) and is equally restricted to only
          their own Field Officers. */
       if (auth.user.role !== 'ceo') {
-        var taskTargets = await getTaskDelegationTargets(env, auth.user);
+        var taskTargets = await getDelegationTargets(env, auth.user);
         if (!taskTargets || taskTargets.indexOf(body.assignedTo) === -1) {
           return json(env, {
             error: auth.user.role === 'assistant_ceo'
