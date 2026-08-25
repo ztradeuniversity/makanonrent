@@ -1,5 +1,5 @@
 /* GET  /api/admin/users        → identities the caller may see
-   POST /api/admin/users        → { action: 'create' | 'update' | 'set-status' | 'reset-password', ... }
+   POST /api/admin/users        → { action: 'create' | 'update' | 'reveal-contact' | 'set-status' | 'reset-password', ... }
 
    Authority flows strictly downward (rbac.canManageRole):
      CEO           → Assistant CEOs, Area Managers ('manager') and Field Officers
@@ -13,8 +13,10 @@
 import { json, preflight } from '../../utils/cors.js';
 import { getServiceClient } from '../../utils/supabase.js';
 import { isNonEmptyString } from '../../utils/validate.js';
-import { requireAuth, requireCapability, canManageRole, can, getVisibleSubordinateIds } from '../../utils/rbac.js';
+import { requireAuth, requireCapability, canManageRole, can, getVisibleSubordinateIds,
+         getFullContactUserIds, canReadFullContact } from '../../utils/rbac.js';
 import { hashPassword, validatePasswordStrength } from '../../utils/password.js';
+import { encryptContact, decryptContact, normalisePhone, lastFour, maskFromLastFour } from '../../utils/contact-crypto.js';
 import { revokeAllUserSessions } from '../../utils/session.js';
 import { auditFor } from '../../utils/audit.js';
 import { notifyDirect } from '../../utils/notify.js';
@@ -27,6 +29,57 @@ export async function onRequestOptions(context) {
 var FROZEN_ROLE = {
   ceo: 'exec', assistant_ceo: 'city_manager', manager: 'area_manager', field_officer: 'field_officer'
 };
+
+/* ── contact numbers (migration 0019) ────────────────────────────────────
+   NO endpoint in this file ever returns a phone or WhatsApp number in the
+   clear. The list and profile reads below emit only a mask built from the
+   clear-text last4 column plus an access flag; the plaintext is handed out
+   exclusively by the 'reveal-contact' action, which authorises ONE id and
+   writes ONE audit row per disclosure. That split is the whole design: a
+   number that travels with every routine Team-list render cannot be
+   audited (the log would be noise) and cannot be least-privilege (it ships
+   before anyone asked for it).
+
+   `access` is 'full' when the caller may reveal, 'masked' when they may see
+   the account but not the number, and 'none' when no number is on file. */
+function contactView(row, canReadFull) {
+  return {
+    phone: {
+      present: !!row.phone_enc,
+      masked: maskFromLastFour(row.phone_last4),
+      access: !row.phone_enc ? 'none' : (canReadFull ? 'full' : 'masked')
+    },
+    whatsapp: {
+      present: !!row.whatsapp_enc,
+      masked: maskFromLastFour(row.whatsapp_last4),
+      access: !row.whatsapp_enc ? 'none' : (canReadFull ? 'full' : 'masked')
+    }
+  };
+}
+
+/* Shared by create and update so both write the encrypted column and its
+   last4 companion together — migration 0019's ck_admin_users_*_pair checks
+   reject a half-written pair, and having one call site for both fields is
+   what keeps that from ever being attempted. Returns an {error} the caller
+   turns into a 422; an empty string CLEARS the field (same `!= null`
+   present-vs-absent convention email/displayTitle already use). */
+async function applyContactPatch(env, body, patch) {
+  var fields = [{ in: 'phone', enc: 'phone_enc', last4: 'phone_last4', label: 'Phone number' },
+                { in: 'whatsapp', enc: 'whatsapp_enc', last4: 'whatsapp_last4', label: 'WhatsApp number' }];
+  for (var i = 0; i < fields.length; i++) {
+    var f = fields[i];
+    if (body[f.in] == null) continue;
+    var raw = String(body[f.in]).trim();
+    if (!raw) { patch[f.enc] = null; patch[f.last4] = null; continue; }
+    var norm = normalisePhone(raw);
+    if (!norm) {
+      return { error: f.label + ' must be 7–15 digits, optionally starting with +.' };
+    }
+    patch[f.enc] = await encryptContact(env, norm);
+    patch[f.last4] = lastFour(norm);
+  }
+  return null;
+}
 
 export async function onRequestGet(context) {
   var env = context.env;
@@ -118,10 +171,14 @@ export async function onRequestGet(context) {
         }
       }
       var pu = await db.from('admin_users')
-        .select('id, username, full_name, email, role, display_title, status, created_at, last_login_at, last_verification_at, reports_to_user_id')
+        .select('id, username, full_name, email, role, display_title, status, created_at, last_login_at, last_verification_at, reports_to_user_id, phone_enc, phone_last4, whatsapp_enc, whatsapp_last4')
         .eq('id', profileId).maybeSingle();
       if (pu.error) throw pu.error;
       if (!pu.data) return json(env, { error: 'No such user.' }, 404);
+
+      /* Masked only — see contactView. Seeing a profile never discloses a
+         number; that takes the audited reveal-contact action. */
+      var profContact = contactView(pu.data, await canReadFullContact(env, auth.user, profileId));
 
       var reportsToName = null;
       if (pu.data.reports_to_user_id) {
@@ -153,6 +210,7 @@ export async function onRequestGet(context) {
           role: pu.data.role, displayTitle: pu.data.display_title || null, status: pu.data.status,
           createdAt: pu.data.created_at, lastLoginAt: pu.data.last_login_at, lastVerificationAt: pu.data.last_verification_at,
           reportsToName: reportsToName,
+          phone: profContact.phone, whatsapp: profContact.whatsapp,
           assignedAreaCount: areaCountRes.count || 0,
           tasksOpen: tasksOpenRes.count || 0,
           tasksCompleted: tasksDoneRes.count || 0,
@@ -165,7 +223,7 @@ export async function onRequestGet(context) {
     }
 
     var q = db.from('admin_users')
-      .select('id, username, full_name, email, role, display_title, status, last_login_at, last_verification_at, created_at, reports_to_user_id')
+      .select('id, username, full_name, email, role, display_title, status, last_login_at, last_verification_at, created_at, reports_to_user_id, phone_enc, phone_last4, whatsapp_enc, whatsapp_last4')
       .neq('status', 'archived')
       .order('role', { ascending: true })
       .order('full_name', { ascending: true });
@@ -191,9 +249,18 @@ export async function onRequestGet(context) {
     var res = await q;
     if (res.error) throw res.error;
 
+    /* Contact disclosure is a NARROWER set than list visibility (rbac.js
+       getFullContactUserIds): an Assistant CEO sees their whole tree here
+       but may only read their own Managers' numbers, not the Field
+       Officers' beneath them. Resolved once for the whole list rather than
+       per row — it is the same answer for every row. */
+    var fullContactIds = await getFullContactUserIds(env, auth.user);
+
     return json(env, {
       users: (res.data || []).map(function (u) {
+        var contact = contactView(u, fullContactIds === null || fullContactIds.indexOf(u.id) > -1);
         return {
+          phone: contact.phone, whatsapp: contact.whatsapp,
           id: u.id, username: u.username, fullName: u.full_name, email: u.email, role: u.role,
           displayTitle: u.display_title || null,
           status: u.status, lastLoginAt: u.last_login_at,
@@ -277,8 +344,16 @@ export async function onRequestPost(context) {
          that ever decides what this account can do. */
       var displayTitle = isNonEmptyString(body.displayTitle, 120) ? String(body.displayTitle).trim() : null;
 
+      /* Phone/WhatsApp are optional at creation (migration 0019) — unlike
+         email, no flow depends on them, so requiring one would block
+         creating an account for someone whose number the CEO does not have
+         yet. Encrypted before it ever reaches the insert. */
+      var newContact = {};
+      var contactErr = await applyContactPatch(env, body, newContact);
+      if (contactErr) return json(env, { error: contactErr.error }, 422);
+
       var pw = await hashPassword(body.password);
-      var ins = await db.from('admin_users').insert({
+      var ins = await db.from('admin_users').insert(Object.assign({
         username: String(body.username).trim().toLowerCase(),
         full_name: body.fullName,
         email: email,
@@ -289,7 +364,7 @@ export async function onRequestPost(context) {
         must_change_password: true,
         created_by: auth.user.id,
         status: 'active'
-      }).select('id, username').single();
+      }, newContact)).select('id, username').single();
 
       if (ins.error) {
         if (String(ins.error.message || '').indexOf('uq_admin_users_username') > -1) {
@@ -301,7 +376,12 @@ export async function onRequestPost(context) {
         throw ins.error;
       }
 
-      await audit('create_user', 'admin_user', ins.data.id, { role: role, username: ins.data.username });
+      /* Which contact fields were set, never their values — same rule the
+         password already follows two lines below. */
+      await audit('create_user', 'admin_user', ins.data.id, {
+        role: role, username: ins.data.username,
+        contactFieldsSet: Object.keys(newContact).filter(function (k) { return k.indexOf('_enc') > -1 && newContact[k]; })
+      });
 
       /* No temporaryPassword in this response — the CEO/manager set the
          password themselves, so there is nothing generated to echo back.
@@ -345,6 +425,12 @@ export async function onRequestPost(context) {
         if (titleTrim.length > 120) return json(env, { error: 'Designation must be 120 characters or fewer.' }, 422);
         patchFields.display_title = titleTrim || null;
       }
+      /* Contact numbers ride on users.edit (CEO-only) alongside the other
+         identity fields — no separate capability, no self-service path.
+         An empty string clears the number, matching displayTitle above. */
+      var editContactErr = await applyContactPatch(env, body, patchFields);
+      if (editContactErr) return json(env, { error: editContactErr.error }, 422);
+
       if (!Object.keys(patchFields).length) {
         return json(env, { error: 'Nothing to update.' }, 422);
       }
@@ -359,6 +445,57 @@ export async function onRequestPost(context) {
 
       await audit('update_user', 'admin_user', body.userId, { fields: Object.keys(patchFields), username: editTarget.data.username });
       return json(env, { ok: true });
+    }
+
+    /* ── reveal-contact (migration 0019) ───────────────────────────────
+       The ONLY path in this codebase that turns a stored phone/WhatsApp
+       number back into plaintext. Three gates, in order:
+
+         1. users.contact.reveal — may this ROLE ask at all.
+         2. canReadFullContact  — may this caller read THIS id: themselves
+            or one tier down (rbac.js getFullContactUserIds). Note this is
+            strictly narrower than the Team list they can see, so a
+            subordinate two tiers down is refused here even though the
+            caller can read their name — visibility is not disclosure.
+         3. The decrypt itself, which needs CONTACT_ENCRYPTION_KEY; a
+            database dump without it reveals nothing.
+
+       A POST, not a GET query param, on purpose: this is an audited
+       disclosure event, and every disclosure writes exactly one
+       'view_contact' row naming who read whose number and when. Putting it
+       on the list endpoint instead would either flood the audit log with a
+       row per page render or — worse — ship plaintext nobody asked for. */
+    if (body.action === 'reveal-contact') {
+      if (!can(auth.user.role, 'users.contact.reveal')) {
+        return json(env, { error: 'Your role does not permit this action.' }, 403);
+      }
+      if (!isNonEmptyString(body.userId, 60)) return json(env, { error: 'userId is required.' }, 422);
+
+      var cTarget = await db.from('admin_users')
+        .select('id, username, full_name, role, phone_enc, whatsapp_enc')
+        .eq('id', body.userId).maybeSingle();
+      if (cTarget.error) throw cTarget.error;
+      if (!cTarget.data) return json(env, { error: 'No such user.' }, 404);
+
+      if (!(await canReadFullContact(env, auth.user, body.userId))) {
+        return json(env, {
+          error: 'Contact numbers are visible only for yourself and the team members who report directly to you.'
+        }, 403);
+      }
+
+      var revealedPhone = await decryptContact(env, cTarget.data.phone_enc);
+      var revealedWhatsapp = await decryptContact(env, cTarget.data.whatsapp_enc);
+
+      /* The numbers themselves are never written into the audit detail —
+         an audit log that stores the secret it exists to protect is a
+         second copy of the leak, and admin_audit_log is append-only, so a
+         value written here could never be removed. */
+      await audit('view_contact', 'admin_user', body.userId, {
+        username: cTarget.data.username,
+        revealed: [revealedPhone ? 'phone' : null, revealedWhatsapp ? 'whatsapp' : null].filter(Boolean)
+      });
+
+      return json(env, { ok: true, phone: revealedPhone, whatsapp: revealedWhatsapp });
     }
 
     /* ── message (CEO → one team member, Team redesign ISSUE 14) ──────
@@ -661,7 +798,7 @@ export async function onRequestPost(context) {
       return json(env, { ok: true });
     }
 
-    return json(env, { error: "action must be 'create', 'update', 'set-reports-to', 'set-status', 'reset-password', 'message' or 'hide-history'." }, 422);
+    return json(env, { error: "action must be 'create', 'update', 'reveal-contact', 'set-reports-to', 'set-status', 'reset-password', 'message' or 'hide-history'." }, 422);
   } catch (e) {
     return json(env, { error: (e && e.message) || 'User request failed.' }, 500);
   }

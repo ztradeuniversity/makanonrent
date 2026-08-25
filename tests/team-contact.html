@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Team Contact Numbers — MakanOnRent</title>
+<style>
+  body { font: 14px/1.6 system-ui, sans-serif; max-width: 960px; margin: 40px auto; padding: 0 20px; color: #16211C; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.sub { color: #6B7A73; margin-bottom: 20px; }
+  #summary { padding: 14px 18px; border-radius: 12px; font-weight: 700; margin-bottom: 18px; }
+  .ok   { background: #E7F3EE; border: 1px solid #0E5C44; color: #0E5C44; }
+  .bad  { background: #FBEAE8; border: 1px solid #C0392B; color: #C0392B; }
+  .grp  { margin: 18px 0 6px; font-weight: 800; font-size: 12px; letter-spacing: .6px; text-transform: uppercase; color: #6B7A73; }
+  li { list-style: none; padding: 4px 0; border-bottom: 1px solid #EEE; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .p { color: #0E5C44; } .f { color: #C0392B; font-weight: 700; }
+</style>
+<!-- Redirects the bare specifier at the REAL endpoint's import site, so
+     functions/api/admin/users.js runs completely unmodified against a
+     queryable fake database. -->
+<script type="importmap">
+{ "imports": { "@supabase/supabase-js": "./stub-supabase-db.js" } }
+</script>
+</head>
+<body>
+
+<h1>Team member contact numbers — executable tests</h1>
+<p class="sub">
+  Migration 0019. Exercises the REAL <code>functions/api/admin/users.js</code>,
+  <code>functions/utils/contact-crypto.js</code> and <code>functions/utils/rbac.js</code>
+  end to end — request in, encrypted row out, hierarchy-scoped disclosure,
+  audit trail — so a change to any of them re-runs here.
+</p>
+
+<div id="summary">Running…</div>
+<div id="out"></div>
+
+<script type="module">
+import { DB, reset } from './stub-supabase-db.js';
+import { onRequestGet, onRequestPost } from '../functions/api/admin/users.js';
+import { encryptContact, decryptContact, normalisePhone, lastFour, maskFromLastFour } from '../functions/utils/contact-crypto.js';
+import { getFullContactUserIds, canReadFullContact, can } from '../functions/utils/rbac.js';
+import { hashToken } from '../functions/utils/session.js';
+
+var results = [];
+function group(name) { results.push({ group: name }); }
+function check(desc, got, want) {
+  results.push({ desc: desc, pass: JSON.stringify(got) === JSON.stringify(want), got: got, want: want });
+}
+function ok(desc, cond, got) {
+  results.push({ desc: desc, pass: !!cond, got: got });
+}
+
+/* 32 bytes → base64, the shape CONTACT_ENCRYPTION_KEY must take. */
+var KEY = btoa('0123456789abcdef0123456789abcdef');
+var ENV = {
+  SUPABASE_URL: 'https://stub.test',
+  SUPABASE_SERVICE_ROLE_KEY: 'stub-service-role',
+  CONTACT_ENCRYPTION_KEY: KEY
+};
+
+/* ── fixture: the exact hierarchy the visibility rule is written for ──
+     CEO
+      ├─ Assistant CEO  ──▶ Manager A ──▶ FO A
+      │                  └▶ Manager B ──▶ FO B
+      └─ Assistant CEO 2 ─▶ Manager C ──▶ FO C
+   Manager C/FO C exist purely to prove "never another Assistant CEO's
+   team" — without a second branch that refusal can't be distinguished
+   from "the fixture just doesn't have anyone else". Every account carries
+   a distinct phone so a leak is traceable to a specific row rather than
+   merely "some number appeared". */
+var PEOPLE = [
+  { id: 'u-ceo',   role: 'ceo',           full_name: 'The CEO',      username: 'ceo',    phone: '+923001110001', reports_to_user_id: null },
+  { id: 'u-aceo',  role: 'assistant_ceo', full_name: 'Asst CEO',     username: 'aceo',   phone: '+923001110002', reports_to_user_id: null },
+  { id: 'u-mgrA',  role: 'manager',       full_name: 'Manager A',    username: 'mgra',   phone: '+923001110003', reports_to_user_id: 'u-aceo' },
+  { id: 'u-mgrB',  role: 'manager',       full_name: 'Manager B',    username: 'mgrb',   phone: '+923001110004', reports_to_user_id: 'u-aceo' },
+  { id: 'u-foA',   role: 'field_officer', full_name: 'Officer A',    username: 'foa',    phone: '+923001110005', reports_to_user_id: 'u-mgrA' },
+  { id: 'u-foB',   role: 'field_officer', full_name: 'Officer B',    username: 'fob',    phone: '+923001110006', reports_to_user_id: 'u-mgrB' },
+  { id: 'u-aceo2', role: 'assistant_ceo', full_name: 'Asst CEO Two', username: 'aceo2',  phone: '+923001110007', reports_to_user_id: null },
+  { id: 'u-mgrC',  role: 'manager',       full_name: 'Manager C',    username: 'mgrc',   phone: '+923001110008', reports_to_user_id: 'u-aceo2' },
+  { id: 'u-foC',   role: 'field_officer', full_name: 'Officer C',    username: 'foc',    phone: '+923001110009', reports_to_user_id: 'u-mgrC' }
+];
+var FROZEN = { ceo: 'exec', assistant_ceo: 'city_manager', manager: 'area_manager', field_officer: 'field_officer' };
+var TOKENS = {};
+
+async function seed() {
+  reset();
+  for (var i = 0; i < PEOPLE.length; i++) {
+    var p = PEOPLE[i];
+    DB.admin_users.push({
+      id: p.id, username: p.username, full_name: p.full_name, email: p.username + '@test.local',
+      role: p.role, frozen_role: FROZEN[p.role], status: 'active', must_change_password: false,
+      display_title: null, reports_to_user_id: p.reports_to_user_id,
+      created_at: '2026-01-01T00:00:00Z', last_login_at: null, last_verification_at: null,
+      phone_enc: await encryptContact(ENV, p.phone),
+      phone_last4: lastFour(p.phone),
+      whatsapp_enc: null, whatsapp_last4: null
+    });
+    var token = 'tok-' + p.id;
+    TOKENS[p.id] = token;
+    DB.admin_sessions.push({
+      id: 'sess-' + p.id, user_id: p.id, token_hash: await hashToken(token),
+      expires_at: new Date(Date.now() + 3600000).toISOString(), revoked_at: null
+    });
+  }
+}
+
+/* A plain object rather than `new Request(...)`: `Cookie` is a forbidden
+   header name in the browser's fetch API, so a real Request silently drops
+   it and every call under test would resolve as logged-out. This exposes
+   exactly the three things the handlers touch — url, headers.get(), and
+   json() — which is also a useful check that they touch nothing else. */
+function ctx(asUserId, method, body, query) {
+  var headers = {
+    cookie: 'mor_admin_session=' + TOKENS[asUserId],
+    'user-agent': 'team-contact-tests',
+    'cf-connecting-ip': '203.0.113.9'
+  };
+  return {
+    env: ENV,
+    request: {
+      method: method,
+      url: 'https://stub.test/api/admin/users' + (query || ''),
+      headers: { get: function (k) { return headers[String(k).toLowerCase()] || null; } },
+      json: function () {
+        return body ? Promise.resolve(body) : Promise.reject(new Error('no body'));
+      }
+    }
+  };
+}
+async function GET(asUserId, query) {
+  var res = await onRequestGet(ctx(asUserId, 'GET', null, query));
+  return { status: res.status, body: await res.json() };
+}
+async function POST(asUserId, body) {
+  var res = await onRequestPost(ctx(asUserId, 'POST', body));
+  return { status: res.status, body: await res.json() };
+}
+function userInList(list, id) {
+  return (list || []).find(function (u) { return u.id === id; });
+}
+
+await seed();
+
+/* ── 1. Encryption primitives ─────────────────────────────────────── */
+group('contact-crypto: encryption at rest');
+
+var ct = await encryptContact(ENV, '+923001234567');
+ok('ciphertext carries the v1 version prefix', ct.indexOf('v1:') === 0, ct.slice(0, 3));
+ok('ciphertext does not contain the plaintext', ct.indexOf('923001234567') === -1, ct);
+check('decrypt round-trips exactly', await decryptContact(ENV, ct), '+923001234567');
+
+var ct2 = await encryptContact(ENV, '+923001234567');
+ok('same number encrypts differently each time (random IV)', ct !== ct2, [ct, ct2]);
+
+/* A tampered ciphertext must fail closed, not yield attacker-chosen text —
+   this is the property GCM was chosen for over CBC. */
+var tampered = 'v1:' + btoa(atob(ct.slice(3)).replace(/.$/, 'X'));
+check('tampered ciphertext decrypts to null, never plaintext', await decryptContact(ENV, tampered), null);
+check('unknown version prefix decrypts to null', await decryptContact(ENV, 'v9:abcd'), null);
+check('null ciphertext decrypts to null', await decryptContact(ENV, null), null);
+
+/* A key of the wrong length is a silent downgrade to weaker encryption, so
+   it must be a hard failure at first use. */
+var keyThrew = false;
+try { await encryptContact({ CONTACT_ENCRYPTION_KEY: btoa('tooshort') }, '+92300'); } catch (e) { keyThrew = true; }
+ok('a key that is not 32 bytes throws rather than encrypting weakly', keyThrew, keyThrew);
+
+var missingThrew = false;
+try { await encryptContact({}, '+923001234567'); } catch (e) { missingThrew = true; }
+ok('a missing CONTACT_ENCRYPTION_KEY throws', missingThrew, missingThrew);
+
+group('contact-crypto: normalisation and masking');
+check('spaces and dashes normalise away',   normalisePhone('+92 300-123 4567'), '+923001234567');
+check('a local format keeps its leading 0', normalisePhone('0300-1234567'), '03001234567');
+check('too short is rejected',              normalisePhone('12345'), null);
+check('too long is rejected',               normalisePhone('1234567890123456'), null);
+check('blank is null, not an error',        normalisePhone('   '), null);
+check('last4 reads off the normalised form', lastFour('+92 300-123 4567'), '4567');
+check('mask shows only the last four',       maskFromLastFour('4567'), '••• ••• 4567');
+ok('mask of nothing is nothing', maskFromLastFour(null) === null, maskFromLastFour(null));
+
+/* ── 2. Write path: what actually lands in the database ───────────── */
+group('API create: the row stores ciphertext, never digits');
+
+var created = await POST('u-ceo', {
+  action: 'create', role: 'field_officer', username: 'newfo', fullName: 'New Officer',
+  email: 'newfo@test.local', password: 'CorrectHorse99!', phone: '+92 300 777 8899', whatsapp: '03007778899'
+});
+ok('CEO can create a member with contact numbers', created.status === 201, created);
+var newRow = DB.admin_users.find(function (u) { return u.username === 'newfo'; }) || {};
+ok('phone_enc is stored encrypted', newRow && newRow.phone_enc && newRow.phone_enc.indexOf('v1:') === 0, newRow && newRow.phone_enc);
+ok('no column holds the full number in the clear',
+   JSON.stringify(newRow).indexOf('3007778899') === -1, JSON.stringify(newRow || {}).slice(0, 200));
+check('phone_last4 is exactly the last four digits', newRow && newRow.phone_last4, '8899');
+check('the stored phone decrypts back to the normalised number', await decryptContact(ENV, newRow.phone_enc), '+923007778899');
+check('whatsapp normalises independently of phone', await decryptContact(ENV, newRow.whatsapp_enc), '03007778899');
+
+var badNumber = await POST('u-ceo', {
+  action: 'create', role: 'field_officer', username: 'badfo', fullName: 'Bad Officer',
+  email: 'badfo@test.local', password: 'CorrectHorse99!', phone: '12'
+});
+check('a malformed number is rejected 422', badNumber.status, 422);
+ok('the rejected account was not created',
+   !DB.admin_users.find(function (u) { return u.username === 'badfo'; }), DB.admin_users.length);
+
+group('API update: set, change and clear');
+await POST('u-ceo', { action: 'update', userId: 'u-foA', phone: '+92 321 000 1122' });
+var foA = DB.admin_users.find(function (u) { return u.id === 'u-foA'; });
+check('an updated number re-encrypts', await decryptContact(ENV, foA.phone_enc), '+923210001122');
+check('an updated last4 follows the new number', foA.phone_last4, '1122');
+
+await POST('u-ceo', { action: 'update', userId: 'u-foA', phone: '' });
+check('an empty string clears the ciphertext', foA.phone_enc, null);
+check('clearing the ciphertext clears last4 with it (ck_admin_users_phone_pair)', foA.phone_last4, null);
+
+/* The half-written-pair failure migration 0019's CHECK exists to catch:
+   whatever the endpoint writes, it must always write both or neither. */
+ok('phone_enc and phone_last4 are never written apart',
+   DB.admin_users.every(function (u) { return (u.phone_enc == null) === (u.phone_last4 == null); }), true);
+
+await POST('u-ceo', { action: 'update', userId: 'u-foA', fullName: 'Officer A Renamed' });
+check('an update that omits phone leaves the stored number alone', foA.phone_enc, null);
+
+/* ── 3. Read path: the list never ships plaintext ─────────────────── */
+group('API list: masked by default, plaintext never');
+
+var ceoList = await GET('u-ceo');
+var listJson = JSON.stringify(ceoList.body);
+ok('no team member phone number appears anywhere in the list response',
+   PEOPLE.every(function (p) { return listJson.indexOf(p.phone.replace('+', '')) === -1; }), listJson.length);
+ok('the list response carries no *_enc column either',
+   listJson.indexOf('_enc') === -1 && listJson.indexOf('v1:') === -1, true);
+
+var seenMgrA = userInList(ceoList.body.users, 'u-mgrA');
+check('CEO sees full access on a Manager', seenMgrA.phone.access, 'full');
+check('the CEO still only gets the mask, not the number', seenMgrA.phone.masked, '••• ••• 0003');
+check('a member with no number reports access none', userInList(ceoList.body.users, 'u-foA').phone.access, 'none');
+check('and no mask to go with it', userInList(ceoList.body.users, 'u-foA').phone.masked, null);
+check('a member with no whatsapp reports access none', seenMgrA.whatsapp.access, 'none');
+
+/* ── 4. THE hierarchy rule: Assistant CEO reaches two tiers, never
+   sideways into another Assistant CEO's branch ────────────────────── */
+group('Hierarchy: Assistant CEO reads self + own Managers + their FOs');
+
+var aceoUser  = DB.admin_users.find(function (u) { return u.id === 'u-aceo'; });
+var aceo2User = DB.admin_users.find(function (u) { return u.id === 'u-aceo2'; });
+var mgrAUser  = DB.admin_users.find(function (u) { return u.id === 'u-mgrA'; });
+var foBUser   = DB.admin_users.find(function (u) { return u.id === 'u-foB'; });
+
+check('CEO holds unrestricted contact access (null sentinel)',
+      await getFullContactUserIds(ENV, { id: 'u-ceo', role: 'ceo' }), null);
+
+var aceoAllowed = await getFullContactUserIds(ENV, aceoUser);
+check('Assistant CEO reads exactly self + own 2 Managers + their 2 FOs',
+      aceoAllowed.slice().sort(), ['u-aceo', 'u-foA', 'u-foB', 'u-mgrA', 'u-mgrB']);
+ok('… including the Field Officer under Manager A', aceoAllowed.indexOf('u-foA') > -1, aceoAllowed);
+ok('… AND the Field Officer under Manager B — the fixed gap', aceoAllowed.indexOf('u-foB') > -1, aceoAllowed);
+
+var aceo2Allowed = await getFullContactUserIds(ENV, aceo2User);
+check('the OTHER Assistant CEO reads only their own branch', aceo2Allowed.slice().sort(), ['u-aceo2', 'u-foC', 'u-mgrC']);
+ok('Assistant CEO 1 may NOT read Assistant CEO 2\'s Manager', aceoAllowed.indexOf('u-mgrC') === -1, aceoAllowed);
+ok('Assistant CEO 1 may NOT read Assistant CEO 2\'s Field Officer', aceoAllowed.indexOf('u-foC') === -1, aceoAllowed);
+ok('and the reverse: Assistant CEO 2 may NOT read Assistant CEO 1\'s people',
+   aceo2Allowed.indexOf('u-mgrA') === -1 && aceo2Allowed.indexOf('u-foA') === -1, aceo2Allowed);
+
+var mgrAllowed = await getFullContactUserIds(ENV, mgrAUser);
+check('Manager A may read exactly their own FO and themselves', mgrAllowed.sort(), ['u-foA', 'u-mgrA']);
+ok('Manager A may NOT read another Manager\'s FO', mgrAllowed.indexOf('u-foB') === -1, mgrAllowed);
+
+var foAllowed = await getFullContactUserIds(ENV, foBUser);
+check('a Field Officer may read only their own number', foAllowed, ['u-foB']);
+
+/* The list must TAG this rule, not just the reveal endpoint enforce it —
+   a card offering a Reveal button the API would refuse (or withholding one
+   the API would allow) is the "hidden UI is not enforcement" gap. */
+var aceoList = await GET('u-aceo');
+var aceoSeesFoB = userInList(aceoList.body.users, 'u-foB');
+var aceoSeesFoC = userInList(aceoList.body.users, 'u-foC');
+ok('the Assistant CEO sees Field Officer B in their tree', !!aceoSeesFoB, (aceoList.body.users || []).map(function (u) { return u.id; }));
+check('and that FO\'s number is now tagged full, not masked', aceoSeesFoB && aceoSeesFoB.phone.access, 'full');
+check('their own Manager is tagged full', userInList(aceoList.body.users, 'u-mgrA').phone.access, 'full');
+ok('a Field Officer from the OTHER Assistant CEO\'s branch never appears in this list at all',
+   !aceoSeesFoC, aceoList.body.users.map(function (u) { return u.id; }));
+
+/* ── 5. reveal-contact: the only door to plaintext ────────────────── */
+group('reveal-contact: enforcement, not just tagging');
+
+var ceoReveal = await POST('u-ceo', { action: 'reveal-contact', userId: 'u-mgrA' });
+check('CEO reveal succeeds', ceoReveal.status, 200);
+check('and returns the real number', ceoReveal.body.phone, '+923001110003');
+
+var aceoOwnMgr = await POST('u-aceo', { action: 'reveal-contact', userId: 'u-mgrA' });
+check('Assistant CEO may reveal their own Manager', aceoOwnMgr.status, 200);
+check('with the correct number', aceoOwnMgr.body.phone, '+923001110003');
+
+var aceoOwnDeepFo = await POST('u-aceo', { action: 'reveal-contact', userId: 'u-foB' });
+check('Assistant CEO MAY reveal a Field Officer under their own Manager (the fixed gap)', aceoOwnDeepFo.status, 200);
+check('with the correct number', aceoOwnDeepFo.body.phone, '+923001110006');
+
+var aceoOtherBranchFo = await POST('u-aceo', { action: 'reveal-contact', userId: 'u-foC' });
+check('Assistant CEO is REFUSED a Field Officer under ANOTHER Assistant CEO\'s Manager', aceoOtherBranchFo.status, 403);
+ok('and the refusal leaks no number', JSON.stringify(aceoOtherBranchFo.body).indexOf('1110009') === -1, aceoOtherBranchFo.body);
+
+var aceoOtherBranchMgr = await POST('u-aceo', { action: 'reveal-contact', userId: 'u-mgrC' });
+check('Assistant CEO is REFUSED another Assistant CEO\'s Manager directly', aceoOtherBranchMgr.status, 403);
+
+var mgrOwnFo = await POST('u-mgrA', { action: 'reveal-contact', userId: 'u-foA' });
+check('Manager A may reveal their own Field Officer', mgrOwnFo.status, 200);
+
+var mgrOtherFo = await POST('u-mgrA', { action: 'reveal-contact', userId: 'u-foB' });
+check('Manager A is REFUSED another Manager\'s Field Officer', mgrOtherFo.status, 403);
+
+var mgrUpward = await POST('u-mgrA', { action: 'reveal-contact', userId: 'u-aceo' });
+check('nobody reads UPWARD — Manager refused their own Assistant CEO', mgrUpward.status, 403);
+
+var foSelf = await POST('u-foB', { action: 'reveal-contact', userId: 'u-foB' });
+check('a Field Officer may reveal their own number', foSelf.status, 200);
+check('and it is the right one', foSelf.body.phone, '+923001110006');
+
+var foPeer = await POST('u-foB', { action: 'reveal-contact', userId: 'u-foA' });
+check('a Field Officer is REFUSED a peer', foPeer.status, 403);
+
+var foUpward = await POST('u-foB', { action: 'reveal-contact', userId: 'u-mgrB' });
+check('a Field Officer is REFUSED their own Manager', foUpward.status, 403);
+
+group('reveal-contact: capability matrix');
+check('every role may ASK to reveal (the row check decides whose)',
+      ['ceo', 'assistant_ceo', 'manager', 'field_officer'].map(function (r) { return can(r, 'users.contact.reveal'); }),
+      [true, true, true, true]);
+check('setting a number stays CEO-only, riding on users.edit',
+      ['ceo', 'assistant_ceo', 'manager', 'field_officer'].map(function (r) { return can(r, 'users.edit'); }),
+      [true, false, false, false]);
+ok('canReadFullContact agrees with getFullContactUserIds for CEO',
+   await canReadFullContact(ENV, { id: 'u-ceo', role: 'ceo' }, 'u-foB'), true);
+ok('canReadFullContact allows the Assistant CEO their own branch FO',
+   await canReadFullContact(ENV, aceoUser, 'u-foB'), true);
+ok('canReadFullContact refuses the Assistant CEO another branch entirely',
+   (await canReadFullContact(ENV, aceoUser, 'u-foC')) === false, await canReadFullContact(ENV, aceoUser, 'u-foC'));
+
+/* An Assistant CEO must not be able to reach a number by editing, since
+   users.edit is CEO-only — this is the "second door" check. */
+var aceoEdit = await POST('u-aceo', { action: 'update', userId: 'u-mgrB', phone: '+923009999999' });
+check('Assistant CEO cannot write a contact number either', aceoEdit.status, 403);
+check('and the stored number is unchanged',
+      await decryptContact(ENV, DB.admin_users.find(function (u) { return u.id === 'u-mgrB'; }).phone_enc),
+      '+923001110004');
+
+/* ── 6. Audit: every disclosure logged, no digits in the log ──────── */
+group('Audit trail');
+
+/* Exactly one row per ALLOWED reveal above (CEO→MgrA, ACEO→MgrA,
+   ACEO→FO-B [the fixed gap], MgrA→FO-A, FO-B→self) and none for any of
+   the eight refusals — an off-by-one here would mean either a disclosure
+   went unlogged or a refusal was logged as one. */
+var viewRows = DB.admin_audit_log.filter(function (r) { return r.action === 'view_contact'; });
+check('one view_contact row per successful reveal, and only those', viewRows.length, 5);
+check('each row names the actor who read it',
+      viewRows.map(function (r) { return r.actor_id; }), ['u-ceo', 'u-aceo', 'u-aceo', 'u-mgrA', 'u-foB']);
+check('and whose number was read',
+      viewRows.map(function (r) { return r.entity_id; }), ['u-mgrA', 'u-mgrA', 'u-foB', 'u-foA', 'u-foB']);
+
+/* FO-A's number was cleared earlier, so that reveal legitimately returned
+   nothing — but it is still an attempt to look someone up and is still
+   logged, with an empty `revealed` list saying there was nothing to give. */
+var emptyReveal = viewRows.find(function (r) { return r.entity_id === 'u-foA'; });
+check('revealing a member with no number on file still audits, as empty',
+      emptyReveal && emptyReveal.detail.revealed, []);
+check('a reveal that DID return a number says which field',
+      viewRows[0].detail.revealed, ['phone']);
+
+var lastView = viewRows[viewRows.length - 1];
+check('the audit row names the target account', lastView.entity_type, 'admin_user');
+ok('the audit row names the actor', !!lastView.actor_id, lastView.actor_id);
+ok('the audit row records WHICH fields were revealed',
+   Array.isArray(lastView.detail.revealed), lastView.detail);
+
+/* admin_audit_log is append-only (migration 0004 trg_audit_append_only),
+   so a number written here could never be removed afterwards. */
+var auditJson = JSON.stringify(DB.admin_audit_log);
+ok('NO phone number appears anywhere in the audit log',
+   PEOPLE.every(function (p) { return auditJson.indexOf(p.phone.replace('+', '')) === -1; }) &&
+   auditJson.indexOf('3007778899') === -1,
+   auditJson.slice(0, 300));
+ok('no ciphertext leaks into the audit log either', auditJson.indexOf('v1:') === -1, true);
+
+var refusedViews = viewRows.filter(function (r) { return r.entity_id === 'u-foC' && r.actor_id === 'u-aceo'; });
+check('a REFUSED reveal (out-of-branch FO) writes no view_contact row', refusedViews.length, 0);
+
+/* Every row carries a full timestamp — `at timestamptz not null default
+   now()` (migration 0004) gives date + hour + minute + second on every
+   insert in the real database. The stub does not synthesize DB column
+   defaults for this table, so this only proves the CODE never overrides
+   or omits it; the precision itself is a schema guarantee, not something
+   this suite can fake without re-implementing Postgres. */
+ok('no audit row sets `at` itself (left to the DB default, never blanked)',
+   DB.admin_audit_log.every(function (r) { return !('at' in r); }), true);
+
+var createRow = DB.admin_audit_log.find(function (r) { return r.action === 'create_user'; });
+ok('create_user records which contact fields were set, by name only',
+   createRow && JSON.stringify(createRow.detail.contactFieldsSet) === JSON.stringify(['phone_enc', 'whatsapp_enc']),
+   createRow && createRow.detail);
+
+var updateRow = DB.admin_audit_log.filter(function (r) { return r.action === 'update_user'; })[0];
+ok('update_user records changed field NAMES only',
+   updateRow && updateRow.detail.fields.indexOf('phone_enc') > -1 &&
+   JSON.stringify(updateRow.detail).indexOf('3210001122') === -1,
+   updateRow && updateRow.detail);
+
+/* ── 7. Profile endpoint follows the same rule ────────────────────── */
+group('Profile view');
+
+var ceoProfile = await GET('u-ceo', '?profile=u-mgrB');
+check('CEO profile tags the number full', ceoProfile.body.profile.phone.access, 'full');
+ok('but the profile response still carries no plaintext',
+   JSON.stringify(ceoProfile.body).indexOf('1110004') === -1, ceoProfile.body.profile.phone);
+
+var aceoProfile = await GET('u-aceo', '?profile=u-foB');
+check('Assistant CEO can open their own-branch FO\'s profile', aceoProfile.status, 200);
+check('and the number there is now full (the fixed gap)', aceoProfile.body.profile.phone.access, 'full');
+
+/* u-foC is outside u-aceo's hierarchy entirely (reports through the OTHER
+   Assistant CEO's Manager) — getVisibleSubordinateIds refuses the profile
+   outright, before contact access is even in the picture. */
+var aceoOtherProfile = await GET('u-aceo', '?profile=u-foC');
+check('Assistant CEO is refused a profile entirely outside their hierarchy', aceoOtherProfile.status, 403);
+
+/* ── render ───────────────────────────────────────────────────────── */
+var out = document.getElementById('out');
+var passed = 0, failed = 0;
+var html = '';
+results.forEach(function (r) {
+  if (r.group) { html += '<div class="grp">' + r.group + '</div><ul>'; return; }
+  if (r.pass) { passed++; html += '<li class="p">PASS  ' + r.desc + '</li>'; }
+  else {
+    failed++;
+    html += '<li class="f">FAIL  ' + r.desc + ' — got ' + JSON.stringify(r.got) +
+      (r.want !== undefined ? ', want ' + JSON.stringify(r.want) : '') + '</li>';
+  }
+});
+out.innerHTML = html + '</ul>';
+var s = document.getElementById('summary');
+s.className = failed ? 'bad' : 'ok';
+s.textContent = failed ? (failed + ' FAILED, ' + passed + ' passed') : ('All ' + passed + ' assertions passed');
+window.__RESULT__ = { passed: passed, failed: failed };
+</script>
+</body>
+</html>

@@ -958,6 +958,12 @@
   var teamFilters = { q: '', role: '', status: '' };
   var teamExpanded = {};   // userId -> 'view' | 'edit' | 'message'
   var profileCache = {};   // userId -> deep profile/progress data, fetched on demand when View opens
+  /* userId -> { phone, whatsapp } plaintext, only ever populated by an
+     explicit Reveal click (POST action:'reveal-contact', which the server
+     audits). Never persisted and never pre-fetched: closing the card or
+     reloading the Team list drops it, so a revealed number does not sit in
+     memory across the whole session. */
+  var contactRevealCache = {};
   var teamGroupExpanded = {};   // role -> collapsed(false, default)/expanded(true)
   var mgrFoExpanded = {};   // managerId -> true when their nested Field Officer list is open (ISSUE 1, governance pass)
   var aceoExpanded = {};    // assistantCeoId -> true when their nested Manager list is open (Team redesign, CEO-only tree)
@@ -1083,6 +1089,72 @@
     return card;
   }
 
+  /* One Phone/WhatsApp line in the View panel (migration 0019).
+
+     The server never sends the number itself with the Team list — only
+     `{present, masked, access}`. So this renders one of exactly four
+     states, and the browser cannot render a number it was never given:
+
+       access 'none'   → no number on file.
+       access 'masked' → the last 4 digits, no Reveal button. This is what
+                         someone MORE than one tier above sees: they can
+                         see the person, not their number.
+       access 'full'   → last 4 plus a Reveal button, which fetches the
+                         plaintext and writes an audit row server-side.
+       revealed        → the real number, plus a WhatsApp deep link where
+                         that is the field being shown.
+
+     `esc()` on every interpolated value including the revealed number: it
+     came back from the API, and an API response is still untrusted input
+     as far as innerHTML is concerned. */
+  function contactRow(u, field, label) {
+    var c = u[field];
+    if (!c || c.access === 'none') {
+      return '<div class="ad-kv-row"><span>' + label + '</span><span>—</span></div>';
+    }
+    var revealed = (contactRevealCache[u.id] || {})[field];
+    if (revealed) {
+      var waLink = field === 'whatsapp'
+        ? ' <a href="https://wa.me/' + esc(revealed.replace(/[^0-9]/g, '')) + '" target="_blank" rel="noopener noreferrer">Open chat</a>'
+        : '';
+      return '<div class="ad-kv-row"><span>' + label + '</span><span><b>' + esc(revealed) + '</b>' + waLink + '</span></div>';
+    }
+    if (c.access === 'full') {
+      return '<div class="ad-kv-row"><span>' + label + '</span><span>' + esc(c.masked || '') +
+        ' <button class="ad-btn is-sm" type="button" data-reveal-contact="' + esc(field) + '">Reveal</button></span></div>';
+    }
+    return '<div class="ad-kv-row"><span>' + label + '</span><span>' + esc(c.masked || '') +
+      ' <small>(hidden — outside your direct reports)</small></span></div>';
+  }
+
+  /* Phone/WhatsApp input in the Edit panel (CEO-only, like every other
+     field there). Prefilled from contactRevealCache, which the Edit click
+     handler populates via the same audited reveal-contact call the View
+     panel's Reveal button uses — editing a number IS reading it, so it is
+     logged as such rather than smuggled in through a side door.
+
+     If a number exists but the reveal did not come back (a missing
+     CONTACT_ENCRYPTION_KEY, a network failure), the input renders disabled
+     and WITHOUT its data-edit-* attribute. That attribute is what the save
+     handler looks for, so an un-prefilled field is simply omitted from the
+     payload and the server leaves the stored number untouched — an empty
+     box that silently means "clear it" is the one failure mode this whole
+     branch exists to prevent. */
+  function contactEditField(u, field, label) {
+    var c = u[field] || {};
+    var attr = 'data-edit-' + field;
+    var revealed = (contactRevealCache[u.id] || {})[field];
+
+    if (c.present && !revealed) {
+      return '<div class="ad-field"><label>' + label + '</label>' +
+        '<input class="ad-input" type="tel" value="' + esc(c.masked || '') + '" disabled />' +
+        '<small>Could not load the current number — it will be left unchanged.</small></div>';
+    }
+    return '<div class="ad-field"><label>' + label + '</label>' +
+      '<input class="ad-input" type="tel" maxlength="24" ' + attr + ' value="' + esc(revealed || '') + '" ' +
+      'placeholder="+92 300 1234567" /><small>Leave blank to remove.</small></div>';
+  }
+
   function renderPersonDetail(u, mode) {
     if (!mode) return '';
     var hasReportsTo = u.role === 'manager' || u.role === 'field_officer';
@@ -1144,6 +1216,8 @@
         (u.displayTitle ? '<div class="ad-kv-row"><span>Designation</span><span>' + esc(u.displayTitle) + '</span></div>' : '') +
         '<div class="ad-kv-row"><span>Username</span><span>' + esc(u.username) + '</span></div>' +
         '<div class="ad-kv-row"><span>Email</span><span>' + esc(u.email || '—') + '</span></div>' +
+        contactRow(u, 'phone', 'Phone') +
+        contactRow(u, 'whatsapp', 'WhatsApp') +
         '<div class="ad-kv-row"><span>Status</span><span>' + esc(u.status) + '</span></div>' +
         (hasReportsTo ? '<div class="ad-kv-row"><span>Reports to</span><span>' + esc(reportsToName) + '</span></div>' : '') +
         '<div class="ad-kv-row"><span>Created</span><span>' + esc(A.fmtDateTime(u.createdAt)) + '</span></div>' +
@@ -1199,6 +1273,8 @@
         '<div class="ad-field"><label>Email</label><input class="ad-input" type="email" data-edit-email value="' + esc(u.email || '') + '" /></div>' +
         '<div class="ad-field"><label class="ad-label-tip">Designation' + tipSpan('designation', 'Designation') +
           '</label><input class="ad-input" type="text" maxlength="120" data-edit-title value="' + esc(u.displayTitle || '') + '" placeholder="Optional — e.g. Senior Field Coordinator" /></div>' +
+        contactEditField(u, 'phone', 'Phone number') +
+        contactEditField(u, 'whatsapp', 'WhatsApp number') +
         reportsToField +
         '</div><div class="ad-actions">' +
         '<button class="ad-btn is-primary is-sm" type="button" data-save-edit>Save</button>' +
@@ -1431,6 +1507,11 @@
   async function ensureTeamCache() {
     var res = await A.get(API.adminUsers);
     teamCache = res.users;
+    /* Revealed plaintext numbers do not survive a roster refresh — the
+       masked/access flags in the new rows are authoritative, and a stale
+       reveal could otherwise keep showing a number after the CEO cleared
+       it or after the viewer's own hierarchy changed. */
+    contactRevealCache = {};
     return teamCache;
   }
 
@@ -1784,6 +1865,8 @@
     var password = $('adNewPassword').value;
     var email = $('adNewEmail').value.trim();
     var displayTitle = $('adNewDisplayTitle').value.trim();
+    var phone = $('adNewPhone').value.trim();
+    var whatsapp = $('adNewWhatsapp').value.trim();
 
     if (!role || !fullName || !username || !password || !email) {
       A.msg($('adUserMsg'), 'Security role, full name, username, password and email are all required.', 'is-error');
@@ -1798,7 +1881,8 @@
     try {
       await A.post(API.adminUsers, {
         action: 'create', role: role, fullName: fullName, username: username, email: email, password: password,
-        displayTitle: displayTitle || undefined
+        displayTitle: displayTitle || undefined,
+        phone: phone || undefined, whatsapp: whatsapp || undefined
       });
       A.msg($('adUserMsg'), 'Team member created with the password and email you set.', 'is-ok');
       $('adNewFullName').value = '';
@@ -1806,6 +1890,8 @@
       $('adNewPassword').value = '';
       $('adNewEmail').value = '';
       $('adNewDisplayTitle').value = '';
+      $('adNewPhone').value = '';
+      $('adNewWhatsapp').value = '';
       await loadTeam();
     } catch (e) {
       A.msg($('adUserMsg'), e.message, 'is-error');
@@ -1838,9 +1924,18 @@
     var msgOpen = e.target.closest('[data-message]');
     var msgSend = e.target.closest('[data-msg-send]');
     var msgCancel = e.target.closest('[data-msg-cancel]');
+    var revealContact = e.target.closest('[data-reveal-contact]');
 
     try {
-      if (toggle) {
+      if (revealContact) {
+        /* Reveals BOTH numbers in one call even though one button was
+           clicked: the server audits per disclosure event, not per field,
+           and two clicks for one person's contact details would write two
+           audit rows for what is plainly one act of looking someone up. */
+        var revRes = await A.post(API.adminUsers, { action: 'reveal-contact', userId: userId });
+        contactRevealCache[userId] = { phone: revRes.phone, whatsapp: revRes.whatsapp };
+        renderTeamList();
+      } else if (toggle) {
         await A.post(API.adminUsers, {
           action: 'set-status', userId: userId, status: toggle.getAttribute('data-toggle')
         });
@@ -1953,8 +2048,25 @@
         teamExpanded[userId] = null;
         renderTeamList();
       } else if (edit) {
-        teamExpanded[userId] = teamExpanded[userId] === 'edit' ? null : 'edit';
+        var openingEdit = teamExpanded[userId] !== 'edit';
+        teamExpanded[userId] = openingEdit ? 'edit' : null;
         renderTeamList();
+        /* Prefill the contact inputs with the real numbers so a save does
+           not silently blank them. Editing a number is reading it, so this
+           goes through the same audited reveal every other disclosure
+           uses. On failure contactEditField renders the field disabled and
+           the save omits it — never an empty box that clears the row. */
+        if (openingEdit && !contactRevealCache[userId]) {
+          var editRow = (teamCache || []).find(function (x) { return x.id === userId; });
+          var needsReveal = editRow && ((editRow.phone && editRow.phone.present) || (editRow.whatsapp && editRow.whatsapp.present));
+          if (needsReveal) {
+            try {
+              var editRev = await A.post(API.adminUsers, { action: 'reveal-contact', userId: userId });
+              contactRevealCache[userId] = { phone: editRev.phone, whatsapp: editRev.whatsapp };
+              renderTeamList();
+            } catch (revErr) { /* field renders disabled + "left unchanged" */ }
+          }
+        }
       } else if (cancelEdit) {
         teamExpanded[userId] = null;
         renderTeamList();
@@ -1963,12 +2075,21 @@
         var emailEl = row.querySelector('[data-edit-email]');
         var titleEl = row.querySelector('[data-edit-title]');
         var reportsToEl = row.querySelector('[data-edit-reports-to]');
-        await A.post(API.adminUsers, {
+        var phoneEl = row.querySelector('[data-edit-phone]');
+        var whatsappEl = row.querySelector('[data-edit-whatsapp]');
+        var editPayload = {
           action: 'update', userId: userId,
           fullName: fullNameEl.value.trim(), email: emailEl.value.trim(),
           displayTitle: titleEl.value.trim()
-        });
+        };
+        /* Absent element = the field could not be prefilled (see
+           contactEditField) → omit the key entirely so the server's
+           `!= null` present-check leaves the stored number alone. */
+        if (phoneEl) editPayload.phone = phoneEl.value.trim();
+        if (whatsappEl) editPayload.whatsapp = whatsappEl.value.trim();
+        await A.post(API.adminUsers, editPayload);
         delete profileCache[userId];   // designation just changed — the cached profile snapshot is now stale
+        delete contactRevealCache[userId];   // numbers may have just changed — drop the plaintext copy
         if (reportsToEl) {
           await A.post(API.adminUsers, {
             action: 'set-reports-to', userId: userId, reportsToUserId: reportsToEl.value || null

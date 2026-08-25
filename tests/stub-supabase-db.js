@@ -123,6 +123,7 @@ function matches(row, filters) {
     var v = f.col ? valueAt(row, f.col) : undefined;
     if (f.op === 'or') { if (!matchesOr(row, f.val)) return false; continue; }
     if (f.op === 'eq' && v !== f.val) return false;
+    if (f.op === 'neq' && v === f.val) return false;
     if (f.op === 'in' && (f.val || []).indexOf(v) === -1) return false;
     /* `.is(col, null)` must match a row that never set the column: in SQL
        an absent value IS null, and treating undefined as "not null" here
@@ -154,6 +155,13 @@ function builder(table) {
      which reads as "the record does not exist" instead of "the fake
      cannot join". Only the FKs the code under test actually embeds. */
   var EMBEDS = {
+    /* session → identity, the chain resolveSession() walks on EVERY
+       authenticated request. Without it no endpoint that starts with
+       requireAuth can be tested at all: the join would drop the session
+       row and the caller would look logged out. */
+    admin_sessions: [
+      { rel: 'admin_users', fk: 'user_id', target: 'admin_users', key: 'id' }
+    ],
     admin_area_assignments: [
       { rel: 'admin_users', fk: 'user_id', target: 'admin_users', key: 'id' },
       { rel: 'locations', fk: 'node_id', target: 'locations', key: 'node_id' }
@@ -263,6 +271,7 @@ function builder(table) {
   var api = {
     select: function (s) { selectStr = s || ''; return api; },
     eq: function (col, val) { filters.push({ op: 'eq', col: col, val: val }); return api; },
+    neq: function (col, val) { filters.push({ op: 'neq', col: col, val: val }); return api; },
     in: function (col, val) { filters.push({ op: 'in', col: col, val: val }); return api; },
     or: function (expr) { filters.push({ op: 'or', col: null, val: expr }); return api; },
     is: function (col, val) { filters.push({ op: 'is', col: col, val: val }); return api; },

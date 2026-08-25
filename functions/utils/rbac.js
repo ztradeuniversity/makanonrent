@@ -46,6 +46,17 @@ export var PERMISSIONS = {
      block. Not a capability any other role gains a symmetric version of;
      there is no peer-to-peer or upward messaging in this brief. */
   'users.message':               ['ceo'],
+  /* Contact numbers (migration 0019). Every role holds this — including
+     Field Officer, who holds no other users.* capability — because the
+     capability only decides "may this role ask to read a number at all";
+     WHOSE number they may actually read is decided per-row by
+     getFullContactUserIds below, which for a Field Officer resolves to
+     their own account and nothing else. Splitting it this way keeps the
+     matrix honest: a blanket deny here would also block someone reading
+     the number on their own profile. Setting a number is NOT a separate
+     capability — it rides on users.edit (CEO-only) like every other
+     identity field. */
+  'users.contact.reveal':        ['ceo', 'assistant_ceo', 'manager', 'field_officer'],
 
   /* — area assignment (City → Main → Sub) — */
   'areas.assign':               ['ceo', 'assistant_ceo', 'manager'],
@@ -310,6 +321,65 @@ export async function getDelegationTargets(env, user) {
     return (res.data || []).map(function (r) { return r.id; });
   }
   return [];
+}
+
+/* ── contact-number visibility (migration 0019) ───────────────────────
+   Phone/WhatsApp are personal data, so "who may SEE this account" and "who
+   may READ this account's number" are separate questions from ordinary
+   work delegation — reusing getDelegationTargets (one tier, strictly) was
+   too narrow: the approved business rule gives an Assistant CEO read
+   access two tiers down, through their OWN Managers only:
+
+     Assistant CEO → self, own Area Managers, AND the Field Officers who
+                      report to those specific Managers (reports_to chain
+                      only — never area-overlap, never an FO or Manager
+                      reached through a different Assistant CEO).
+     Manager        → self and own Field Officers (reports_to = self).
+     Field Officer  → self only.
+
+   A dedicated function rather than reusing getVisibleSubordinateIds: that
+   one additionally includes area-overlap FOs and FOs who report directly
+   to the Assistant CEO outside any Manager, which is correct for TEAM
+   VISIBILITY but wider than the disclosure rule approved for contact
+   numbers — visibility and contact-read authority are allowed to differ,
+   and must not silently converge just because they share a data source.
+
+   Returns null for CEO (global — matches getScopeNodeIds' convention).
+   Otherwise an array of user ids that ALWAYS contains the caller's own id. */
+export async function getFullContactUserIds(env, user) {
+  if (user.role === 'ceo') return null;
+  if (user.role === 'field_officer') return [user.id];
+
+  var db = getServiceClient(env);
+
+  if (user.role === 'manager') {
+    var mgrFoRes = await db.from('admin_users')
+      .select('id').eq('reports_to_user_id', user.id).eq('role', 'field_officer').eq('status', 'active');
+    if (mgrFoRes.error) throw mgrFoRes.error;
+    var mgrFoIds = (mgrFoRes.data || []).map(function (r) { return r.id; });
+    return [user.id].concat(mgrFoIds);
+  }
+
+  if (user.role === 'assistant_ceo') {
+    var managerIds = await getManagedManagerIds(env, user.id);
+    var ids = [user.id].concat(managerIds);
+    if (managerIds.length) {
+      var chainRes = await db.from('admin_users')
+        .select('id').in('reports_to_user_id', managerIds).eq('role', 'field_officer').eq('status', 'active');
+      if (chainRes.error) throw chainRes.error;
+      (chainRes.data || []).forEach(function (r) { if (ids.indexOf(r.id) === -1) ids.push(r.id); });
+    }
+    return ids;
+  }
+
+  return [user.id];
+}
+
+/* One-row form of the same rule, for endpoints that authorise a single
+   target id (the reveal endpoint) rather than tagging a whole list. */
+export async function canReadFullContact(env, user, targetUserId) {
+  var allowed = await getFullContactUserIds(env, user);
+  return allowed === null || allowed.indexOf(targetUserId) > -1;
 }
 
 /* ── cascade safety: CHILD_SCOPE ⊆ PARENT_SCOPE after a revoke ────────
