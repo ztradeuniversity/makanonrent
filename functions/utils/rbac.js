@@ -58,8 +58,15 @@ export var PERMISSIONS = {
   'locations.manage':           ['ceo', 'assistant_ceo'],
 
   /* — tasks — */
-  'tasks.assign':               ['ceo', 'assistant_ceo'],
-  'tasks.list.any':             ['ceo', 'assistant_ceo'],
+  /* Work-hierarchy fix (audited 2026-08-25): 'manager' was missing from
+     both of these entirely — an Area Manager could neither delegate work
+     to their own Field Officers nor see work already delegated to them.
+     canManageRole already permits manager→field_officer; the capability
+     gate was the only thing stopping it. Recipient eligibility itself is
+     enforced separately and more strictly by getTaskDelegationTargets
+     below — this gate only decides who may call the endpoint at all. */
+  'tasks.assign':               ['ceo', 'assistant_ceo', 'manager'],
+  'tasks.list.any':             ['ceo', 'assistant_ceo', 'manager'],
   'tasks.list.own':             ['ceo', 'assistant_ceo', 'manager', 'field_officer'],
 
   /* — properties — */
@@ -263,6 +270,38 @@ export async function getVisibleSubordinateIds(env, user) {
     return managerIds.concat(foIds);
   }
   return foIds;
+}
+
+/* ── task delegation targets: ONE tier down, never further (work-
+   hierarchy fix, audited 2026-08-25) ──────────────────────────────────
+   getVisibleSubordinateIds intentionally returns an Assistant CEO's
+   Managers AND their Field Officers together — correct for TEAM
+   VISIBILITY (the Assistant CEO must see the whole tree), wrong for WORK
+   ASSIGNMENT: "Assistant CEO cannot assign directly to FO" is a hard
+   business rule, and reusing the visibility set as the assignment-target
+   set would silently let that happen (an FO the Assistant CEO can see is
+   not the same as an FO the Assistant CEO may hand work to). This
+   function is the SEPARATE, stricter answer to "who may I delegate work
+   to", used by tasks.js for both the recipient list and the create-time
+   authorisation check, so the two can never disagree.
+
+   Returns null for CEO (unrestricted, matches existing behaviour — the
+   brief does not ask to narrow CEO's own reach, only Assistant CEO's and
+   Manager's). assistant_ceo → ONLY their own Managers. manager → ONLY
+   their own Field Officers (reports_to = self; a Manager delegates from
+   work already in their own hands, so area-overlap is not a relevant
+   basis here the way it is for team visibility). field_officer → []. */
+export async function getTaskDelegationTargets(env, user) {
+  if (user.role === 'ceo') return null;
+  if (user.role === 'assistant_ceo') return await getManagedManagerIds(env, user.id);
+  if (user.role === 'manager') {
+    var db = getServiceClient(env);
+    var res = await db.from('admin_users')
+      .select('id').eq('reports_to_user_id', user.id).eq('role', 'field_officer').eq('status', 'active');
+    if (res.error) throw res.error;
+    return (res.data || []).map(function (r) { return r.id; });
+  }
+  return [];
 }
 
 /* ── cascade safety: CHILD_SCOPE ⊆ PARENT_SCOPE after a revoke ────────

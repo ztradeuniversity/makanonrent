@@ -286,11 +286,37 @@
 
     <!-- ══ TASK MANAGEMENT ══ (moved out of Team, redesign 2026-08-24) -->
     <section class="ad-panel" id="panel-tasks" role="tabpanel">
+      <!-- Work-hierarchy fix (2026-08-25): "MY WORK" — what THIS caller
+           has received, whoever assigned it. A Manager/Assistant CEO can
+           delegate straight from here (ISSUE 5/6); an FO's own view is
+           read-only (they perform work, they don't assign it). -->
+      <div class="ad-card" id="adMyWorkCard">
+        <div class="ad-card-head">
+          <b>My work
+            <span class="ad-tip" data-tip="Work assigned to you, by whoever is directly above you in the hierarchy. Only what was assigned TO you appears here."><button type="button" class="ad-tip-btn" aria-label="What is My work?">?</button><span class="ad-tip-bubble" role="tooltip"></span></span>
+          </b>
+          <span id="adMyWorkDate"></span>
+        </div>
+        <div id="adMyWorkList"></div>
+      </div>
+
+      <!-- Oversight (Assistant CEO/Manager only): what's been delegated
+           to the tier below, and its current status — view-only, no
+           edit/reassign path (ISSUE 8/10). -->
+      <div class="ad-card" id="adTeamWorkCard" hidden>
+        <div class="ad-card-head">
+          <b id="adTeamWorkTitle">My team's delegated work</b>
+          <span>View/comment only — the original assignment is never silently changed here.</span>
+        </div>
+        <div id="adTeamWorkList"></div>
+      </div>
+
       <div class="ad-card" id="adTaskCard">
-        <div class="ad-card-head"><b>Assign a daily task</b><span>Progress is measured from real work, not self-reported.</span></div>
+        <div class="ad-card-head"><b id="adTaskCardTitle">Assign work</b><span>Progress is measured from real work, not self-reported.</span></div>
+        <p class="ad-msg is-ok" id="adDelegateBanner" hidden></p>
         <div class="ad-row">
           <div class="ad-field">
-            <label for="adTaskUser">Team member</label>
+            <label for="adTaskUser" id="adTaskUserLabel">Recipient</label>
             <select class="ad-select" id="adTaskUser"></select>
           </div>
           <div class="ad-field">
@@ -318,6 +344,7 @@
         </div>
         <div class="ad-actions">
           <button class="ad-btn is-primary" type="button" id="adCreateTask">Assign task</button>
+          <button class="ad-btn is-sm" type="button" id="adCancelDelegate" hidden>Cancel delegation</button>
         </div>
         <p class="ad-msg" id="adTaskMsg" role="status" aria-live="polite"></p>
       </div>

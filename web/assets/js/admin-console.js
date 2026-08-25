@@ -125,10 +125,19 @@
 
       $('adTaskList').innerHTML = res.tasks.length
         ? res.tasks.map(function (t) {
+            /* "Assigned by: <role>, Assigned at: <exact time>" (ISSUE 2/13
+               — a Field Officer must be able to see who above them in the
+               hierarchy handed them this work, and exactly when). Same
+               assignedByName/createdAt now returned by every /api/admin/
+               tasks response, not a second lookup. */
+            var lineage = t.assignedByName
+              ? '<small style="display:block;">Assigned by ' + esc(t.assignedByName) + ' · ' + esc(A.fmtDateTimeSeconds(t.createdAt)) + '</small>'
+              : '';
             return '<div class="ad-verify-row">' +
               '<div class="ad-grow"><b>' + esc(t.title) + '</b>' +
               '<small>' + t.completedCount + ' of ' + t.targetCount + ' done · ' +
               t.pendingCount + ' remaining</small>' +
+              lineage +
               (t.notes ? '<small style="display:block;margin-top:4px;white-space:pre-wrap;">' + esc(t.notes) + '</small>' : '') +
               '</div>' +
               '<span class="ad-pill ' + (t.completionPct >= 100 ? 'is-ok' : 'is-warn') + '">' +
@@ -1545,18 +1554,159 @@
   }
 
   /* ── TASK MANAGEMENT (moved out of Team, redesign 2026-08-24) ─────── */
+  var delegatingFromTaskId = null;   // set while the create form is delegating an existing received task, not starting a fresh one
+  var taskChainOpenFor = {};         // taskId -> true when its inline chain/history panel is open
+  var taskChainCache = {};           // taskId -> chain rows, fetched on demand
+
+  /* Work-hierarchy fix (2026-08-25), ISSUE 3/9/19/27: recipient list for
+     WORK ASSIGNMENT is deliberately a DIFFERENT, stricter set than the
+     Team list's `manageable` flag (which is what the OLD version of this
+     function used — the confirmed root cause of an Assistant CEO's
+     recipient dropdown showing a Field Officer). ONE tier down, never
+     further; the label on the field itself says which tier. */
   async function loadTaskManagement() {
     try {
-      var users = await ensureTeamCache();
-      var assignable = users.filter(function (u) { return u.manageable && u.status === 'active'; });
-      var opts = assignable.map(function (u) {
-        return '<option value="' + esc(u.id) + '">' + esc(u.fullName) + ' (' + esc(A.roleLabel(u.role)) + ')</option>';
-      }).join('');
-      $('adTaskUser').innerHTML = opts || '<option value="">No eligible accounts</option>';
+      var recipRes = await A.get(API.adminTasks + '?recipients=1');
+      var recipients = recipRes.recipients || [];
+      $('adTaskUser').innerHTML = recipients.length
+        ? recipients.map(function (u) {
+            return '<option value="' + esc(u.id) + '">' + esc(u.fullName) + ' (' + esc(A.roleLabel(u.role)) + ')</option>';
+          }).join('')
+        : '<option value="">No eligible recipient</option>';
+
+      var role = ME && ME.user.role;
+      var labelText = role === 'assistant_ceo' ? 'Assign to Area Manager'
+        : role === 'manager' ? 'Assign to Field Officer'
+        : 'Recipient';
+      $('adTaskUserLabel').textContent = labelText;
+      $('adTaskCardTitle').textContent = role === 'ceo' ? 'Assign work'
+        : role === 'assistant_ceo' ? 'Assign work to an Area Manager'
+        : role === 'manager' ? 'Assign work to a Field Officer'
+        : 'Assign work';
+      /* Field Officer holds no tasks.assign capability at all — the whole
+         card is pointless to show them (they receive work, they don't
+         assign it, per the hard rule in the brief). */
+      $('adTaskCard').hidden = !can('tasks.assign');
     } catch (e) {
       A.msg($('adTaskMsg'), e.message, 'is-error');
     }
+
+    await loadMyWorkList();
+
+    $('adTeamWorkCard').hidden = !(ME && (ME.user.role === 'assistant_ceo' || ME.user.role === 'manager'));
+    if (ME && (ME.user.role === 'assistant_ceo' || ME.user.role === 'manager')) {
+      $('adTeamWorkTitle').textContent = ME.user.role === 'assistant_ceo'
+        ? "My Managers' work" : "My team's delegated work";
+      await loadTeamWorkList();
+    }
   }
+
+  function taskRowHtml(t, showDelegate) {
+    var chainOpen = !!taskChainOpenFor[t.id];
+    var statusPill = t.status === 'completed' || t.completedCount >= t.targetCount
+      ? '<span class="ad-pill is-ok">Completed</span>'
+      : t.status === 'cancelled'
+        ? '<span class="ad-pill is-danger">Returned / Needs attention</span>'
+        : t.completedCount > 0
+          ? '<span class="ad-pill is-warn">In progress</span>'
+          : '<span class="ad-pill">Pending</span>';
+    var lineage = '<small style="display:block;">' +
+      (t.assignedByName ? 'Assigned by ' + esc(t.assignedByName) + ' · ' : '') +
+      esc(A.fmtDateTimeSeconds(t.createdAt)) +
+      (t.assignedToName ? ' · to ' + esc(t.assignedToName) : '') +
+    '</small>';
+
+    var chainBlock = '';
+    if (chainOpen) {
+      var chain = taskChainCache[t.id];
+      chainBlock = '<div class="ad-detail-grid" style="border-top:1px dashed var(--line);margin-top:8px;padding-top:8px;">' +
+        (!chain
+          ? '<div class="ad-empty">Loading history…</div>'
+          : chain.map(function (c) {
+              var verb = c.parentTaskId ? 'delegated to' : 'assigned to';
+              return '<div class="ad-kv-row" style="align-items:flex-start;">' +
+                '<span>' + esc(c.assignedByName || 'System') + ' ' + verb + ' ' + esc(c.assignedToName || 'Unknown') +
+                (c.status === 'completed' ? ' — completed' : '') + '</span>' +
+                '<span>' + esc(A.fmtDateTimeSeconds(c.createdAt)) + '</span>' +
+              '</div>';
+            }).join('')) +
+      '</div>';
+    }
+
+    return '<div class="ad-verify-row" style="align-items:flex-start;flex-wrap:wrap;" data-task="' + esc(t.id) + '">' +
+      '<div class="ad-grow"><b>' + esc(t.title) + '</b>' +
+      '<small>' + t.completedCount + ' of ' + t.targetCount + ' done · due ' + esc(A.fmtDate(t.dueDate)) + '</small>' +
+      lineage +
+      (t.notes ? '<small style="display:block;white-space:pre-wrap;">' + esc(t.notes) + '</small>' : '') +
+      '</div>' +
+      statusPill + ' ' +
+      '<button class="ad-btn is-sm" type="button" data-toggle-chain="' + esc(t.id) + '">History</button>' +
+      (showDelegate ? ' <button class="ad-btn is-sm is-primary" type="button" data-delegate-task="' + esc(t.id) + '">Delegate</button>' : '') +
+      chainBlock +
+    '</div>';
+  }
+
+  async function loadMyWorkList() {
+    try {
+      $('adMyWorkDate').textContent = A.fmtDate(A.todayISO());
+      var res = await A.get(API.adminTasks + '?date=' + A.todayISO() + '&userId=' + encodeURIComponent(ME.user.id));
+      var canDelegate = can('tasks.assign') && ME.user.role !== 'field_officer';
+      $('adMyWorkList').innerHTML = res.tasks.length
+        ? res.tasks.map(function (t) { return taskRowHtml(t, canDelegate); }).join('')
+        : '<div class="ad-empty">No work assigned to you today.</div>';
+    } catch (e) {
+      $('adMyWorkList').innerHTML = '<div class="ad-empty">' + esc(e.message) + '</div>';
+    }
+  }
+
+  async function loadTeamWorkList() {
+    try {
+      var res = await A.get(API.adminTasks + '?date=' + A.todayISO() + '&team=1');
+      $('adTeamWorkList').innerHTML = res.tasks.length
+        ? res.tasks.map(function (t) { return taskRowHtml(t, false); }).join('')
+        : '<div class="ad-empty">No delegated work yet today.</div>';
+    } catch (e) {
+      $('adTeamWorkList').innerHTML = '<div class="ad-empty">' + esc(e.message) + '</div>';
+    }
+  }
+
+  async function toggleTaskChain(taskId, container) {
+    taskChainOpenFor[taskId] = !taskChainOpenFor[taskId];
+    if (taskChainOpenFor[taskId] && !taskChainCache[taskId]) {
+      try {
+        var res = await A.get(API.adminTasks + '?chain=' + encodeURIComponent(taskId));
+        taskChainCache[taskId] = res.chain || [];
+      } catch (err) {
+        taskChainOpenFor[taskId] = false;
+      }
+    }
+    if (container === 'my') await loadMyWorkList(); else await loadTeamWorkList();
+  }
+
+  $('adMyWorkList').addEventListener('click', async function (e) {
+    var chainBtn = e.target.closest('[data-toggle-chain]');
+    if (chainBtn) { await toggleTaskChain(chainBtn.getAttribute('data-toggle-chain'), 'my'); return; }
+    var delegateBtn = e.target.closest('[data-delegate-task]');
+    if (delegateBtn) {
+      var taskId = delegateBtn.getAttribute('data-delegate-task');
+      var row = delegateBtn.closest('[data-task]');
+      var titleText = row.querySelector('b').textContent;
+      delegatingFromTaskId = taskId;
+      $('adDelegateBanner').hidden = false;
+      $('adDelegateBanner').textContent = 'Delegating "' + titleText + '" — choose who receives it below.';
+      $('adCancelDelegate').hidden = false;
+      doc.getElementById('panel-tasks').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+  $('adTeamWorkList').addEventListener('click', async function (e) {
+    var chainBtn = e.target.closest('[data-toggle-chain]');
+    if (chainBtn) await toggleTaskChain(chainBtn.getAttribute('data-toggle-chain'), 'team');
+  });
+  $('adCancelDelegate').addEventListener('click', function () {
+    delegatingFromTaskId = null;
+    $('adDelegateBanner').hidden = true;
+    $('adCancelDelegate').hidden = true;
+  });
 
   /* ── REMOVED TEAM MEMBERS (CEO-only history view, governance pass) ──
      Collapsed by default, never merged into the active Team list above —
@@ -2566,9 +2716,13 @@
     };
     var notes = $('adTaskNotes').value.trim();
     if (payload.taskType === 'custom' && notes) payload.notes = notes;
+    /* Delegation chain (ISSUE 6/7/15): set only while the "Delegate"
+       button on an existing received task was clicked — a fresh "Assign
+       work" has no parent, exactly like before. */
+    if (delegatingFromTaskId) payload.parentTaskId = delegatingFromTaskId;
 
     if (!payload.assignedTo) {
-      A.msg($('adTaskMsg'), 'Choose a team member.', 'is-error');
+      A.msg($('adTaskMsg'), 'Choose a recipient.', 'is-error');
       return;
     }
     if (payload.taskType === 'custom' && !notes) {
@@ -2577,8 +2731,13 @@
     }
     try {
       await A.post(API.adminTasks, payload);
-      A.msg($('adTaskMsg'), 'Task assigned.', 'is-ok');
+      A.msg($('adTaskMsg'), delegatingFromTaskId ? 'Work delegated.' : 'Task assigned.', 'is-ok');
       $('adTaskNotes').value = '';
+      delegatingFromTaskId = null;
+      $('adDelegateBanner').hidden = true;
+      $('adCancelDelegate').hidden = true;
+      await loadMyWorkList();
+      if (!$('adTeamWorkCard').hidden) await loadTeamWorkList();
     } catch (e) {
       A.msg($('adTaskMsg'), e.message, 'is-error');
     }
