@@ -2748,6 +2748,12 @@
       A.msg($('adTaskMsg'), 'Describe the custom task in the instructions field.', 'is-error');
       return;
     }
+    /* Duplicate-email protection (assignment-wiring pass, audited
+       2026-08-25): a double-click or a slow request re-clicked created
+       TWO admin_tasks rows and TWO assignment emails — Area Assignment's
+       equivalent button already guards against exactly this
+       (adAssignArea, `this.disabled = true`), this one never did. */
+    this.disabled = true;
     try {
       await A.post(API.adminTasks, payload);
       A.msg($('adTaskMsg'), delegatingFromTaskId ? 'Work delegated.' : 'Task assigned.', 'is-ok');
@@ -2760,6 +2766,7 @@
     } catch (e) {
       A.msg($('adTaskMsg'), e.message, 'is-error');
     }
+    this.disabled = false;
   });
 
   /* ── MONITORING ─────────────────────────────────────────────────── */

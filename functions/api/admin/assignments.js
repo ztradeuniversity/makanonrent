@@ -14,6 +14,8 @@ import { getServiceClient } from '../../utils/supabase.js';
 import { isNonEmptyString } from '../../utils/validate.js';
 import { requireAuth, requireCapability, canManageRole, getScopeNodeIds, isWithinScope, getVisibleSubordinateIds, getDelegationTargets, cascadeInvalidateChildren } from '../../utils/rbac.js';
 import { auditFor } from '../../utils/audit.js';
+import { sendQueuedEmail } from '../../utils/mailer.js';
+import { publish } from '../../utils/notify.js';
 
 export async function onRequestOptions(context) {
   return preflight(context.env);
@@ -267,7 +269,7 @@ export async function onRequestPost(context) {
       var level = levelFromNodeId(body.nodeId);
       if (!level) return json(env, { error: 'nodeId is not a City / Main / Sub location path.' }, 422);
 
-      var target = await db.from('admin_users').select('id, role, full_name, status').eq('id', body.userId).maybeSingle();
+      var target = await db.from('admin_users').select('id, role, full_name, status, email').eq('id', body.userId).maybeSingle();
       if (target.error) throw target.error;
       if (!target.data) return json(env, { error: 'No such user.' }, 404);
       if (!canManageRole(auth.user.role, target.data.role)) {
@@ -336,6 +338,43 @@ export async function onRequestPost(context) {
 
       await audit('assign_area', 'admin_area_assignment', ins.data.id,
         { userId: body.userId, nodeId: body.nodeId, level: level });
+
+      /* Area assignment email (assignment-wiring pass, audited 2026-08-25
+         — confirmed root cause: this endpoint never sent an email or an
+         in-app notification at all, for any node, ever). Sent ONLY after
+         the insert above has actually committed — no false-success email
+         on a rejected/failed assign. One email per successful row (one
+         node = one assignment event = one email, matching the brief's
+         own single-area example); a multi-node "Assign selected areas"
+         batch in the UI already issues one POST per node, so this
+         naturally sends one email per area, never a batch summary. Same
+         sendQueuedEmail()/Resend/EMAIL_FROM every other admin email in
+         this console already uses — no second provider, no second queue.
+         A missing email on a legacy account is not an error: the
+         assignment itself already succeeded and is visible on the
+         dashboard either way. */
+      if (target.data.email) {
+        var assignDelivery = await sendQueuedEmail(env, db, {
+          toEmail: target.data.email, template: 'area_assigned',
+          payload: {
+            recipientName: target.data.full_name, areaName: area.data.name || body.nodeId, nodeId: body.nodeId,
+            assignedByName: auth.user.full_name, assignedByRole: auth.user.role,
+            assignedAt: new Date().toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+          }
+        });
+        if (!assignDelivery.sent) {
+          await audit('area_email_failed', 'admin_area_assignment', ins.data.id, { error: assignDelivery.error });
+        }
+      }
+
+      /* In-app notification (ISSUE 10) — the SAME bus task.assigned now
+         uses, reused rather than duplicated. 'area.changed' already
+         exists in the EVENTS catalogue (notify.js) for exactly this. */
+      await publish(env, {
+        type: 'area.changed', recipientId: body.userId, actorId: auth.user.id,
+        areaNodeId: body.nodeId, body: (area.data.name || body.nodeId) + ' was assigned to you.'
+      });
+
       return json(env, { ok: true, assignmentId: ins.data.id }, 201);
     }
 
@@ -468,7 +507,7 @@ export async function onRequestPost(context) {
         return json(env, { error: 'Cannot transfer an assignment to the same owner.' }, 422);
       }
 
-      var recip = await db.from('admin_users').select('id, role, status').eq('id', body.toUserId).maybeSingle();
+      var recip = await db.from('admin_users').select('id, role, status, full_name, email').eq('id', body.toUserId).maybeSingle();
       if (recip.error) throw recip.error;
       if (!recip.data || recip.data.status !== 'active') {
         return json(env, { error: 'Transfer recipient must be an active team member.' }, 422);
@@ -546,6 +585,41 @@ export async function onRequestPost(context) {
          hood. The TO side only ever gains scope from a transfer, which
          cannot orphan anything, so no cascade check is needed there. */
       await cascadeInvalidateChildren(env, audit, src.data.user_id);
+
+      /* Transfer recipient email/notification (assignment-wiring pass,
+         audited 2026-08-25) — a transfer is "assigning an area to a team
+         member" exactly as much as a fresh 'assign' is, so the same rule
+         applies. ONE email for the whole transfer, not one per node: a
+         transfer can move a city + every active sub-location under it in
+         a single call (xferRows above), and that is genuinely ONE
+         assignment event ("this area was transferred to you"), unlike
+         'assign' where the UI already issues one POST per node. Only
+         sent if at least one node actually transferred (newIds.length —
+         a fully-conflicted transfer with zero successes has nothing to
+         announce). */
+      if (newIds.length && recip.data.email) {
+        var xferArea = await db.from('locations').select('name').eq('node_id', src.data.node_id).maybeSingle();
+        var xferAreaName = (!xferArea.error && xferArea.data) ? xferArea.data.name : src.data.node_id;
+        var xferDelivery = await sendQueuedEmail(env, db, {
+          toEmail: recip.data.email, template: 'area_assigned',
+          payload: {
+            recipientName: recip.data.full_name,
+            areaName: xferAreaName + (newIds.length > 1 ? ' (+' + (newIds.length - 1) + ' sub-location' + (newIds.length > 2 ? 's' : '') + ')' : ''),
+            nodeId: src.data.node_id,
+            assignedByName: auth.user.full_name, assignedByRole: auth.user.role,
+            assignedAt: new Date().toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+          }
+        });
+        if (!xferDelivery.sent) {
+          await audit('area_email_failed', 'admin_area_assignment', body.assignmentId, { error: xferDelivery.error });
+        }
+      }
+      if (newIds.length) {
+        await publish(env, {
+          type: 'area.changed', recipientId: body.toUserId, actorId: auth.user.id,
+          areaNodeId: src.data.node_id, body: 'An area was transferred to you.'
+        });
+      }
 
       return json(env, { ok: true, transferredCount: newIds.length, conflicts: xferErrors });
     }

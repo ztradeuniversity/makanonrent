@@ -58,6 +58,28 @@ export async function sendQueuedEmail(env, db, opts) {
   }
 }
 
+/* Role → the exact display label the CEO/Assistant CEO/Area Manager
+   assignment emails use, shared across every template below so "CEO",
+   "Assistant CEO" and "Area Manager" are spelled identically everywhere
+   an assignment email mentions who did the assigning. */
+var ASSIGN_ROLE_LABEL = { ceo: 'CEO', assistant_ceo: 'Assistant CEO', manager: 'Area Manager', field_officer: 'Field Officer' };
+
+/* "CEO Zubair has assigned an area to you." / "Your Assistant CEO, Maria
+   Rani, has assigned this work to you." / "Your Area Manager, Muhammad
+   Jan, has assigned an area to you." — one sentence, reused by BOTH the
+   area and task assignment templates (assignment-wiring pass, audited
+   2026-08-25) so the phrasing can never drift between the two emails.
+   `thing` is "an area" or "this work" — the only difference between the
+   two callers. CEO gets the plain "CEO [Name]" form (there is no "Your
+   CEO" — everyone reports to the CEO); Assistant CEO/Manager get the
+   "Your <role>, [Name]," form the brief specifies verbatim. */
+function assignerIntro(assignerName, assignerRole, thing) {
+  var name = assignerName || 'MakanOnRent management';
+  if (assignerRole === 'ceo') return 'CEO ' + name + ' has assigned ' + thing + ' to you.';
+  var label = ASSIGN_ROLE_LABEL[assignerRole] || 'Your manager';
+  return 'Your ' + label + ', ' + name + ', has assigned ' + thing + ' to you.';
+}
+
 export function renderTemplate(template, payload) {
   if (template === 'admin_otp_email_verify' || template === 'admin_otp_password_reset' || template === 'admin_password_reset' || template === 'admin_otp_login') {
     return { subject: 'Your MakanOnRent verification code', text: 'Your code is ' + payload.code + '. Expires in ' + (payload.expiresInMinutes || 10) + ' minutes.' };
@@ -66,17 +88,40 @@ export function renderTemplate(template, payload) {
     var l = [
       'Hi ' + (payload.recipientName || 'there') + ',',
       '',
-      'You have been assigned a new task on MakanOnRent (' + (payload.roleLabel || 'Team') + ').',
+      assignerIntro(payload.assignedByName, payload.assignedByRole, 'this work'),
       '',
       'Task: ' + (payload.title || 'Task'),
-      'Target: ' + (payload.targetCount != null ? payload.targetCount : '—'),
-      'Due: ' + (payload.dueDate || '—')
+      'Task type: ' + (payload.taskType || '—')
     ];
     if (payload.areaName) l.push('Area: ' + payload.areaName);
-    if (payload.notes) l.push('', 'Instructions: ' + payload.notes);
-    l.push('', 'Assigned by: ' + (payload.assignedByName || 'MakanOnRent management'));
-    l.push('', 'Sign in to your dashboard to see the full details and log your progress.');
+    if (payload.notes) l.push('Instructions: ' + payload.notes);
+    l.push('Due: ' + (payload.dueDate || '—'));
+    l.push('', 'Assigned by: ' + (payload.assignedByName || 'MakanOnRent management') +
+      (payload.assignedByRole ? ' — ' + (ASSIGN_ROLE_LABEL[payload.assignedByRole] || payload.assignedByRole) : ''));
+    l.push('Assigned at: ' + (payload.assignedAt || '—'));
+    l.push('', 'Please check your MakanOnRent dashboard for the complete task and instructions.');
     return { subject: 'New task assigned: ' + (payload.title || 'Task'), text: l.join('\n') };
+  }
+  if (template === 'area_assigned') {
+    /* Assignment-wiring pass (audited 2026-08-25): area assignment/
+       delegation NEVER sent an email at all — confirmed root cause,
+       there was no template and no sendQueuedEmail() call anywhere in
+       assignments.js. This is the new template; the send site is in
+       assignments.js. */
+    var al = [
+      'Hi ' + (payload.recipientName || 'there') + ',',
+      '',
+      assignerIntro(payload.assignedByName, payload.assignedByRole, 'an area'),
+      '',
+      'Area: ' + (payload.areaName || payload.nodeId || 'an area'),
+      'Assigned at: ' + (payload.assignedAt || '—'),
+      '',
+      'Assigned by: ' + (payload.assignedByName || 'MakanOnRent management') +
+        (payload.assignedByRole ? ' — ' + (ASSIGN_ROLE_LABEL[payload.assignedByRole] || payload.assignedByRole) : ''),
+      '',
+      'Please check your MakanOnRent dashboard for the full details and next actions.'
+    ];
+    return { subject: 'New area assigned — MakanOnRent', text: al.join('\n') };
   }
   if (template === 'owner_property_published') {
     var pl = [

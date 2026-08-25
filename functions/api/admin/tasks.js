@@ -368,7 +368,18 @@ export async function onRequestPost(context) {
           toEmail: t.data.email, template: 'admin_task_assigned',
           payload: {
             recipientName: t.data.full_name, roleLabel: t.data.role, title: title, notes: notes,
-            targetCount: target, dueDate: dueDate, areaName: areaName, assignedByName: auth.user.full_name
+            taskType: body.taskType, dueDate: dueDate, areaName: areaName,
+            /* Sender identity + exact timestamp (assignment-wiring pass,
+               audited 2026-08-25) — was missing the assigner's ROLE and
+               a real timestamp entirely; "Assigned by: <name>" alone
+               doesn't say whether that name is the CEO, an Assistant
+               CEO, or a Manager, which the recipient needs to make sense
+               of a delegated (parent_task_id) task. Uses the exact
+               moment this email is composed, immediately after the
+               insert committed — the same "now" the DB row's own
+               created_at reflects. */
+            assignedByName: auth.user.full_name, assignedByRole: auth.user.role,
+            assignedAt: new Date().toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' })
           }
         });
         if (!delivery.sent) {
